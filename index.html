@@ -32,7 +32,12 @@
 <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<!-- Firebase SDKs (compat v10 — works without ES modules / build step) -->
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
 <style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Cormorant+Garamond:wght@500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
   :root{
     --bg:#f4f7f5;
     --surface:#ffffff;
@@ -62,7 +67,6 @@
   }
   *{box-sizing:border-box}
   html,body{margin:0;padding:0;background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:13px;line-height:1.5;-webkit-font-smoothing:antialiased}
-  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Cormorant+Garamond:wght@500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
   button{font-family:inherit;cursor:pointer;border:none;background:none;color:inherit}
   input,select,textarea{font-family:inherit;font-size:13px}
   /* Top bar */
@@ -215,7 +219,7 @@
   .vt-btn{padding:14px 12px;background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);text-align:left;transition:all .15s}
   .vt-btn:hover{border-color:var(--primary);background:var(--primary-soft);transform:translateY(-1px);box-shadow:var(--shadow)}
   .vt-btn .vt-icon{font-size:18px;margin-bottom:6px;color:var(--primary)}
-  .vt-btn .vt-name{font-weight:600;font-size:12.5px;color:var(--ink}
+  .vt-btn .vt-name{font-weight:600;font-size:12.5px;color:var(--ink)}
   .vt-btn .vt-desc{font-size:11px;color:var(--ink-3);margin-top:2px}
   /* Help text */
   .help{font-size:11px;color:var(--ink-3);margin-top:4px;font-style:italic}
@@ -231,6 +235,50 @@
   code{background:var(--surface-2);padding:2px 6px;border-radius:3px;font-family:var(--mono);font-size:11px}
   a{color:var(--primary);text-decoration:none}
   a:hover{text-decoration:underline}
+
+  /* ── Auth Screen ─────────────────────────────────────────────────────── */
+  .auth-bg{min-height:100vh;background:linear-gradient(145deg,#0b6b4f 0%,#063d2d 60%,#021a12 100%);display:flex;align-items:center;justify-content:center;padding:20px}
+  .auth-card{background:var(--surface);border-radius:18px;padding:36px 32px 28px;width:100%;max-width:400px;box-shadow:0 24px 64px rgba(0,0,0,.4)}
+  .auth-brand{display:flex;align-items:center;gap:14px;margin-bottom:28px}
+  .auth-logo{width:52px;height:52px;background:var(--primary);border-radius:13px;display:flex;align-items:center;justify-content:center;font-family:Georgia,serif;font-size:30px;font-weight:700;color:#fff;position:relative;flex-shrink:0}
+  .auth-logo-dot{position:absolute;top:5px;right:5px;width:11px;height:11px;background:var(--accent);border-radius:50%}
+  .auth-brand-name{font-size:22px;font-weight:700;color:var(--ink)}
+  .auth-brand-tag{font-size:10.5px;color:var(--ink-3);letter-spacing:1.2px;text-transform:uppercase;margin-top:1px}
+  .auth-tabs{display:flex;background:var(--surface-2);border-radius:9px;padding:4px;margin-bottom:22px;border:1px solid var(--line);gap:3px}
+  .auth-tab{flex:1;border:none;background:transparent;padding:8px;border-radius:6px;font-size:13px;font-weight:500;color:var(--ink-3);cursor:pointer;transition:all .15s}
+  .auth-tab.active{background:var(--surface);color:var(--ink);font-weight:600;box-shadow:0 1px 4px rgba(0,0,0,.1)}
+  .auth-form{display:flex;flex-direction:column;gap:14px}
+  .auth-field{display:flex;flex-direction:column;gap:5px}
+  .auth-field label{font-size:12px;font-weight:600;color:var(--ink-2);letter-spacing:.3px}
+  .auth-field input{padding:10px 12px;border:1.5px solid var(--line-2);border-radius:8px;font-size:14px;background:var(--surface);color:var(--ink);transition:border-color .15s;outline:none;width:100%;box-sizing:border-box}
+  .auth-field input:focus{border-color:var(--primary)}
+  .auth-error{background:#fef2f2;color:var(--danger);border:1px solid #fecaca;border-radius:7px;padding:9px 12px;font-size:12.5px}
+  .auth-btn-primary{background:var(--primary);color:#fff;border:none;border-radius:9px;padding:12px;font-size:14px;font-weight:600;cursor:pointer;transition:background .15s;width:100%}
+  .auth-btn-primary:hover{background:var(--primary-2)}
+  .auth-btn-primary:disabled{opacity:.6;cursor:not-allowed}
+  .auth-btn-secondary{background:transparent;color:var(--primary);border:1.5px solid var(--primary);border-radius:9px;padding:10px;font-size:13px;font-weight:600;cursor:pointer;transition:all .15s;width:100%}
+  .auth-btn-secondary:hover{background:var(--primary-soft)}
+  .auth-btn-link{background:none;border:none;color:var(--ink-3);font-size:12.5px;cursor:pointer;padding:4px 0;display:block;width:100%;text-align:center;margin-top:4px}
+  .auth-btn-link:hover{color:var(--primary)}
+  .auth-divider{display:flex;align-items:center;gap:12px;margin:18px 0;color:var(--ink-3);font-size:12px}
+  .auth-divider::before,.auth-divider::after{content:'';flex:1;height:1px;background:var(--line)}
+  .auth-btn-google{display:flex;align-items:center;justify-content:center;gap:10px;width:100%;padding:10px 14px;background:var(--surface);border:1.5px solid var(--line-2);border-radius:9px;font-size:13.5px;font-weight:500;color:var(--ink);cursor:pointer;transition:all .15s}
+  .auth-btn-google:hover{border-color:var(--primary);background:var(--primary-soft)}
+  .auth-btn-google:disabled{opacity:.6;cursor:not-allowed}
+  .auth-footer{text-align:center;margin-top:20px;font-size:11px;color:var(--ink-3);line-height:1.7}
+  /* Company Selector */
+  .company-card{display:flex;align-items:center;justify-content:space-between;padding:14px 16px;background:var(--surface);border:1.5px solid var(--line);border-radius:10px;cursor:pointer;transition:all .15s;text-align:left;width:100%}
+  .company-card:hover{border-color:var(--primary);background:var(--primary-soft)}
+  .company-arrow{color:var(--primary);font-size:16px;flex-shrink:0}
+  /* Sync indicator */
+  .sync-pill{font-size:11px;padding:2px 9px;border-radius:10px;font-weight:500;letter-spacing:.3px;cursor:default}
+  .sync-pill.syncing{background:#fef3c7;color:#92400e;animation:pulse 1.2s ease infinite}
+  .sync-pill.saved{background:var(--primary-soft);color:var(--primary)}
+  .sync-pill.error{background:#fef2f2;color:var(--danger)}
+  .sync-pill.local{background:var(--surface-2);color:var(--ink-3)}
+  /* Loading spinner */
+  .spin-ring{width:36px;height:36px;border:3px solid rgba(255,255,255,.3);border-top-color:#fff;border-radius:50%;animation:spin .8s linear infinite}
+  @keyframes spin{to{transform:rotate(360deg)}}
 </style>
 </head>
 <body>
@@ -312,6 +360,102 @@ const loadData = () => {
 const saveData = (data) => {
   try { localStorage.setItem(STORAGE_KEY, JSON.stringify(data)); } catch(e){}
 };
+
+// ============================================================================
+// FIREBASE CONFIGURATION
+// ============================================================================
+// ⚠  Replace every value below with your own Firebase project credentials.
+//    Console → https://console.firebase.google.com
+//    Your project → Project Settings → General → Your apps → Config
+// ─────────────────────────────────────────────────────────────────────────────
+const FIREBASE_CONFIG = {
+  apiKey:            "AIzaSyDWJNkE2ocb_LsE-F5RX7MOT5NZ51WDUiE",
+  authDomain:        "miyeebooks.firebaseapp.com",
+  projectId:         "miyeebooks",
+  storageBucket:     "miyeebooks.firebasestorage.app",
+  messagingSenderId: "1045761764245",
+  appId:             "1:1045761764245:web:8736ab4cfd4cb23098249c",
+};
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Detect whether the user has filled in real credentials
+const FB_CONFIGURED = !FIREBASE_CONFIG.apiKey.startsWith('REPLACE');
+
+let fbApp = null, fbAuth = null, fbDb = null;
+if(FB_CONFIGURED){
+  try {
+    fbApp  = firebase.initializeApp(FIREBASE_CONFIG);
+    fbAuth = firebase.auth();
+    fbDb   = firebase.firestore();
+  } catch(e){ console.warn('Firebase init error:', e); }
+}
+
+// ── Firestore path helpers ───────────────────────────────────────────────────
+// users/{uid}/companies/{companyId}  →  { name, gstin, createdAt, updatedAt, payload: JSON }
+// payload stores the entire MiyeeBooks data object as a JSON string.
+// Firestore 1 MB doc limit is fine for MSMEs; the limit is per-document not per-collection.
+
+const fbCompanyRef = (uid, companyId) =>
+  fbDb.collection('users').doc(uid).collection('companies').doc(companyId);
+
+const fbListCompanies = async (uid) => {
+  if(!fbDb) return [];
+  try {
+    const snap = await fbDb.collection('users').doc(uid).collection('companies')
+      .orderBy('updatedAt','desc').get();
+    return snap.docs.map(d => ({ id: d.id, name: d.data().name||'Unnamed', gstin: d.data().gstin||'' }));
+  } catch(e){ console.warn('fbListCompanies:', e); return []; }
+};
+
+const fbLoadCompany = async (uid, companyId) => {
+  if(!fbDb) return null;
+  try {
+    const snap = await fbCompanyRef(uid, companyId).get();
+    if(!snap.exists) return null;
+    return JSON.parse(snap.data().payload || 'null');
+  } catch(e){ console.warn('fbLoadCompany:', e); return null; }
+};
+
+const fbSaveCompany = async (uid, companyId, data) => {
+  if(!fbDb) return;
+  await fbCompanyRef(uid, companyId).set({
+    name:      data.company?.name  || 'My Company',
+    gstin:     data.company?.gstin || '',
+    updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+    payload:   JSON.stringify(data),
+  }, { merge: true });
+};
+
+const fbCreateCompany = async (uid, initialData) => {
+  if(!fbDb) return null;
+  const ref = fbDb.collection('users').doc(uid).collection('companies').doc();
+  await ref.set({
+    name:      initialData.company?.name  || 'My Company',
+    gstin:     initialData.company?.gstin || '',
+    createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+    updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+    payload:   JSON.stringify(initialData),
+  });
+  return ref.id;
+};
+
+const fbDeleteCompany = async (uid, companyId) => {
+  if(!fbDb) return;
+  await fbCompanyRef(uid, companyId).delete();
+};
+
+// Friendly Firebase auth error messages
+const fbErrMsg = (code) => ({
+  'auth/user-not-found':        'No account found with this email.',
+  'auth/wrong-password':        'Incorrect password.',
+  'auth/invalid-credential':    'Incorrect email or password.',
+  'auth/email-already-in-use':  'This email is already registered. Please sign in.',
+  'auth/weak-password':         'Password must be at least 6 characters.',
+  'auth/invalid-email':         'Please enter a valid email address.',
+  'auth/too-many-requests':     'Too many attempts. Please try again later.',
+  'auth/network-request-failed':'Network error. Check your internet connection.',
+  'auth/popup-closed-by-user':  '',
+}[code] || 'Something went wrong. Please try again.');
 
 // ============================================================================
 // GST INVOICE PDF GENERATOR (Pure HTML → Browser Print/Save as PDF)
@@ -714,10 +858,493 @@ const SEED_TDS_SECTIONS = [
   {id:uid(), section:'392', oldSection:'192', name:'Salary (TDS on Salary)', rate:0, threshold:0, annualThreshold:0, ledgerId:'1321', nature:'Salary', isSalary:true},
 ];
 
+// Default full dataset — used when creating a new company (Firebase flow)
+const buildDefaultData = (companyOverrides = {}) => ({
+  company: { ...DEFAULT_COMPANY, ...companyOverrides },
+  coa: SEED_COA,
+  parties: SEED_PARTIES,
+  vouchers: [],
+  forexRates: FOREX_RATES,
+  gstr2bData: [],
+  employees: [],
+  payrollRuns: [],
+  tdsSections: SEED_TDS_SECTIONS.map(s => ({...s, id: uid()})),
+  stockItems: [],
+  boms: [],
+  productionOrders: [],
+});
+
+// ============================================================================
+// LOGIN SCREEN
+// ============================================================================
+function LoginScreen({ onLogin }){
+  const [tab, setTab]           = useState('login');
+  const [email, setEmail]       = useState('');
+  const [password, setPassword] = useState('');
+  const [name, setName]         = useState('');
+  const [showPw, setShowPw]     = useState(false);
+  const [loading, setLoading]   = useState(false);
+  const [gLoading, setGLoading] = useState(false);
+  const [error, setError]       = useState('');
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setLoading(true); setError('');
+    try {
+      let cred;
+      if(tab === 'login'){
+        cred = await fbAuth.signInWithEmailAndPassword(email, password);
+      } else {
+        cred = await fbAuth.createUserWithEmailAndPassword(email, password);
+        if(name.trim()) await cred.user.updateProfile({ displayName: name.trim() });
+      }
+      onLogin(cred.user);
+    } catch(err){
+      setError(fbErrMsg(err.code));
+    } finally { setLoading(false); }
+  };
+
+  const handleGoogle = async () => {
+    setGLoading(true); setError('');
+    try {
+      const provider = new firebase.auth.GoogleAuthProvider();
+      const cred = await fbAuth.signInWithPopup(provider);
+      onLogin(cred.user);
+    } catch(err){
+      const msg = fbErrMsg(err.code);
+      if(msg) setError(msg);
+    } finally { setGLoading(false); }
+  };
+
+  const switchTab = (t) => { setTab(t); setError(''); setEmail(''); setPassword(''); setName(''); setShowPw(false); };
+
+  /* ── inline style tokens (immune to CSS cascade issues) ── */
+  const S = {
+    page: {
+      margin:0, padding:0,
+      minHeight:'100vh', width:'100vw',
+      display:'flex', alignItems:'center', justifyContent:'center',
+      background:'linear-gradient(145deg, #0b6b4f 0%, #063d2d 55%, #021a12 100%)',
+      fontFamily:'"Inter", -apple-system, BlinkMacSystemFont, sans-serif',
+      boxSizing:'border-box', padding:'20px',
+    },
+    card: {
+      background:'#ffffff', borderRadius:20,
+      padding:'40px 36px 32px', width:'100%', maxWidth:420,
+      boxShadow:'0 32px 80px rgba(0,0,0,.45), 0 4px 16px rgba(0,0,0,.2)',
+      boxSizing:'border-box',
+    },
+    /* brand row */
+    brandRow:{ display:'flex', alignItems:'center', gap:16, marginBottom:32 },
+    logoBox:{
+      width:56, height:56, borderRadius:14, flexShrink:0, position:'relative',
+      background:'#0b6b4f', display:'flex', alignItems:'center', justifyContent:'center',
+    },
+    logoText:{ fontFamily:'Georgia,serif', fontSize:32, fontWeight:700, color:'#fff', lineHeight:1 },
+    logoDot:{
+      position:'absolute', top:6, right:6, width:11, height:11,
+      borderRadius:'50%', background:'#c9a227',
+    },
+    brandName:{ fontSize:24, fontWeight:700, color:'#0e2a23', letterSpacing:'-.3px' },
+    brandAccent:{ color:'#c9a227' },
+    brandTag:{ fontSize:10, letterSpacing:'1.5px', textTransform:'uppercase', color:'#6b7f78', marginTop:2 },
+    /* tab switcher */
+    tabBar:{
+      display:'flex', background:'#f4f7f5', borderRadius:10, padding:4,
+      marginBottom:24, border:'1px solid #e3ebe7', gap:4,
+    },
+    tab:(active)=>({
+      flex:1, border:'none', cursor:'pointer', padding:'9px 0', borderRadius:7,
+      fontSize:13, fontWeight: active?600:500, transition:'all .15s',
+      background: active?'#ffffff':'transparent',
+      color: active?'#0e2a23':'#6b7f78',
+      boxShadow: active?'0 1px 4px rgba(0,0,0,.12)':'none',
+    }),
+    /* form */
+    form:{ display:'flex', flexDirection:'column', gap:16 },
+    fieldWrap:{ display:'flex', flexDirection:'column', gap:6 },
+    label:{ fontSize:12, fontWeight:600, color:'#3a4f49', letterSpacing:'.2px' },
+    inputWrap:{ position:'relative' },
+    input:{
+      width:'100%', boxSizing:'border-box', padding:'11px 14px',
+      border:'1.5px solid #cfdbd5', borderRadius:9, fontSize:14,
+      background:'#ffffff', color:'#0e2a23', outline:'none',
+      transition:'border-color .15s', fontFamily:'inherit',
+    },
+    inputFocus:{ borderColor:'#0b6b4f' },
+    pwEye:{
+      position:'absolute', right:12, top:'50%', transform:'translateY(-50%)',
+      background:'none', border:'none', cursor:'pointer', color:'#6b7f78', fontSize:15, padding:0,
+    },
+    /* primary button */
+    btnPrimary:(disabled)=>({
+      width:'100%', border:'none', borderRadius:10, padding:'13px',
+      fontSize:14, fontWeight:700, cursor: disabled?'not-allowed':'pointer',
+      background: disabled?'#8fb5a8':'#0b6b4f', color:'#ffffff',
+      transition:'background .15s', letterSpacing:'.2px', marginTop:2,
+    }),
+    /* google button */
+    btnGoogle:{
+      display:'flex', alignItems:'center', justifyContent:'center', gap:10,
+      width:'100%', padding:'12px 14px', background:'#ffffff',
+      border:'1.5px solid #cfdbd5', borderRadius:10, fontSize:13.5,
+      fontWeight:500, color:'#0e2a23', cursor:'pointer', transition:'all .15s',
+      fontFamily:'inherit', marginBottom:4,
+    },
+    /* error */
+    errBox:{
+      background:'#fef2f2', color:'#b3261e', border:'1px solid #f5c6c4',
+      borderRadius:8, padding:'10px 13px', fontSize:12.5, lineHeight:1.5,
+    },
+    /* divider */
+    divider:{
+      display:'flex', alignItems:'center', gap:12,
+      margin:'20px 0', color:'#8aa098', fontSize:12,
+    },
+    dividerLine:{ flex:1, height:1, background:'#e3ebe7' },
+    /* footer */
+    footer:{
+      textAlign:'center', marginTop:22, fontSize:11,
+      color:'#6b7f78', lineHeight:1.8,
+    },
+  };
+
+  /* focus effect via state */
+  const [focused, setFocused] = useState('');
+
+  return (
+    <div style={S.page}>
+      <div style={S.card}>
+
+        {/* ── Brand ── */}
+        <div style={S.brandRow}>
+          <div style={S.logoBox}>
+            <span style={S.logoText}>M</span>
+            <div style={S.logoDot}/>
+          </div>
+          <div>
+            <div style={S.brandName}>
+              Miyee<span style={S.brandAccent}>·</span>Books
+            </div>
+            <div style={S.brandTag}>MSME Accounting Suite</div>
+          </div>
+        </div>
+
+        {/* ── Tab switcher ── */}
+        <div style={S.tabBar}>
+          <button style={S.tab(tab==='login')}    onClick={()=>switchTab('login')}>Sign In</button>
+          <button style={S.tab(tab==='register')} onClick={()=>switchTab('register')}>Create Account</button>
+        </div>
+
+        {/* ── Form ── */}
+        <form style={S.form} onSubmit={handleSubmit}>
+          {tab==='register' && (
+            <div style={S.fieldWrap}>
+              <label style={S.label}>Full Name</label>
+              <input style={{...S.input, ...(focused==='name'?S.inputFocus:{})}}
+                value={name} onChange={e=>setName(e.target.value)}
+                onFocus={()=>setFocused('name')} onBlur={()=>setFocused('')}
+                placeholder="Your name" autoFocus />
+            </div>
+          )}
+          <div style={S.fieldWrap}>
+            <label style={S.label}>Email Address</label>
+            <input style={{...S.input, ...(focused==='email'?S.inputFocus:{})}}
+              type="email" value={email} onChange={e=>setEmail(e.target.value)}
+              onFocus={()=>setFocused('email')} onBlur={()=>setFocused('')}
+              placeholder="you@company.com" required
+              autoFocus={tab==='login'} />
+          </div>
+          <div style={S.fieldWrap}>
+            <div style={{display:'flex', justifyContent:'space-between', alignItems:'center'}}>
+              <label style={S.label}>Password</label>
+              {tab==='login' && (
+                <span style={{fontSize:11, color:'#6b7f78', cursor:'default'}}>
+                  6+ characters
+                </span>
+              )}
+            </div>
+            <div style={S.inputWrap}>
+              <input style={{...S.input, paddingRight:42, ...(focused==='pw'?S.inputFocus:{})}}
+                type={showPw?'text':'password'} value={password}
+                onChange={e=>setPassword(e.target.value)}
+                onFocus={()=>setFocused('pw')} onBlur={()=>setFocused('')}
+                placeholder={tab==='register'?'Minimum 6 characters':'Your password'}
+                required minLength="6" />
+              <button type="button" style={S.pwEye} onClick={()=>setShowPw(p=>!p)}
+                title={showPw?'Hide password':'Show password'}>
+                {showPw ? '🙈' : '👁'}
+              </button>
+            </div>
+          </div>
+
+          {error && (
+            <div style={S.errBox}>⚠ {error}</div>
+          )}
+
+          <button type="submit" style={S.btnPrimary(loading)} disabled={loading}>
+            {loading
+              ? <span>⏳ {tab==='login'?'Signing in…':'Creating account…'}</span>
+              : tab==='login' ? '→ Sign In' : '✓ Create Account'
+            }
+          </button>
+        </form>
+
+        {/* ── Divider ── */}
+        <div style={S.divider}>
+          <div style={S.dividerLine}/><span>or continue with</span><div style={S.dividerLine}/>
+        </div>
+
+        {/* ── Google button ── */}
+        <button style={S.btnGoogle} onClick={handleGoogle} disabled={gLoading}
+          onMouseEnter={e=>{ e.currentTarget.style.borderColor='#0b6b4f'; e.currentTarget.style.background='#e6f3ee'; }}
+          onMouseLeave={e=>{ e.currentTarget.style.borderColor='#cfdbd5'; e.currentTarget.style.background='#ffffff'; }}>
+          <svg width="20" height="20" viewBox="0 0 48 48">
+            <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/>
+            <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/>
+            <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/>
+            <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.18 1.48-4.97 2.31-8.16 2.31-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/>
+          </svg>
+          {gLoading ? '⏳ Signing in…' : 'Continue with Google'}
+        </button>
+
+        {/* ── Footer ── */}
+        <div style={S.footer}>
+          🔒 Your data is private — only you can access it<br/>
+          Secured by <b style={{color:'#3a4f49'}}>Firebase Authentication</b> &amp; <b style={{color:'#3a4f49'}}>Firestore</b>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================================
+// COMPANY SELECTOR
+// ============================================================================
+function CompanySelector({ user, onSelect, onSignOut }){
+  const [companies, setCompanies] = useState(null);
+  const [creating,  setCreating]  = useState(false);
+  const [deleting,  setDeleting]  = useState(null);
+  const [newName,   setNewName]   = useState('');
+  const [newGstin,  setNewGstin]  = useState('');
+  const [error,     setError]     = useState('');
+  const [loading,   setLoading]   = useState(false);
+  const [focusedF,  setFocusedF]  = useState('');
+
+  const PAGE_BG = 'linear-gradient(145deg, #0b6b4f 0%, #063d2d 55%, #021a12 100%)';
+  const FONT    = '"Inter", -apple-system, BlinkMacSystemFont, sans-serif';
+  const inp = (focused) => ({
+    width:'100%', boxSizing:'border-box', padding:'10px 13px',
+    border: focused?'1.5px solid #0b6b4f':'1.5px solid #cfdbd5',
+    borderRadius:8, fontSize:14, background:'#fff', color:'#0e2a23',
+    outline:'none', fontFamily:FONT, marginTop:5, display:'block',
+  });
+
+  const load = () => {
+    fbListCompanies(user.uid).then(list => {
+      setCompanies(list);
+      if(list.length === 1) onSelect(list[0].id);
+    }).catch(() => setCompanies([]));
+  };
+  useEffect(load, [user.uid]);
+
+  const handleCreate = async (e) => {
+    e.preventDefault();
+    if(!newName.trim()){ setError('Business name is required.'); return; }
+    setLoading(true); setError('');
+    try {
+      const id = await fbCreateCompany(user.uid,
+        buildDefaultData({ name: newName.trim(), gstin: newGstin.trim().toUpperCase() }));
+      onSelect(id);
+    } catch(err){
+      setError('Failed to create company. Please try again.');
+      setLoading(false);
+    }
+  };
+
+  const handleDelete = async (id) => {
+    if(!confirm('Delete this company and ALL its data? This cannot be undone.')) return;
+    setDeleting(id);
+    try { await fbDeleteCompany(user.uid, id); load(); }
+    catch(e){ alert('Delete failed.'); }
+    finally { setDeleting(null); }
+  };
+
+  const LoadingScreen = () => (
+    <div style={{minHeight:'100vh',width:'100vw',display:'flex',flexDirection:'column',
+      alignItems:'center',justifyContent:'center',gap:18,background:PAGE_BG,fontFamily:FONT}}>
+      <div style={{width:40,height:40,border:'3px solid rgba(255,255,255,.25)',borderTopColor:'#fff',
+        borderRadius:'50%',animation:'spin .8s linear infinite'}}/>
+      <div style={{color:'rgba(255,255,255,.8)',fontSize:14}}>Loading your companies…</div>
+    </div>
+  );
+
+  if(companies === null) return <LoadingScreen />;
+
+  return (
+    <div style={{minHeight:'100vh',width:'100vw',display:'flex',alignItems:'center',
+      justifyContent:'center',background:PAGE_BG,fontFamily:FONT,padding:20,boxSizing:'border-box'}}>
+      <div style={{background:'#fff',borderRadius:20,padding:'36px 32px 28px',width:'100%',maxWidth:460,
+        boxShadow:'0 32px 80px rgba(0,0,0,.4)',boxSizing:'border-box'}}>
+
+        {/* header */}
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:28}}>
+          <div>
+            <div style={{fontSize:20,fontWeight:700,color:'#0e2a23',letterSpacing:'-.3px'}}>
+              🏢 Select Company
+            </div>
+            <div style={{fontSize:12,color:'#6b7f78',marginTop:4}}>
+              Signed in as <b style={{color:'#3a4f49'}}>{user.displayName||user.email}</b>
+            </div>
+          </div>
+          <button onClick={onSignOut} style={{background:'none',border:'1px solid #cfdbd5',borderRadius:7,
+            padding:'6px 12px',fontSize:12,color:'#6b7f78',cursor:'pointer',fontFamily:FONT,
+            whiteSpace:'nowrap',flexShrink:0}}>
+            ↩ Sign out
+          </button>
+        </div>
+
+        {/* company list */}
+        {companies.length > 0 ? (
+          <div style={{display:'flex',flexDirection:'column',gap:8,marginBottom:16}}>
+            {companies.map(c => (
+              <div key={c.id} style={{position:'relative'}}>
+                <button onClick={()=>onSelect(c.id)}
+                  style={{display:'flex',alignItems:'center',justifyContent:'space-between',
+                    width:'100%',padding:'14px 46px 14px 16px',background:'#fff',
+                    border:'1.5px solid #e3ebe7',borderRadius:12,cursor:'pointer',
+                    textAlign:'left',boxSizing:'border-box',fontFamily:FONT,
+                    transition:'all .15s'}}
+                  onMouseEnter={e=>{e.currentTarget.style.borderColor='#0b6b4f';e.currentTarget.style.background='#e6f3ee';}}
+                  onMouseLeave={e=>{e.currentTarget.style.borderColor='#e3ebe7';e.currentTarget.style.background='#fff';}}>
+                  <div>
+                    <div style={{fontWeight:700,fontSize:15,color:'#0e2a23'}}>{c.name}</div>
+                    {c.gstin && <div style={{fontSize:11,color:'#6b7f78',fontFamily:'monospace',marginTop:3}}>{c.gstin}</div>}
+                  </div>
+                  <span style={{color:'#0b6b4f',fontSize:18,flexShrink:0}}>→</span>
+                </button>
+                <button onClick={()=>handleDelete(c.id)} disabled={deleting===c.id}
+                  title="Delete company"
+                  style={{position:'absolute',top:'50%',right:12,transform:'translateY(-50%)',
+                    background:'none',border:'none',cursor:'pointer',fontSize:15,padding:'4px',
+                    color:'#b3261e',opacity:.5,lineHeight:1}}
+                  onMouseEnter={e=>e.currentTarget.style.opacity=1}
+                  onMouseLeave={e=>e.currentTarget.style.opacity=.5}>
+                  {deleting===c.id?'⏳':'🗑'}
+                </button>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div style={{textAlign:'center',padding:'28px 0 24px',color:'#6b7f78',fontSize:13}}>
+            No companies yet — create your first one below ↓
+          </div>
+        )}
+
+        {/* add company */}
+        {!creating ? (
+          <button onClick={()=>setCreating(true)}
+            style={{width:'100%',background:'transparent',border:'1.5px dashed #0b6b4f',
+              borderRadius:10,padding:'11px',fontSize:13,fontWeight:600,
+              color:'#0b6b4f',cursor:'pointer',fontFamily:FONT,transition:'all .15s'}}
+            onMouseEnter={e=>{e.currentTarget.style.background='#e6f3ee';}}
+            onMouseLeave={e=>{e.currentTarget.style.background='transparent';}}>
+            + Add New Company / Firm
+          </button>
+        ) : (
+          <form onSubmit={handleCreate}
+            style={{background:'#f9fbf9',borderRadius:12,padding:'18px 16px',border:'1px solid #e3ebe7',marginTop:4}}>
+            <div style={{fontSize:13,fontWeight:700,color:'#0e2a23',marginBottom:14}}>
+              ➕ New Company / Firm
+            </div>
+            <div style={{marginBottom:12}}>
+              <label style={{fontSize:12,fontWeight:600,color:'#3a4f49'}}>Business Name *</label>
+              <input value={newName} onChange={e=>setNewName(e.target.value)}
+                onFocus={()=>setFocusedF('name')} onBlur={()=>setFocusedF('')}
+                style={inp(focusedF==='name')}
+                placeholder="e.g. Rajesh Traders Pvt Ltd" autoFocus />
+            </div>
+            <div style={{marginBottom:14}}>
+              <label style={{fontSize:12,fontWeight:600,color:'#3a4f49'}}>
+                GSTIN <span style={{fontWeight:400,color:'#6b7f78'}}>(optional)</span>
+              </label>
+              <input value={newGstin} onChange={e=>setNewGstin(e.target.value.toUpperCase())}
+                onFocus={()=>setFocusedF('gstin')} onBlur={()=>setFocusedF('')}
+                style={{...inp(focusedF==='gstin'),fontFamily:'monospace',letterSpacing:'.5px'}}
+                placeholder="22AAAAA0000A1Z5" maxLength={15} />
+            </div>
+            {error && <div style={{background:'#fef2f2',color:'#b3261e',borderRadius:7,
+              padding:'9px 12px',fontSize:12,marginBottom:12}}>⚠ {error}</div>}
+            <div style={{display:'flex',gap:8}}>
+              <button type="submit" disabled={loading}
+                style={{flex:1,background:loading?'#8fb5a8':'#0b6b4f',color:'#fff',border:'none',
+                  borderRadius:9,padding:'11px',fontSize:13,fontWeight:600,cursor:loading?'not-allowed':'pointer',
+                  fontFamily:FONT}}>
+                {loading?'Creating…':'✓ Create & Open'}
+              </button>
+              <button type="button" onClick={()=>{setCreating(false);setError('');}}
+                style={{background:'#fff',color:'#3a4f49',border:'1.5px solid #cfdbd5',
+                  borderRadius:9,padding:'11px 16px',fontSize:13,cursor:'pointer',fontFamily:FONT}}>
+                Cancel
+              </button>
+            </div>
+          </form>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ============================================================================
+// AUTH GATE — wraps everything; decides what to render
+// ============================================================================
+function AuthGate(){
+  const [stage, setStage] = useState('loading'); // loading|unauth|select|ready|offline
+  const [user,  setUser]  = useState(null);
+  const [companyId, setCompanyId] = useState(null);
+
+  useEffect(() => {
+    if(!FB_CONFIGURED || !fbAuth){
+      setStage('offline');  // No Firebase config → run in offline/local mode
+      return;
+    }
+    const unsub = fbAuth.onAuthStateChanged(u => {
+      if(u){ setUser(u); setStage('select'); }
+      else { setUser(null); setCompanyId(null); setStage('unauth'); }
+    });
+    return unsub;
+  }, []);
+
+  const handleSignOut = async () => {
+    try { await fbAuth.signOut(); } catch(e){}
+    setUser(null); setCompanyId(null); setStage('unauth');
+  };
+
+  if(stage==='loading') return (
+    <div style={{minHeight:'100vh',width:'100vw',display:'flex',flexDirection:'column',
+      alignItems:'center',justifyContent:'center',gap:18,
+      background:'linear-gradient(145deg,#0b6b4f 0%,#063d2d 55%,#021a12 100%)',
+      fontFamily:'"Inter",-apple-system,sans-serif'}}>
+      <div style={{width:40,height:40,border:'3px solid rgba(255,255,255,.25)',borderTopColor:'#fff',
+        borderRadius:'50%',animation:'spin .8s linear infinite'}}/>
+      <div style={{color:'rgba(255,255,255,.8)',fontSize:14}}>Loading MiyeeBooks…</div>
+    </div>
+  );
+  if(stage==='unauth')  return <LoginScreen onLogin={u=>{ setUser(u); setStage('select'); }} />;
+  if(stage==='select')  return (
+    <CompanySelector user={user}
+      onSelect={id=>{ setCompanyId(id); setStage('ready'); }}
+      onSignOut={handleSignOut} />
+  );
+  if(stage==='offline') return <App />;
+  return <App user={user} companyId={companyId} onSignOut={handleSignOut}
+    onSwitchCompany={()=>{ setCompanyId(null); setStage('select'); }} />;
+}
+
 // ============================================================================
 // MAIN APP
 // ============================================================================
-function App(){
+function App({ user=null, companyId=null, onSignOut=null, onSwitchCompany=null }){
   const [data, setData] = useState(() => {
     const saved = loadData();
     if(saved){
@@ -774,7 +1401,53 @@ function App(){
     };
   }, []);
 
-  useEffect(() => { saveData(data); }, [data]);
+  // ── Cloud sync ─────────────────────────────────────────────────────────────
+  const [syncStatus, setSyncStatus] = useState('local'); // local|syncing|saved|error
+  const saveTimerRef = useRef(null);
+  const justLoaded   = useRef(false);   // flag: skip auto-save right after Firestore load
+
+  // On login/company switch → load from Firestore (overwrites local state)
+  useEffect(() => {
+    if(!user || !companyId) return;
+    setSyncStatus('syncing');
+    fbLoadCompany(user.uid, companyId).then(cloudData => {
+      if(cloudData){
+        // Apply same migrations as local load
+        if(!cloudData.stockItems)        cloudData.stockItems = [];
+        if(!cloudData.boms)              cloudData.boms = [];
+        if(!cloudData.productionOrders)  cloudData.productionOrders = [];
+        if(!cloudData.tdsSections)       cloudData.tdsSections = SEED_TDS_SECTIONS;
+        if(!cloudData.company.modules){
+          cloudData.company.modules = { gst:true, tds:true, payroll:true, factory:false, trader:false, service:false };
+        } else {
+          cloudData.company.modules = { ...DEFAULT_COMPANY.modules, ...cloudData.company.modules };
+        }
+        justLoaded.current = true;
+        setData(cloudData);
+        saveData(cloudData);    // warm-up localStorage cache
+      }
+      setSyncStatus('saved');
+    }).catch(() => setSyncStatus('error'));
+  }, [user?.uid, companyId]);
+
+  // On any data change → save to localStorage immediately, then debounce Firestore save
+  useEffect(() => {
+    saveData(data);
+    if(!user || !companyId) return;
+    if(justLoaded.current){ justLoaded.current = false; return; }  // skip right after cloud load
+    setSyncStatus('syncing');
+    if(saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    saveTimerRef.current = setTimeout(async () => {
+      try {
+        await fbSaveCompany(user.uid, companyId, data);
+        setSyncStatus('saved');
+      } catch(e){
+        setSyncStatus('error');
+      }
+    }, 2000);
+    return () => { if(saveTimerRef.current) clearTimeout(saveTimerRef.current); };
+  }, [data]);
+  // ───────────────────────────────────────────────────────────────────────────
 
   // Redirect to dashboard when the current page belongs to a now-disabled module
   useEffect(() => {
@@ -884,8 +1557,25 @@ function App(){
         <div className="topbar-right">
           <span className="pill">FY {data.company.fyStart?.slice(0,4)}–{data.company.fyEnd?.slice(2,4)}</span>
           <span>{data.company.name}</span>
-          <span style={{color:'#5a7068'}}>•</span>
-          <span>GSTIN: {data.company.gstin}</span>
+          {data.company.gstin && <><span style={{color:'#5a7068'}}>•</span><span>GSTIN: {data.company.gstin}</span></>}
+          {user && (<>
+            <span style={{color:'#5a7068'}}>•</span>
+            {syncStatus==='syncing' && <span className="sync-pill syncing" title="Saving to cloud…">☁ Saving…</span>}
+            {syncStatus==='saved'   && <span className="sync-pill saved"   title="All changes saved to cloud">☁ Saved</span>}
+            {syncStatus==='error'   && <span className="sync-pill error"   title="Cloud sync failed — data is safe locally">☁ Sync error</span>}
+            {syncStatus==='local'   && <span className="sync-pill local"   title="Working in local mode">☁ Local</span>}
+            <span style={{fontSize:11,color:'var(--ink-3)',maxWidth:140,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}} title={user.email}>
+              {user.displayName || user.email}
+            </span>
+            {onSwitchCompany && (
+              <button className="btn btn-sm btn-ghost" onClick={onSwitchCompany}
+                style={{fontSize:11,padding:'3px 9px'}} title="Switch to another company">⇌ Switch</button>
+            )}
+            {onSignOut && (
+              <button className="btn btn-sm btn-ghost" onClick={onSignOut}
+                style={{fontSize:11,padding:'3px 9px',color:'var(--danger)'}} title="Sign out">Sign out</button>
+            )}
+          </>)}
         </div>
       </div>
       <div className="app">
@@ -1658,6 +2348,58 @@ function CompanySettings({data, setData, showToast}){
             <button className="btn btn-danger" onClick={resetData}>⚠ Reset All Data</button>
             <button className="btn btn-primary" onClick={save}>Save Settings</button>
           </div>
+        </div>
+      </div>
+
+      {/* Firebase Cloud Status */}
+      <div className="card" style={{marginBottom:18}}>
+        <div className="card-head">
+          <h3 className="card-title">☁ Cloud Sync Status</h3>
+          <span style={{fontSize:11,color:'var(--ink-3)'}}>Multi-user · Real-time backup · Access from any device</span>
+        </div>
+        <div className="card-body">
+          {FB_CONFIGURED ? (
+            <div style={{display:'flex',alignItems:'center',gap:14}}>
+              <span style={{fontSize:22}}>✅</span>
+              <div>
+                <div style={{fontWeight:600,color:'var(--primary)',fontSize:13}}>Firebase Connected</div>
+                <div style={{fontSize:12,color:'var(--ink-3)',marginTop:2}}>
+                  Your data syncs automatically to Firestore. Every change is saved within 2 seconds.
+                  Multiple users / devices can use their own account — data is fully isolated per user.
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div style={{display:'flex',gap:14,alignItems:'flex-start'}}>
+              <span style={{fontSize:22}}>🔧</span>
+              <div style={{flex:1}}>
+                <div style={{fontWeight:600,color:'var(--accent)',fontSize:13,marginBottom:6}}>Firebase not configured — running in local mode</div>
+                <div style={{fontSize:12,color:'var(--ink-3)',marginBottom:10,lineHeight:1.7}}>
+                  To enable cloud sync and multi-user login, add your Firebase credentials to the
+                  <code>FIREBASE_CONFIG</code> block in the HTML file (near the top of the &lt;script&gt; section).
+                </div>
+                <div style={{fontSize:11,background:'var(--surface-2)',border:'1px solid var(--line)',borderRadius:8,padding:'10px 14px',fontFamily:'var(--mono)',lineHeight:2,color:'var(--ink-2)'}}>
+                  1. Go to <b>console.firebase.google.com</b><br/>
+                  2. Create a project → Add a Web app<br/>
+                  3. Enable <b>Authentication</b> (Email/Password + Google)<br/>
+                  4. Enable <b>Firestore Database</b> (production mode)<br/>
+                  5. Copy the config object and paste it into <code>FIREBASE_CONFIG</code> in this file<br/>
+                  6. Add Firestore Security Rules (see below)
+                </div>
+                <div style={{marginTop:12,fontSize:11,background:'#1e1e1e',color:'#d4d4d4',borderRadius:8,padding:'12px 16px',fontFamily:'var(--mono)',lineHeight:1.9}}>
+                  <span style={{color:'#6a9955'}}>// Firestore Security Rules (paste in Firebase console)</span><br/>
+                  <span style={{color:'#569cd6'}}>rules_version</span> = <span style={{color:'#ce9178'}}>'2'</span>;<br/>
+                  <span style={{color:'#569cd6'}}>service</span> cloud.firestore {'{'}<br/>
+                  &nbsp;&nbsp;<span style={{color:'#569cd6'}}>match</span> /databases/{'{'}<span style={{color:'#9cdcfe'}}>database</span>{'}'}/documents {'{'}<br/>
+                  &nbsp;&nbsp;&nbsp;&nbsp;<span style={{color:'#569cd6'}}>match</span> /users/{'{'}<span style={{color:'#9cdcfe'}}>uid</span>{'}'}/companies/{'{'}<span style={{color:'#9cdcfe'}}>doc</span>{'}'} {'{'}<br/>
+                  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style={{color:'#4ec9b0'}}>allow</span> read, write: <span style={{color:'#569cd6'}}>if</span> request.auth != <span style={{color:'#569cd6'}}>null</span> &amp;&amp; request.auth.uid == uid;<br/>
+                  &nbsp;&nbsp;&nbsp;&nbsp;{'}'}<br/>
+                  &nbsp;&nbsp;{'}'}<br/>
+                  {'}'}
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </>
@@ -7863,7 +8605,7 @@ function InventoryMovements({data}){
 // ============================================================================
 // MOUNT
 // ============================================================================
-ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+ReactDOM.createRoot(document.getElementById('root')).render(<AuthGate />);
 </script>
 </body>
 </html>
