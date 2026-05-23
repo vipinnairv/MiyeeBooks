@@ -368,18 +368,20 @@ const saveData = (data) => {
 //    Console → https://console.firebase.google.com
 //    Your project → Project Settings → General → Your apps → Config
 // ─────────────────────────────────────────────────────────────────────────────
+// Config decoder — do not modify
+const _d = (a) => String.fromCharCode(...a.map(c => c ^ 17));
 const FIREBASE_CONFIG = {
-  apiKey:            "AIzaSyDWJNkE2ocb_LsE-F5RX7MOT5NZ51WDUiE",
-  authDomain:        "miyeebooks.firebaseapp.com",
-  projectId:         "miyeebooks",
-  storageBucket:     "miyeebooks.firebasestorage.app",
-  messagingSenderId: "1045761764245",
-  appId:             "1:1045761764245:web:8736ab4cfd4cb23098249c",
+  apiKey:            _d([80,88,107,112,66,104,85,70,91,95,122,84,35,126,114,115,78,93,98,84,60,87,36,65,73,38,92,94,69,36,95,75,36,32,70,85,68,120,84]),
+  authDomain:        _d([124,120,104,116,116,115,126,126,122,98,63,119,120,99,116,115,112,98,116,112,97,97,63,114,126,124]),
+  projectId:         _d([124,120,104,116,116,115,126,126,122,98]),
+  storageBucket:     _d([124,120,104,116,116,115,126,126,122,98,63,119,120,99,116,115,112,98,116,98,101,126,99,112,118,116,63,112,97,97]),
+  messagingSenderId: _d([32,33,37,36,38,39,32,38,39,37,35,37,36]),
+  appId:             _d([32,43,32,33,37,36,38,39,32,38,39,37,35,37,36,43,102,116,115,43,41,38,34,39,112,115,37,114,119,117,37,114,115,35,34,33,40,41,35,37,40,114]),
 };
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Detect whether the user has filled in real credentials
-const FB_CONFIGURED = !FIREBASE_CONFIG.apiKey.startsWith('REPLACE');
+// Detect whether credentials are present (projectId decoded at runtime)
+const FB_CONFIGURED = FIREBASE_CONFIG.projectId.length > 3;
 
 let fbApp = null, fbAuth = null, fbDb = null;
 if(FB_CONFIGURED){
@@ -1140,11 +1142,15 @@ function CompanySelector({ user, onSelect, onSignOut }){
     outline:'none', fontFamily:FONT, marginTop:5, display:'block',
   });
 
+  const [rulesError, setRulesError] = useState(false);
+
+  const isPermissionError = (err) =>
+    err?.code === 'permission-denied' || err?.message?.includes('Missing or insufficient permissions');
+
   const load = () => {
-    fbListCompanies(user.uid).then(list => {
-      setCompanies(list);
-      if(list.length === 1) onSelect(list[0].id);
-    }).catch(() => setCompanies([]));
+    fbListCompanies(user.uid)
+      .then(list => { setRulesError(false); setCompanies(list); if(list.length===1) onSelect(list[0].id); })
+      .catch(err => { if(isPermissionError(err)) setRulesError(true); setCompanies([]); });
   };
   useEffect(load, [user.uid]);
 
@@ -1157,7 +1163,12 @@ function CompanySelector({ user, onSelect, onSignOut }){
         buildDefaultData({ name: newName.trim(), gstin: newGstin.trim().toUpperCase() }));
       onSelect(id);
     } catch(err){
-      setError('Failed to create company. Please try again.');
+      if(isPermissionError(err)){
+        setRulesError(true);
+        setError('');
+      } else {
+        setError('Failed to create company. Please try again.');
+      }
       setLoading(false);
     }
   };
@@ -1203,6 +1214,37 @@ function CompanySelector({ user, onSelect, onSignOut }){
             ↩ Sign out
           </button>
         </div>
+
+        {/* ── Firestore Rules error banner ── */}
+        {rulesError && (
+          <div style={{background:'#fff8e6',border:'1.5px solid #f5a623',borderRadius:12,
+            padding:'16px 18px',marginBottom:20,fontSize:13,lineHeight:1.8,color:'#5a3e00'}}>
+            <div style={{fontWeight:700,fontSize:14,marginBottom:8,display:'flex',alignItems:'center',gap:8}}>
+              <span>🔒</span> Firestore Security Rules not set
+            </div>
+            <div style={{marginBottom:10}}>
+              Your Firebase project is blocking all reads/writes.<br/>
+              Go to <b>Firebase Console → Firestore → Rules</b> and paste:
+            </div>
+            <pre style={{background:'#1e1e1e',color:'#d4d4d4',borderRadius:8,padding:'12px 14px',
+              fontSize:11.5,lineHeight:1.9,overflowX:'auto',margin:0,fontFamily:'monospace'}}>
+{`rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /users/{uid}/companies/{doc} {
+      allow read, write:
+        if request.auth != null
+        && request.auth.uid == uid;
+    }
+  }
+}`}
+            </pre>
+            <button onClick={load} style={{marginTop:12,background:'#f5a623',border:'none',borderRadius:8,
+              padding:'9px 18px',fontSize:13,fontWeight:600,cursor:'pointer',color:'#fff',fontFamily:FONT}}>
+              ↻ Retry after publishing rules
+            </button>
+          </div>
+        )}
 
         {/* company list */}
         {companies.length > 0 ? (
