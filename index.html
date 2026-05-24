@@ -8226,6 +8226,8 @@ function HelpGuide({setPage}){
     {id:'reports',   title:'Reports & MIS'},
     {id:'forex',     title:'Forex'},
     {id:'data',      title:'Backup & Sync'},
+    {id:'cost_dept', title:'Cost Centres & Depts'},
+    {id:'user_config',title:'User Configuration'},
     {id:'shortcuts', title:'Quick Reference'},
   ];
 
@@ -8680,6 +8682,141 @@ function HelpGuide({setPage}){
         {type:'heading', text:'ITC Blocked Credits (Section 17(5))'},
         {type:'text', text:'ITC is NOT available on: Motor vehicles (unless transport/driving school business), food & beverages, outdoor catering, beauty treatment, health services, works contract for immovable property, goods/services for personal consumption, and goods lost/destroyed/written off.'},
         {type:'tip', text:'When in doubt about ITC eligibility, consult your CA. Wrongly claimed ITC attracts 24% interest + penalty under CGST Act.'},
+      ]
+    },
+    cost_dept: {
+      title:'Cost Centres & Departments',
+      body: [
+        {type:'text', text:'Cost Centres and Departments let you tag every voucher journal line to a specific profit centre or team. This enables granular P&L reports, expense drill-downs, and budget enforcement — without needing separate company files.'},
+
+        {type:'heading', text:'Cost Centres — Setup'},
+        {type:'steps', items:[
+          'Go to <b>Masters → Cost Centres</b> from the sidebar.',
+          'Click <b>+ New Cost Centre</b>. Fill in the <b>Code</b> (e.g. CC-01), <b>Name</b> (e.g. "Manufacturing Unit"), and an optional Description.',
+          'Set a <b>Budget (₹)</b> amount. Leave it at 0 if you do not want budget tracking for this centre.',
+          'Choose <b>Budget Action</b>: <b>⚠ Warn Only</b> shows a confirmation popup when the budget is exceeded (you can still post). <b>🚫 Block Entry</b> prevents posting the voucher entirely until the budget allows.',
+          'Set <b>Status</b> to Active. Inactive cost centres are hidden from voucher dropdowns.',
+          'Click <b>💾 Save</b>. The cost centre is now available in all vouchers.',
+        ]},
+
+        {type:'heading', text:'Departments — Setup'},
+        {type:'steps', items:[
+          'Go to <b>Masters → Departments</b> from the sidebar.',
+          'Click <b>+ New Department</b>. Fill in the <b>Code</b> (e.g. HR, MKT, OPS, FIN, SALES) and <b>Name</b>.',
+          'Common departments: HR — Human Resources, MKT — Marketing, FIN — Finance, OPS — Operations, SALES — Sales, IT — Information Technology.',
+          'Set Status to Active and save.',
+        ]},
+
+        {type:'heading', text:'Tagging Voucher Lines'},
+        {type:'steps', items:[
+          'Open any Voucher — Journal (JV), Purchase (PUR), Payment (PAY), Receipt (REC), etc.',
+          'In the <b>Journal Lines</b> table, each row now has two extra dropdowns: <b>Cost Centre</b> and <b>Department</b>.',
+          'Select the relevant Cost Centre and/or Department for each line. Both fields are <b>optional per line</b> — leave them blank for lines you do not need to track (e.g. the bank or creditor leg of an entry).',
+          '<b>Typical tagging practice:</b> Tag the <b>expense/income line</b>, not the bank/payable/receivable line. Example: For a rent payment, tag the "Rent Expense" Dr line to Cost Centre CC-02 and Department OPS — leave the "Bank" Cr line untagged.',
+          'Post the voucher normally. The Cost Centre and Department tags are stored with each line.',
+        ]},
+
+        {type:'heading', text:'Budget Enforcement'},
+        {type:'steps', items:[
+          'When you click <b>Post</b> on a voucher, MiyeeBooks automatically checks every tagged expense line against its cost centre\'s budget.',
+          'The system sums <b>all previously posted expense entries</b> for that cost centre, adds the current entry, and compares against the budget.',
+          'If the <b>projected spend exceeds the budget</b> and the cost centre is set to <b>⚠ Warn</b>: a confirmation dialog appears showing the overage details. Click OK to post anyway, or Cancel to revise.',
+          'If the cost centre is set to <b>🚫 Block</b>: a red error toast appears and the voucher is NOT posted. You must reduce the amount, change the cost centre, or increase the budget before posting.',
+          '<b>Edit-safe:</b> When editing an existing voucher, the system excludes that voucher from the "existing spend" calculation to prevent double-counting.',
+          'Only <b>Expense-type account lines</b> are counted for budget purposes — income lines and balance sheet lines (bank, creditors, etc.) are ignored.',
+        ]},
+
+        {type:'heading', text:'Cost Centre P&L Report'},
+        {type:'steps', items:[
+          'Go to <b>Reports → Cost Centre P&L</b>.',
+          'Set the <b>From</b> and <b>To</b> date range (defaults to your financial year).',
+          'Optionally filter to a <b>single cost centre</b> using the dropdown.',
+          'For each cost centre, you see: <b>Total Income</b> (credit lines on income accounts), <b>Total Expenses</b> (debit lines on expense accounts), and <b>Net P&L</b> (Income minus Expenses).',
+          'If a budget is set, a <b>budget usage bar</b> shows: Amount spent / Budget with percentage. The bar turns amber above 80% and red when over budget.',
+          'Below the summary, a <b>full transaction table</b> lists every tagged line: date, voucher number, account, type, debit, credit, and narration.',
+          'Click <b>⬇ CSV</b> to export the summary or <b>🖨 Print</b> for a hard copy.',
+        ]},
+
+        {type:'heading', text:'Department Expense Report'},
+        {type:'steps', items:[
+          'Go to <b>Reports → Department Expenses</b>.',
+          'Set date range and optionally filter to a single department.',
+          'A <b>horizontal bar chart</b> at the top shows the expense distribution across all departments as a percentage of total — quick visual for cost allocation.',
+          'For each department: a <b>breakdown by expense account</b> (shown as coloured chips) and the full transaction detail table below.',
+          'Total department expenses appear in the card header for quick reference.',
+          'CSV export available.',
+        ]},
+
+        {type:'tip', text:'Tag only the expense/income line in each entry — not the bank or party lines. This keeps your reports clean and avoids double-counting in budget calculations.'},
+      ]
+    },
+    user_config: {
+      title:'User Configuration — Multi-User Access',
+      body: [
+        {type:'text', text:'MiyeeBooks supports multi-user access via Firebase. The company owner can invite team members with different permission levels. Each user logs in with their own account and sees only the companies they have been granted access to.'},
+
+        {type:'heading', text:'Prerequisites'},
+        {type:'steps', items:[
+          'Firebase must be configured for your MiyeeBooks instance (apiKey, projectId etc. filled in the source file).',
+          'Firebase Authentication must have <b>Email/Password provider enabled</b> (Firebase Console → Authentication → Sign-in method).',
+          'Your app\'s domain must be in <b>Authorized Domains</b> (Firebase Console → Authentication → Settings → Authorized domains).',
+          'Firestore Security Rules must be updated to include the <b>invitations</b> and <b>sharedAccess</b> collections (see Company Settings → Firestore Rules section for the complete ruleset).',
+          'A Firestore <b>composite index</b> is required on the <code>grants</code> collection group: <code>ownerId ASC + companyId ASC</code>, scope = Collection group. Create it from the Firestore Console → Indexes → Composite.',
+        ]},
+
+        {type:'heading', text:'User Roles Explained'},
+        {type:'steps', items:[
+          '<b>Owner</b> — The person who created the company. Has full access to everything including company settings and team management. Cannot be changed or revoked.',
+          '<b>Admin</b> — Can read and write all data (vouchers, masters, employees, etc.). Can also manage team members — invite new users and revoke access. Cannot delete the company.',
+          '<b>Limited</b> ��� Can read and write transaction data (vouchers, parties) but cannot access sensitive areas like payroll, TDS rates, or company settings.',
+          '<b>Viewer</b> — Read-only access. Can see all reports and data but cannot create, edit, or delete anything. All action buttons are hidden. Ideal for auditors, silent partners, or CA reviewers.',
+        ]},
+
+        {type:'heading', text:'Inviting a Team Member'},
+        {type:'steps', items:[
+          'Go to <b>Masters → Team Members</b> from the sidebar.',
+          'Click <b>+ Invite Member</b>.',
+          'Select the <b>Role</b> (Admin / Limited / Viewer) from the dropdown.',
+          'Click <b>Generate Invite Code</b> — an 8-character alphanumeric code is created and stored in Firestore.',
+          'Click <b>📋 Copy Link</b> — this copies a direct link containing the invite code to your clipboard.',
+          'Share the link (or just the code) with the team member via WhatsApp, email, or any channel.',
+          'The invited person opens the link, logs in (or registers) with their email, and clicks <b>Join with Code</b> on the Company Selector screen.',
+          'Once accepted, the company appears in their <b>Shared With Me</b> section on the Company Selector.',
+        ]},
+
+        {type:'heading', text:'Accepting an Invite'},
+        {type:'steps', items:[
+          'Open the invite link shared by the company owner, OR log in to MiyeeBooks normally.',
+          'On the <b>Company Selector</b> screen, scroll to the bottom — you will see a <b>"Have an invite code?"</b> section.',
+          'Type or paste the 8-character invite code and click <b>Join</b>.',
+          'The company appears in your <b>Shared With Me</b> section. Click it to open the company.',
+          'Your assigned role (Admin / Limited / Viewer) is shown in the top bar while you are working in that company.',
+        ]},
+
+        {type:'heading', text:'Managing Team Members (Admin View)'},
+        {type:'steps', items:[
+          'Go to <b>Team Members</b> — 4 stat cards show: Total Users, Active Members, Pending Invites, Admins.',
+          '<b>Active Members</b> table: shows each member\'s name, email, join date, invite code used, and role badge. Click <b>Revoke</b> (with confirmation) to remove a member\'s access immediately.',
+          '<b>Pending Invites</b> table: shows unused invite codes with role, creation date, and expiry. Click <b>Cancel</b> to invalidate an unused code.',
+          '<b>Role Permissions</b> table at the bottom summarises what each role can and cannot do.',
+          'Revoking a member removes their Firestore grant document — they will no longer see the company on their next login.',
+        ]},
+
+        {type:'heading', text:'Firestore Security Rules'},
+        {type:'steps', items:[
+          'Go to <b>Company Settings</b> → scroll to the <b>Firestore Security Rules</b> card.',
+          'Copy the complete ruleset shown there and paste it into your <b>Firebase Console → Firestore → Rules</b> tab.',
+          'Click <b>Publish</b>. These rules ensure: owners can read/write their own company data, shared members can read (and non-viewers can write) shared company data, invite codes can be created and consumed by authenticated users, and grant documents are readable only by the member themselves.',
+        ]},
+
+        {type:'heading', text:'Switching Between Companies'},
+        {type:'steps', items:[
+          'Click <b>⇄ Switch Company</b> in the top-right corner of the app.',
+          'The Company Selector reopens showing both your owned companies and companies shared with you.',
+          'Click any company to switch to it. Your role badge in the top bar updates accordingly.',
+        ]},
+
+        {type:'tip', text:'Invite codes are single-use — once accepted, the code is marked as used and cannot be reused. Generate a new code for each person you want to invite.'},
       ]
     },
   };
