@@ -478,7 +478,7 @@ const fbCreateInvite = async (ownerId, companyId, companyName, role) => {
   return code;
 };
 
-const fbAcceptInvite = async (code, uid) => {
+const fbAcceptInvite = async (code, uid, userEmail='', userDisplayName='') => {
   if(!fbDb) throw new Error('Not connected to Firebase');
   const ref = fbDb.collection('invitations').doc(code.toUpperCase().trim());
   const snap = await ref.get();
@@ -491,8 +491,10 @@ const fbAcceptInvite = async (code, uid) => {
   await fbDb.collection('sharedAccess').doc(uid).collection('grants').doc(inv.companyId).set({
     ownerId: inv.ownerId, companyId: inv.companyId, companyName: inv.companyName,
     role: inv.role, grantedAt: firebase.firestore.FieldValue.serverTimestamp(), inviteCode: code,
+    memberEmail: userEmail, memberName: userDisplayName,
   });
-  await ref.update({ used: true, usedBy: uid, usedAt: firebase.firestore.FieldValue.serverTimestamp() });
+  await ref.update({ used: true, usedBy: uid, usedByEmail: userEmail, usedByName: userDisplayName,
+    usedAt: firebase.firestore.FieldValue.serverTimestamp() });
   return inv;
 };
 
@@ -516,6 +518,21 @@ const fbListMembers = async (ownerId, companyId) => {
 const fbRevokeAccess = async (memberUid, companyId) => {
   if(!fbDb) return;
   await fbDb.collection('sharedAccess').doc(memberUid).collection('grants').doc(companyId).delete();
+};
+
+const fbGetPendingInvites = async (ownerId, companyId) => {
+  if(!fbDb) return [];
+  try {
+    const snap = await fbDb.collection('invitations')
+      .where('ownerId','==',ownerId).where('companyId','==',companyId)
+      .where('used','==',false).get();
+    return snap.docs.map(d => ({ id: d.id, ...d.data() }));
+  } catch(e){ return []; }
+};
+
+const fbCancelInvite = async (code) => {
+  if(!fbDb) return;
+  await fbDb.collection('invitations').doc(code).update({ used: true, cancelled: true });
 };
 
 // ============================================================================
@@ -965,6 +982,8 @@ const buildDefaultData = (companyOverrides = {}) => ({
   stockItems: [],
   boms: [],
   productionOrders: [],
+  costCentres: [],
+  departments: [],
 });
 
 // ============================================================================
@@ -1282,7 +1301,7 @@ function CompanySelector({ user, onSelect, onSignOut }){
     if(!inviteCode.trim()){ setInvError('Enter an invite code.'); return; }
     setInvLoading(true); setInvError('');
     try {
-      await fbAcceptInvite(inviteCode.trim(), user.uid);
+      await fbAcceptInvite(inviteCode.trim(), user.uid, user.email||'', user.displayName||'');
       setInviteCode(''); setShowInvBox(false);
       load();
     } catch(err){
@@ -1537,6 +1556,9 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
       if(!saved.stockItems) saved.stockItems = [];
       if(!saved.boms) saved.boms = [];
       if(!saved.productionOrders) saved.productionOrders = [];
+      // Migrate: ensure cost centres & departments
+      if(!saved.costCentres) saved.costCentres = [];
+      if(!saved.departments) saved.departments = [];
       // Migrate: ensure modules config exists (preserve existing true for legacy installs)
       if(!saved.company.modules) {
         saved.company.modules = { gst:true, tds:true, payroll:true, factory:false, trader:false, service:false };
@@ -1559,6 +1581,8 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
       stockItems: [],
       boms: [],
       productionOrders: [],
+      costCentres: [],
+      departments: [],
     };
   });
   const [page, setPage] = useState('dashboard');
@@ -1598,6 +1622,8 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
         if(!cloudData.stockItems)        cloudData.stockItems = [];
         if(!cloudData.boms)              cloudData.boms = [];
         if(!cloudData.productionOrders)  cloudData.productionOrders = [];
+        if(!cloudData.costCentres)       cloudData.costCentres = [];
+        if(!cloudData.departments)       cloudData.departments = [];
         if(!cloudData.tdsSections)       cloudData.tdsSections = SEED_TDS_SECTIONS;
         if(!cloudData.company.modules){
           cloudData.company.modules = { gst:true, tds:true, payroll:true, factory:false, trader:false, service:false };
@@ -1681,6 +1707,8 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
     {section:'Masters', items:[
       {id:'coa', label:'Chart of Accounts', ico:'☰'},
       {id:'parties', label:'Customers & Vendors', ico:'◉'},
+      {id:'cost_centres', label:'Cost Centres', ico:'🎯'},
+      {id:'departments', label:'Departments', ico:'🏢'},
       {id:'company', label:'Company Settings', ico:'⚙'},
       ...(FB_CONFIGURED && user ? [{id:'team', label:'Team Members', ico:'👥'}] : []),
     ]},
@@ -1693,6 +1721,8 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
       {id:'pnl', label:'Profit & Loss', ico:'⊞'},
       {id:'bs', label:'Balance Sheet', ico:'⊠'},
       {id:'cashflow', label:'Cash Flow (AS-3)', ico:'⊜'},
+      {id:'cc_report', label:'Cost Centre P&L', ico:'🎯'},
+      {id:'dept_report', label:'Department Expenses', ico:'🏢'},
     ]},
     {section:'Registers', items:[
       {id:'ledger_stmt', label:'Ledger Statement', ico:'≡'},
@@ -1789,7 +1819,11 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
           {page==='coa' && <ChartOfAccounts data={data} setData={canWrite?setData:()=>{}} balances={ledgerBalances} showToast={showToast} readOnly={isViewer} />}
           {page==='parties' && <Parties data={data} setData={canWrite?setData:()=>{}} showToast={showToast} readOnly={isViewer} />}
           {page==='company' && <CompanySettings data={data} setData={canWrite?setData:()=>{}} showToast={showToast} readOnly={isViewer} />}
-          {page==='team'    && <TeamMembers data={data} user={user} companyId={companyId} userRole={userRole} />}
+          {page==='team'         && <TeamMembers data={data} user={user} companyId={companyId} userRole={userRole} />}
+          {page==='cost_centres' && <CostCentreMaster data={data} setData={canWrite?setData:()=>{}} showToast={showToast} readOnly={isViewer} />}
+          {page==='departments'  && <DepartmentMaster data={data} setData={canWrite?setData:()=>{}} showToast={showToast} readOnly={isViewer} />}
+          {page==='cc_report'    && <CostCentreReport data={data} />}
+          {page==='dept_report'  && <DepartmentReport data={data} />}
           {page==='vouchers' && <Vouchers data={data} setData={canWrite?setData:()=>{}} showToast={showToast} readOnly={isViewer} />}
           {page==='daybook' && <DayBook data={data} />}
           {page==='trial' && <TrialBalance data={data} balances={ledgerBalances} />}
@@ -1832,6 +1866,704 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
         </main>
       </div>
       {toast && <div className={'toast ' + (toast.type==='error'?'error':'success')}>{toast.msg}</div>}
+    </>
+  );
+}
+
+// ============================================================================
+// COST CENTRE MASTER
+// ============================================================================
+function CostCentreMaster({data, setData, showToast, readOnly=false}){
+  const blank = {id:'', code:'', name:'', description:'', budget:0, budgetEnforce:'warn', active:true};
+  const [editing, setEditing] = useState(null); // null=list, 'new'=new, id=edit
+  const [f, setF] = useState(blank);
+  const [deleteConfirm, setDeleteConfirm] = useState(null);
+
+  const openNew = () => { setF({...blank, id:uid()}); setEditing('new'); };
+  const openEdit = (cc) => { setF({...cc}); setEditing(cc.id); };
+  const cancel = () => { setEditing(null); setF(blank); };
+
+  const save = () => {
+    if(!f.code.trim()) return showToast('Code is required','error');
+    if(!f.name.trim()) return showToast('Name is required','error');
+    const existing = (data.costCentres||[]).find(c => c.code.trim().toUpperCase()===f.code.trim().toUpperCase() && c.id!==f.id);
+    if(existing) return showToast('Code already exists','error');
+    if(editing === 'new'){
+      setData(prev => ({...prev, costCentres:[...(prev.costCentres||[]), {...f, code:f.code.trim().toUpperCase(), name:f.name.trim()}]}));
+      showToast('Cost Centre created');
+    } else {
+      setData(prev => ({...prev, costCentres:(prev.costCentres||[]).map(c => c.id===f.id ? {...f, code:f.code.trim().toUpperCase(), name:f.name.trim()} : c)}));
+      showToast('Cost Centre updated');
+    }
+    cancel();
+  };
+
+  const remove = (id) => {
+    setData(prev => ({...prev, costCentres:(prev.costCentres||[]).filter(c => c.id!==id)}));
+    setDeleteConfirm(null);
+    showToast('Cost Centre deleted');
+  };
+
+  const ccs = data.costCentres || [];
+
+  // Calculate spend per cost centre from vouchers
+  const ccSpend = useMemo(() => {
+    const spend = {};
+    (data.vouchers||[]).forEach(v => {
+      (v.lines||[]).forEach(l => {
+        if(!l.costCentreId) return;
+        const acc = data.coa.find(a => a.id === l.accountId);
+        if(!acc || acc.type !== 'Expense') return;
+        spend[l.costCentreId] = (spend[l.costCentreId]||0) + (l.debit||0);
+      });
+    });
+    return spend;
+  }, [data.vouchers, data.coa]);
+
+  if(editing){
+    return (
+      <>
+        <div className="page-head">
+          <div>
+            <h1 className="page-title">{editing==='new'?'New Cost Centre':'Edit Cost Centre'}</h1>
+            <div className="page-sub">Cost Centres help track expenses by project / profit centre</div>
+          </div>
+          <div className="page-actions">
+            <button className="btn" onClick={cancel}>✕ Cancel</button>
+            {!readOnly && <button className="btn btn-primary" onClick={save}>💾 Save</button>}
+          </div>
+        </div>
+        <div className="card"><div className="card-body" style={{maxWidth:640}}>
+          <div style={{display:'grid', gridTemplateColumns:'1fr 2fr', gap:14}}>
+            <div className="field">
+              <label>Code <span style={{color:'var(--danger)'}}>*</span></label>
+              <input value={f.code} onChange={e=>setF({...f,code:e.target.value})} placeholder="CC-01" disabled={readOnly}
+                style={{padding:'8px 10px',border:'1px solid var(--line-2)',borderRadius:6,width:'100%'}} />
+            </div>
+            <div className="field">
+              <label>Name <span style={{color:'var(--danger)'}}>*</span></label>
+              <input value={f.name} onChange={e=>setF({...f,name:e.target.value})} placeholder="e.g. Manufacturing Unit" disabled={readOnly}
+                style={{padding:'8px 10px',border:'1px solid var(--line-2)',borderRadius:6,width:'100%'}} />
+            </div>
+          </div>
+          <div className="field" style={{marginTop:12}}>
+            <label>Description</label>
+            <input value={f.description||''} onChange={e=>setF({...f,description:e.target.value})} placeholder="Optional description" disabled={readOnly}
+              style={{padding:'8px 10px',border:'1px solid var(--line-2)',borderRadius:6,width:'100%'}} />
+          </div>
+          <div style={{display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:14, marginTop:12}}>
+            <div className="field">
+              <label>Budget (₹)</label>
+              <input type="number" value={f.budget||0} onChange={e=>setF({...f,budget:parseFloat(e.target.value)||0})} disabled={readOnly}
+                style={{padding:'8px 10px',border:'1px solid var(--line-2)',borderRadius:6,width:'100%',textAlign:'right'}} />
+              <div style={{fontSize:10,color:'var(--ink-3)',marginTop:3}}>Set 0 for no budget limit</div>
+            </div>
+            <div className="field">
+              <label>Budget Action</label>
+              <select value={f.budgetEnforce||'warn'} onChange={e=>setF({...f,budgetEnforce:e.target.value})} disabled={readOnly}
+                style={{padding:'8px 10px',border:'1px solid var(--line-2)',borderRadius:6,width:'100%',background:'var(--surface)'}}>
+                <option value="warn">⚠ Warn Only</option>
+                <option value="block">🚫 Block Entry</option>
+              </select>
+            </div>
+            <div className="field">
+              <label>Status</label>
+              <select value={f.active===false?'inactive':'active'} onChange={e=>setF({...f,active:e.target.value==='active'})} disabled={readOnly}
+                style={{padding:'8px 10px',border:'1px solid var(--line-2)',borderRadius:6,width:'100%',background:'var(--surface)'}}>
+                <option value="active">✅ Active</option>
+                <option value="inactive">⛔ Inactive</option>
+              </select>
+            </div>
+          </div>
+        </div></div>
+      </>
+    );
+  }
+
+  return (
+    <>
+      <div className="page-head">
+        <div>
+          <h1 className="page-title">Cost Centre Master</h1>
+          <div className="page-sub">{ccs.length} cost centre{ccs.length!==1?'s':''} defined</div>
+        </div>
+        {!readOnly && <div className="page-actions"><button className="btn btn-primary" onClick={openNew}>+ New Cost Centre</button></div>}
+      </div>
+
+      {ccs.length===0 && (
+        <div className="card"><div className="card-body" style={{textAlign:'center',padding:40,color:'var(--ink-3)'}}>
+          <div style={{fontSize:32,marginBottom:8}}>🎯</div>
+          <div style={{fontWeight:600,marginBottom:4}}>No Cost Centres yet</div>
+          <div style={{fontSize:12}}>Cost Centres let you track expenses by project or business unit and set budgets</div>
+          {!readOnly && <button className="btn btn-primary" style={{marginTop:16}} onClick={openNew}>+ Create First Cost Centre</button>}
+        </div></div>
+      )}
+
+      {ccs.length > 0 && (
+        <div className="card">
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Code</th><th>Name</th><th>Description</th>
+                  <th style={{textAlign:'right'}}>Budget (₹)</th>
+                  <th style={{textAlign:'right'}}>Spent (₹)</th>
+                  <th style={{textAlign:'right'}}>Remaining (₹)</th>
+                  <th>Budget Action</th><th>Status</th><th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {ccs.map(cc => {
+                  const spent = ccSpend[cc.id]||0;
+                  const remaining = cc.budget > 0 ? cc.budget - spent : null;
+                  const pct = cc.budget > 0 ? Math.min(100, Math.round(spent/cc.budget*100)) : 0;
+                  const over = cc.budget > 0 && spent > cc.budget;
+                  return (
+                    <tr key={cc.id}>
+                      <td style={{fontFamily:'var(--mono)',fontWeight:600,color:'var(--primary)'}}>{cc.code}</td>
+                      <td style={{fontWeight:500}}>{cc.name}</td>
+                      <td style={{color:'var(--ink-3)',fontSize:12}}>{cc.description||'—'}</td>
+                      <td style={{textAlign:'right',fontFamily:'var(--mono)'}}>{cc.budget>0?fmt(cc.budget):'—'}</td>
+                      <td style={{textAlign:'right',fontFamily:'var(--mono)',color:over?'var(--danger)':'var(--ink)'}}>
+                        {fmt(spent)}
+                        {cc.budget > 0 && (
+                          <div style={{marginTop:3,height:4,borderRadius:2,background:'var(--line)',overflow:'hidden'}}>
+                            <div style={{height:'100%',borderRadius:2,background:over?'var(--danger)':pct>80?'var(--accent)':'var(--primary)',width:pct+'%',transition:'width .3s'}}></div>
+                          </div>
+                        )}
+                      </td>
+                      <td style={{textAlign:'right',fontFamily:'var(--mono)',color:over?'var(--danger)':remaining===null?'var(--ink-3)':remaining<0?'var(--danger)':'var(--primary)'}}>
+                        {remaining===null ? '—' : (over?'▼ ':'') + fmt(Math.abs(remaining))}
+                      </td>
+                      <td><span style={{fontSize:10,padding:'2px 7px',borderRadius:10,fontWeight:600,
+                        background:cc.budgetEnforce==='block'?'var(--danger-soft)':'var(--accent-soft)',
+                        color:cc.budgetEnforce==='block'?'var(--danger)':'var(--warning)'}}>
+                        {cc.budgetEnforce==='block'?'Block':'Warn'}
+                      </span></td>
+                      <td><span style={{fontSize:10,padding:'2px 7px',borderRadius:10,fontWeight:600,
+                        background:cc.active!==false?'var(--primary-soft)':'var(--line)',
+                        color:cc.active!==false?'var(--primary)':'var(--ink-3)'}}>
+                        {cc.active!==false?'Active':'Inactive'}
+                      </span></td>
+                      <td>
+                        {!readOnly && (<>
+                          <button className="btn btn-sm btn-ghost" style={{marginRight:4}} onClick={()=>openEdit(cc)}>✎</button>
+                          <button className="btn btn-sm btn-ghost" style={{color:'var(--danger)'}} onClick={()=>setDeleteConfirm(cc.id)}>×</button>
+                        </>)}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {deleteConfirm && (
+        <div className="modal-backdrop" onClick={()=>setDeleteConfirm(null)}>
+          <div className="modal" style={{maxWidth:400}} onClick={e=>e.stopPropagation()}>
+            <div className="modal-header"><span>Delete Cost Centre</span></div>
+            <div className="modal-body" style={{padding:'20px 24px'}}>
+              <p>Are you sure you want to delete this cost centre? Voucher lines tagged to it will retain the tag but the cost centre will no longer appear in masters.</p>
+            </div>
+            <div className="modal-footer">
+              <button className="btn" onClick={()=>setDeleteConfirm(null)}>Cancel</button>
+              <button className="btn btn-danger" onClick={()=>remove(deleteConfirm)}>Delete</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+// ============================================================================
+// DEPARTMENT MASTER
+// ============================================================================
+function DepartmentMaster({data, setData, showToast, readOnly=false}){
+  const blank = {id:'', code:'', name:'', description:'', active:true};
+  const [editing, setEditing] = useState(null);
+  const [f, setF] = useState(blank);
+  const [deleteConfirm, setDeleteConfirm] = useState(null);
+
+  const openNew = () => { setF({...blank, id:uid()}); setEditing('new'); };
+  const openEdit = (d) => { setF({...d}); setEditing(d.id); };
+  const cancel = () => { setEditing(null); setF(blank); };
+
+  const save = () => {
+    if(!f.code.trim()) return showToast('Code is required','error');
+    if(!f.name.trim()) return showToast('Name is required','error');
+    const existing = (data.departments||[]).find(d => d.code.trim().toUpperCase()===f.code.trim().toUpperCase() && d.id!==f.id);
+    if(existing) return showToast('Code already exists','error');
+    if(editing === 'new'){
+      setData(prev => ({...prev, departments:[...(prev.departments||[]), {...f, code:f.code.trim().toUpperCase(), name:f.name.trim()}]}));
+      showToast('Department created');
+    } else {
+      setData(prev => ({...prev, departments:(prev.departments||[]).map(d => d.id===f.id ? {...f, code:f.code.trim().toUpperCase(), name:f.name.trim()} : d)}));
+      showToast('Department updated');
+    }
+    cancel();
+  };
+
+  const remove = (id) => {
+    setData(prev => ({...prev, departments:(prev.departments||[]).filter(d => d.id!==id)}));
+    setDeleteConfirm(null);
+    showToast('Department deleted');
+  };
+
+  const depts = data.departments || [];
+
+  // Expense per department
+  const deptSpend = useMemo(() => {
+    const spend = {};
+    (data.vouchers||[]).forEach(v => {
+      (v.lines||[]).forEach(l => {
+        if(!l.departmentId) return;
+        const acc = data.coa.find(a => a.id === l.accountId);
+        if(!acc || acc.type !== 'Expense') return;
+        spend[l.departmentId] = (spend[l.departmentId]||0) + (l.debit||0);
+      });
+    });
+    return spend;
+  }, [data.vouchers, data.coa]);
+
+  if(editing){
+    return (
+      <>
+        <div className="page-head">
+          <div>
+            <h1 className="page-title">{editing==='new'?'New Department':'Edit Department'}</h1>
+            <div className="page-sub">Departments enable expense tracking by team / function</div>
+          </div>
+          <div className="page-actions">
+            <button className="btn" onClick={cancel}>✕ Cancel</button>
+            {!readOnly && <button className="btn btn-primary" onClick={save}>💾 Save</button>}
+          </div>
+        </div>
+        <div className="card"><div className="card-body" style={{maxWidth:600}}>
+          <div style={{display:'grid', gridTemplateColumns:'1fr 2fr', gap:14}}>
+            <div className="field">
+              <label>Code <span style={{color:'var(--danger)'}}>*</span></label>
+              <input value={f.code} onChange={e=>setF({...f,code:e.target.value})} placeholder="HR" disabled={readOnly}
+                style={{padding:'8px 10px',border:'1px solid var(--line-2)',borderRadius:6,width:'100%'}} />
+            </div>
+            <div className="field">
+              <label>Name <span style={{color:'var(--danger)'}}>*</span></label>
+              <input value={f.name} onChange={e=>setF({...f,name:e.target.value})} placeholder="e.g. Human Resources" disabled={readOnly}
+                style={{padding:'8px 10px',border:'1px solid var(--line-2)',borderRadius:6,width:'100%'}} />
+            </div>
+          </div>
+          <div className="field" style={{marginTop:12}}>
+            <label>Description</label>
+            <input value={f.description||''} onChange={e=>setF({...f,description:e.target.value})} placeholder="Optional description" disabled={readOnly}
+              style={{padding:'8px 10px',border:'1px solid var(--line-2)',borderRadius:6,width:'100%'}} />
+          </div>
+          <div className="field" style={{marginTop:12, maxWidth:180}}>
+            <label>Status</label>
+            <select value={f.active===false?'inactive':'active'} onChange={e=>setF({...f,active:e.target.value==='active'})} disabled={readOnly}
+              style={{padding:'8px 10px',border:'1px solid var(--line-2)',borderRadius:6,width:'100%',background:'var(--surface)'}}>
+              <option value="active">✅ Active</option>
+              <option value="inactive">⛔ Inactive</option>
+            </select>
+          </div>
+        </div></div>
+      </>
+    );
+  }
+
+  return (
+    <>
+      <div className="page-head">
+        <div>
+          <h1 className="page-title">Department Master</h1>
+          <div className="page-sub">{depts.length} department{depts.length!==1?'s':''} defined</div>
+        </div>
+        {!readOnly && <div className="page-actions"><button className="btn btn-primary" onClick={openNew}>+ New Department</button></div>}
+      </div>
+
+      {depts.length===0 && (
+        <div className="card"><div className="card-body" style={{textAlign:'center',padding:40,color:'var(--ink-3)'}}>
+          <div style={{fontSize:32,marginBottom:8}}>🏢</div>
+          <div style={{fontWeight:600,marginBottom:4}}>No Departments yet</div>
+          <div style={{fontSize:12}}>Add departments like HR, Finance, Marketing, Sales, Operations to classify expenses</div>
+          {!readOnly && <button className="btn btn-primary" style={{marginTop:16}} onClick={openNew}>+ Create First Department</button>}
+        </div></div>
+      )}
+
+      {depts.length > 0 && (
+        <div className="card">
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Code</th><th>Name</th><th>Description</th>
+                  <th style={{textAlign:'right'}}>Total Expenses (₹)</th>
+                  <th>Status</th><th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {depts.map(dept => (
+                  <tr key={dept.id}>
+                    <td style={{fontFamily:'var(--mono)',fontWeight:600,color:'var(--primary)'}}>{dept.code}</td>
+                    <td style={{fontWeight:500}}>{dept.name}</td>
+                    <td style={{color:'var(--ink-3)',fontSize:12}}>{dept.description||'—'}</td>
+                    <td style={{textAlign:'right',fontFamily:'var(--mono)'}}>{deptSpend[dept.id]?fmt(deptSpend[dept.id]):'—'}</td>
+                    <td><span style={{fontSize:10,padding:'2px 7px',borderRadius:10,fontWeight:600,
+                      background:dept.active!==false?'var(--primary-soft)':'var(--line)',
+                      color:dept.active!==false?'var(--primary)':'var(--ink-3)'}}>
+                      {dept.active!==false?'Active':'Inactive'}
+                    </span></td>
+                    <td>
+                      {!readOnly && (<>
+                        <button className="btn btn-sm btn-ghost" style={{marginRight:4}} onClick={()=>openEdit(dept)}>✎</button>
+                        <button className="btn btn-sm btn-ghost" style={{color:'var(--danger)'}} onClick={()=>setDeleteConfirm(dept.id)}>×</button>
+                      </>)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {deleteConfirm && (
+        <div className="modal-backdrop" onClick={()=>setDeleteConfirm(null)}>
+          <div className="modal" style={{maxWidth:400}} onClick={e=>e.stopPropagation()}>
+            <div className="modal-header"><span>Delete Department</span></div>
+            <div className="modal-body" style={{padding:'20px 24px'}}>
+              <p>Are you sure you want to delete this department? Voucher lines tagged to it will retain the tag but the department will no longer appear in masters.</p>
+            </div>
+            <div className="modal-footer">
+              <button className="btn" onClick={()=>setDeleteConfirm(null)}>Cancel</button>
+              <button className="btn btn-danger" onClick={()=>remove(deleteConfirm)}>Delete</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+// ============================================================================
+// COST CENTRE REPORT (P&L by Cost Centre)
+// ============================================================================
+function CostCentreReport({data}){
+  const [fromDate, setFromDate] = useState(data.company.fyStart||'');
+  const [toDate,   setToDate]   = useState(data.company.fyEnd||'');
+  const [selCC,    setSelCC]    = useState('');
+
+  const ccs = data.costCentres || [];
+
+  const report = useMemo(() => {
+    const result = {};
+    ccs.forEach(cc => { result[cc.id] = {cc, income:0, expense:0, lines:[]}; });
+
+    (data.vouchers||[]).forEach(v => {
+      if(fromDate && v.date < fromDate) return;
+      if(toDate   && v.date > toDate)   return;
+      (v.lines||[]).forEach(l => {
+        if(!l.costCentreId) return;
+        if(selCC && l.costCentreId !== selCC) return;
+        const acc = data.coa.find(a => a.id === l.accountId);
+        if(!acc) return;
+        if(!result[l.costCentreId]) return;
+        const entry = result[l.costCentreId];
+        const net = (l.debit||0) - (l.credit||0);
+        if(acc.type === 'Expense') entry.expense += (l.debit||0);
+        if(acc.type === 'Income')  entry.income  += (l.credit||0);
+        entry.lines.push({date:v.date, voucherNo:v.number||v.id.slice(0,8), accId:acc.id, accName:acc.name, type:acc.type, debit:l.debit||0, credit:l.credit||0, narration:l.narration||v.narration||''});
+      });
+    });
+    return Object.values(result).filter(r => selCC ? r.cc.id===selCC : true);
+  }, [data.vouchers, data.coa, ccs, fromDate, toDate, selCC]);
+
+  const handleCSV = () => {
+    let csv = 'Cost Centre,Income,Expense,Net P&L\n';
+    report.forEach(r => {
+      csv += `"${r.cc.name}",${r.income},${r.expense},${r.income - r.expense}\n`;
+    });
+    downloadCSV('CostCentre_PnL.csv', csv);
+  };
+
+  return (
+    <>
+      <div className="page-head">
+        <div>
+          <h1 className="page-title">Cost Centre Report</h1>
+          <div className="page-sub">P&amp;L and expense tracking by Cost Centre</div>
+        </div>
+        <div className="page-actions">
+          <button className="btn btn-sm" onClick={handleCSV}>⬇ CSV</button>
+          <button className="btn btn-sm btn-primary" onClick={()=>window.print()}>🖨 Print</button>
+        </div>
+      </div>
+
+      {/* Filters */}
+      <div className="card" style={{marginBottom:18}}>
+        <div className="card-body">
+          <div style={{display:'flex',gap:12,flexWrap:'wrap',alignItems:'flex-end'}}>
+            <div>
+              <label style={{fontSize:11,color:'var(--ink-3)',display:'block',marginBottom:4}}>From</label>
+              <input type="date" value={fromDate} onChange={e=>setFromDate(e.target.value)}
+                style={{padding:'6px 10px',border:'1px solid var(--line-2)',borderRadius:'var(--radius-sm)'}} />
+            </div>
+            <div>
+              <label style={{fontSize:11,color:'var(--ink-3)',display:'block',marginBottom:4}}>To</label>
+              <input type="date" value={toDate} onChange={e=>setToDate(e.target.value)}
+                style={{padding:'6px 10px',border:'1px solid var(--line-2)',borderRadius:'var(--radius-sm)'}} />
+            </div>
+            <div>
+              <label style={{fontSize:11,color:'var(--ink-3)',display:'block',marginBottom:4}}>Cost Centre</label>
+              <select value={selCC} onChange={e=>setSelCC(e.target.value)}
+                style={{padding:'6px 10px',border:'1px solid var(--line-2)',borderRadius:'var(--radius-sm)',minWidth:180,background:'var(--surface)'}}>
+                <option value="">All Cost Centres</option>
+                {ccs.map(c=><option key={c.id} value={c.id}>[{c.code}] {c.name}</option>)}
+              </select>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {ccs.length === 0 && (
+        <div className="card"><div className="card-body" style={{textAlign:'center',padding:40,color:'var(--ink-3)'}}>
+          <div style={{fontSize:12}}>No cost centres defined. Go to Masters → Cost Centre Master to create them.</div>
+        </div></div>
+      )}
+
+      {report.map(r => {
+        const net = r.income - r.expense;
+        const budget = r.cc.budget || 0;
+        const budgetUsed = budget > 0 ? Math.min(100,Math.round(r.expense/budget*100)) : 0;
+        return (
+          <div key={r.cc.id} className="card" style={{marginBottom:18}}>
+            <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'12px 20px',borderBottom:'1px solid var(--line)',background:'var(--surface-2)'}}>
+              <div>
+                <span style={{fontFamily:'var(--mono)',fontWeight:700,color:'var(--primary)',marginRight:8}}>{r.cc.code}</span>
+                <span style={{fontWeight:600,fontSize:14}}>{r.cc.name}</span>
+                {r.cc.description && <span style={{color:'var(--ink-3)',fontSize:12,marginLeft:8}}>— {r.cc.description}</span>}
+              </div>
+              <div style={{display:'flex',gap:20,alignItems:'center'}}>
+                {budget > 0 && (
+                  <div style={{textAlign:'right'}}>
+                    <div style={{fontSize:10,color:'var(--ink-3)'}}>Budget Usage</div>
+                    <div style={{fontSize:13,fontWeight:600,color:r.expense>budget?'var(--danger)':'var(--ink)'}}>
+                      ₹{fmt(r.expense)} / ₹{fmt(budget)} ({budgetUsed}%)
+                    </div>
+                    <div style={{height:4,borderRadius:2,background:'var(--line)',overflow:'hidden',marginTop:2,width:120}}>
+                      <div style={{height:'100%',borderRadius:2,background:r.expense>budget?'var(--danger)':budgetUsed>80?'var(--accent)':'var(--primary)',width:budgetUsed+'%'}}></div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+            <div className="card-body">
+              <div className="stat-grid" style={{gridTemplateColumns:'repeat(3,1fr)',marginBottom:16}}>
+                <div className="stat"><div className="stat-label">Total Income</div><div className="stat-value pos" style={{fontSize:18}}>₹{fmt(r.income)}</div></div>
+                <div className="stat stat-danger"><div className="stat-label">Total Expenses</div><div className="stat-value" style={{fontSize:18,color:'var(--danger)'}}>₹{fmt(r.expense)}</div></div>
+                <div className={`stat ${net>=0?'':'stat-danger'}`}>
+                  <div className="stat-label">Net P&amp;L</div>
+                  <div className="stat-value" style={{fontSize:18,color:net>=0?'var(--primary)':'var(--danger)'}}>₹{fmt(Math.abs(net))}</div>
+                  <div className="stat-delta" style={{color:net>=0?'var(--primary)':'var(--danger)'}}>{net>=0?'Profit':'Loss'}</div>
+                </div>
+              </div>
+
+              {r.lines.length > 0 && (
+                <div className="table-wrap">
+                  <table>
+                    <thead>
+                      <tr><th>Date</th><th>Voucher</th><th>Account</th><th>Type</th><th style={{textAlign:'right'}}>Debit</th><th style={{textAlign:'right'}}>Credit</th><th>Narration</th></tr>
+                    </thead>
+                    <tbody>
+                      {r.lines.sort((a,b)=>a.date.localeCompare(b.date)).map((l,i)=>(
+                        <tr key={i}>
+                          <td style={{fontFamily:'var(--mono)',fontSize:12}}>{l.date}</td>
+                          <td style={{fontFamily:'var(--mono)',fontSize:11,color:'var(--ink-3)'}}>{l.voucherNo}</td>
+                          <td>{l.accId} · {l.accName}</td>
+                          <td><span style={{fontSize:10,padding:'1px 6px',borderRadius:10,fontWeight:600,
+                            background:l.type==='Income'?'var(--primary-soft)':l.type==='Expense'?'var(--danger-soft)':'var(--info-soft)',
+                            color:l.type==='Income'?'var(--primary)':l.type==='Expense'?'var(--danger)':'var(--info)'}}>{l.type}</span></td>
+                          <td style={{textAlign:'right',fontFamily:'var(--mono)'}}>{l.debit>0?fmt(l.debit):'—'}</td>
+                          <td style={{textAlign:'right',fontFamily:'var(--mono)'}}>{l.credit>0?fmt(l.credit):'—'}</td>
+                          <td style={{color:'var(--ink-3)',fontSize:12}}>{l.narration}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+              {r.lines.length === 0 && <div style={{textAlign:'center',color:'var(--ink-3)',padding:'20px 0',fontSize:12}}>No tagged transactions in selected period</div>}
+            </div>
+          </div>
+        );
+      })}
+    </>
+  );
+}
+
+// ============================================================================
+// DEPARTMENT REPORT (Expense by Department)
+// ============================================================================
+function DepartmentReport({data}){
+  const [fromDate, setFromDate] = useState(data.company.fyStart||'');
+  const [toDate,   setToDate]   = useState(data.company.fyEnd||'');
+  const [selDept,  setSelDept]  = useState('');
+
+  const depts = data.departments || [];
+
+  const report = useMemo(() => {
+    const result = {};
+    depts.forEach(d => { result[d.id] = {dept:d, expense:0, income:0, byAccount:{}, lines:[]}; });
+
+    (data.vouchers||[]).forEach(v => {
+      if(fromDate && v.date < fromDate) return;
+      if(toDate   && v.date > toDate)   return;
+      (v.lines||[]).forEach(l => {
+        if(!l.departmentId) return;
+        if(selDept && l.departmentId !== selDept) return;
+        const acc = data.coa.find(a => a.id === l.accountId);
+        if(!acc) return;
+        if(!result[l.departmentId]) return;
+        const entry = result[l.departmentId];
+        if(acc.type === 'Expense') { entry.expense += (l.debit||0); entry.byAccount[acc.id] = {name:acc.name, amt:(entry.byAccount[acc.id]?.amt||0)+(l.debit||0)}; }
+        if(acc.type === 'Income')  entry.income  += (l.credit||0);
+        entry.lines.push({date:v.date, voucherNo:v.number||v.id.slice(0,8), accId:acc.id, accName:acc.name, type:acc.type, debit:l.debit||0, credit:l.credit||0, narration:l.narration||v.narration||''});
+      });
+    });
+    return Object.values(result).filter(r => selDept ? r.dept.id===selDept : true);
+  }, [data.vouchers, data.coa, depts, fromDate, toDate, selDept]);
+
+  const grandTotal = report.reduce((s,r) => s+r.expense, 0);
+
+  const handleCSV = () => {
+    let csv = 'Department,Total Expenses,Total Income\n';
+    report.forEach(r => { csv += `"${r.dept.name}",${r.expense},${r.income}\n`; });
+    downloadCSV('Department_Expenses.csv', csv);
+  };
+
+  return (
+    <>
+      <div className="page-head">
+        <div>
+          <h1 className="page-title">Department Expense Report</h1>
+          <div className="page-sub">Expense analysis by department / function</div>
+        </div>
+        <div className="page-actions">
+          <button className="btn btn-sm" onClick={handleCSV}>⬇ CSV</button>
+          <button className="btn btn-sm btn-primary" onClick={()=>window.print()}>🖨 Print</button>
+        </div>
+      </div>
+
+      {/* Filters */}
+      <div className="card" style={{marginBottom:18}}>
+        <div className="card-body">
+          <div style={{display:'flex',gap:12,flexWrap:'wrap',alignItems:'flex-end'}}>
+            <div>
+              <label style={{fontSize:11,color:'var(--ink-3)',display:'block',marginBottom:4}}>From</label>
+              <input type="date" value={fromDate} onChange={e=>setFromDate(e.target.value)}
+                style={{padding:'6px 10px',border:'1px solid var(--line-2)',borderRadius:'var(--radius-sm)'}} />
+            </div>
+            <div>
+              <label style={{fontSize:11,color:'var(--ink-3)',display:'block',marginBottom:4}}>To</label>
+              <input type="date" value={toDate} onChange={e=>setToDate(e.target.value)}
+                style={{padding:'6px 10px',border:'1px solid var(--line-2)',borderRadius:'var(--radius-sm)'}} />
+            </div>
+            <div>
+              <label style={{fontSize:11,color:'var(--ink-3)',display:'block',marginBottom:4}}>Department</label>
+              <select value={selDept} onChange={e=>setSelDept(e.target.value)}
+                style={{padding:'6px 10px',border:'1px solid var(--line-2)',borderRadius:'var(--radius-sm)',minWidth:180,background:'var(--surface)'}}>
+                <option value="">All Departments</option>
+                {depts.map(d=><option key={d.id} value={d.id}>[{d.code}] {d.name}</option>)}
+              </select>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {depts.length === 0 && (
+        <div className="card"><div className="card-body" style={{textAlign:'center',padding:40,color:'var(--ink-3)'}}>
+          <div style={{fontSize:12}}>No departments defined. Go to Masters → Department Master to create them.</div>
+        </div></div>
+      )}
+
+      {/* Summary Bar Chart */}
+      {report.length > 0 && grandTotal > 0 && (
+        <div className="card" style={{marginBottom:18}}>
+          <div className="card-body">
+            <div style={{fontWeight:600,fontSize:13,marginBottom:12}}>Expense Distribution — ₹{fmt(grandTotal)} Total</div>
+            {report.filter(r=>r.expense>0).sort((a,b)=>b.expense-a.expense).map(r => {
+              const pct = grandTotal > 0 ? Math.round(r.expense/grandTotal*100) : 0;
+              return (
+                <div key={r.dept.id} style={{marginBottom:10}}>
+                  <div style={{display:'flex',justifyContent:'space-between',fontSize:12,marginBottom:3}}>
+                    <span><b>[{r.dept.code}]</b> {r.dept.name}</span>
+                    <span style={{fontFamily:'var(--mono)',fontWeight:600}}>₹{fmt(r.expense)} &nbsp;<span style={{color:'var(--ink-3)',fontWeight:400}}>({pct}%)</span></span>
+                  </div>
+                  <div style={{height:8,borderRadius:4,background:'var(--line)',overflow:'hidden'}}>
+                    <div style={{height:'100%',borderRadius:4,background:'var(--primary)',width:pct+'%',transition:'width .4s'}}></div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {report.map(r => (
+        <div key={r.dept.id} className="card" style={{marginBottom:18}}>
+          <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'12px 20px',borderBottom:'1px solid var(--line)',background:'var(--surface-2)'}}>
+            <div>
+              <span style={{fontFamily:'var(--mono)',fontWeight:700,color:'var(--primary)',marginRight:8}}>{r.dept.code}</span>
+              <span style={{fontWeight:600,fontSize:14}}>{r.dept.name}</span>
+              {r.dept.description && <span style={{color:'var(--ink-3)',fontSize:12,marginLeft:8}}>— {r.dept.description}</span>}
+            </div>
+            <div style={{fontFamily:'var(--mono)',fontWeight:700,fontSize:16,color:'var(--danger)'}}>₹{fmt(r.expense)}</div>
+          </div>
+          <div className="card-body">
+            {/* By Account breakdown */}
+            {Object.keys(r.byAccount).length > 0 && (
+              <div style={{marginBottom:16}}>
+                <div style={{fontWeight:600,fontSize:12,marginBottom:8,color:'var(--ink-2)'}}>Expense Breakdown by Account</div>
+                <div style={{display:'flex',flexWrap:'wrap',gap:8}}>
+                  {Object.entries(r.byAccount).sort((a,b)=>b[1].amt-a[1].amt).map(([accId,info])=>(
+                    <div key={accId} style={{background:'var(--danger-soft)',borderRadius:8,padding:'6px 12px',fontSize:12}}>
+                      <span style={{color:'var(--ink-3)',fontFamily:'var(--mono)',marginRight:4}}>{accId}</span>
+                      <span style={{fontWeight:500}}>{info.name}</span>
+                      <span style={{color:'var(--danger)',fontWeight:700,marginLeft:8}}>₹{fmt(info.amt)}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+            {r.lines.length > 0 && (
+              <div className="table-wrap">
+                <table>
+                  <thead>
+                    <tr><th>Date</th><th>Voucher</th><th>Account</th><th>Type</th><th style={{textAlign:'right'}}>Debit</th><th style={{textAlign:'right'}}>Credit</th><th>Narration</th></tr>
+                  </thead>
+                  <tbody>
+                    {r.lines.sort((a,b)=>a.date.localeCompare(b.date)).map((l,i)=>(
+                      <tr key={i}>
+                        <td style={{fontFamily:'var(--mono)',fontSize:12}}>{l.date}</td>
+                        <td style={{fontFamily:'var(--mono)',fontSize:11,color:'var(--ink-3)'}}>{l.voucherNo}</td>
+                        <td>{l.accId} · {l.accName}</td>
+                        <td><span style={{fontSize:10,padding:'1px 6px',borderRadius:10,fontWeight:600,
+                          background:l.type==='Income'?'var(--primary-soft)':l.type==='Expense'?'var(--danger-soft)':'var(--info-soft)',
+                          color:l.type==='Income'?'var(--primary)':l.type==='Expense'?'var(--danger)':'var(--info)'}}>{l.type}</span></td>
+                        <td style={{textAlign:'right',fontFamily:'var(--mono)'}}>{l.debit>0?fmt(l.debit):'—'}</td>
+                        <td style={{textAlign:'right',fontFamily:'var(--mono)'}}>{l.credit>0?fmt(l.credit):'—'}</td>
+                        <td style={{color:'var(--ink-3)',fontSize:12}}>{l.narration}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+            {r.lines.length === 0 && <div style={{textAlign:'center',color:'var(--ink-3)',padding:'20px 0',fontSize:12}}>No tagged transactions in selected period</div>}
+          </div>
+        </div>
+      ))}
     </>
   );
 }
@@ -2140,125 +2872,224 @@ function InviteModal({ ownerId, companyId, companyName, onClose }) {
 // TEAM MEMBERS PAGE
 // ============================================================================
 function TeamMembers({ data, user, companyId, userRole }) {
-  const [members, setMembers] = useState(null);
+  const [members,  setMembers]  = useState(null);
+  const [pending,  setPending]  = useState([]);
   const [showInvite, setShowInvite] = useState(false);
   const [revoking, setRevoking] = useState(null);
+  const [cancelling, setCancelling] = useState(null);
+  const [confirmRevoke, setConfirmRevoke] = useState(null); // member obj to confirm
 
   const ROLE_CLR = { owner:'#0b6b4f', admin:'#1976d2', limited:'#f57c00', viewer:'#757575' };
-  const ROLE_LBL = { owner:'Owner', admin:'Admin', limited:'Limited', viewer:'Viewer' };
+  const ROLE_LBL = { owner:'Owner', admin:'Admin', limited:'Limited', viewer:'Viewer / Auditor' };
 
   const load = async () => {
-    const list = await fbListMembers(user.uid, companyId);
+    const [list, pend] = await Promise.all([
+      fbListMembers(user.uid, companyId),
+      fbGetPendingInvites(user.uid, companyId),
+    ]);
     setMembers(list);
+    setPending(pend);
   };
   useEffect(() => { if(FB_CONFIGURED && user && companyId) load(); else setMembers([]); }, [companyId]);
 
   const handleRevoke = async (m) => {
-    if(!confirm('Remove access for user ' + m.memberUid.slice(0,8) + '…?')) return;
     setRevoking(m.memberUid);
+    setConfirmRevoke(null);
     try { await fbRevokeAccess(m.memberUid, companyId); await load(); }
     catch(e){ alert('Failed: ' + e.message); }
     finally { setRevoking(null); }
   };
 
+  const handleCancelInvite = async (code) => {
+    setCancelling(code);
+    try { await fbCancelInvite(code); await load(); }
+    catch(e){ alert('Failed: ' + e.message); }
+    finally { setCancelling(null); }
+  };
+
   const isOwner = !userRole || userRole === 'owner';
+
+  const Avatar = ({name, email}) => {
+    const initials = (name||email||'?').trim().split(' ').map(w=>w[0]).join('').toUpperCase().slice(0,2);
+    const colors = ['#0b6b4f','#1976d2','#7b1fa2','#c62828','#f57c00','#00838f'];
+    const clr = colors[(name||email||'').charCodeAt(0)%colors.length];
+    return (
+      <div style={{width:38,height:38,borderRadius:'50%',background:clr,display:'flex',
+        alignItems:'center',justifyContent:'center',fontSize:13,fontWeight:700,color:'#fff',flexShrink:0}}>
+        {initials}
+      </div>
+    );
+  };
+
+  // Summary stats
+  const totalActive = (members||[]).length;
+  const byRole = (members||[]).reduce((acc,m)=>{ acc[m.role]=(acc[m.role]||0)+1; return acc; },{});
 
   return (<>
     <div className="page-head">
       <div>
         <h1 className="page-title">Team Members</h1>
-        <div className="page-sub">Manage who can access {data.company.name}</div>
+        <div className="page-sub">{data.company.name} · {1 + totalActive} user{1+totalActive!==1?'s':''} with access</div>
       </div>
-      {isOwner && <div className="page-actions"><button className="btn btn-primary" onClick={() => setShowInvite(true)}>+ Invite Member</button></div>}
+      {isOwner && <div className="page-actions">
+        <button className="btn btn-primary" onClick={() => setShowInvite(true)}>+ Invite Member</button>
+      </div>}
     </div>
 
-    {/* You */}
-    <div className="card" style={{marginBottom:14}}>
-      <div className="card-body">
+    {/* Stats row */}
+    <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(130px,1fr))',gap:12,marginBottom:20}}>
+      {[
+        { label:'Total Users', value: 1 + totalActive, icon:'👥', color:'#0b6b4f' },
+        { label:'Active Members', value: totalActive, icon:'✅', color:'#1976d2' },
+        { label:'Pending Invites', value: pending.length, icon:'⏳', color:'#f57c00' },
+        { label:'Admins', value: (byRole['admin']||0), icon:'🔑', color:'#7b1fa2' },
+      ].map(s => (
+        <div key={s.label} className="card" style={{padding:'14px 18px'}}>
+          <div style={{fontSize:22,marginBottom:4}}>{s.icon}</div>
+          <div style={{fontSize:26,fontWeight:700,color:s.color,lineHeight:1}}>{s.value}</div>
+          <div style={{fontSize:11,color:'var(--ink-3)',marginTop:3}}>{s.label}</div>
+        </div>
+      ))}
+    </div>
+
+    {/* You — owner row */}
+    <div style={{fontWeight:700,fontSize:11,color:'var(--ink-3)',letterSpacing:'.8px',textTransform:'uppercase',marginBottom:8}}>You (Owner)</div>
+    <div className="card" style={{marginBottom:20}}>
+      <div className="card-body" style={{padding:'14px 18px'}}>
         <div style={{display:'flex',alignItems:'center',gap:14}}>
-          <div style={{width:38,height:38,borderRadius:'50%',background:'#e6f3ee',display:'flex',alignItems:'center',justifyContent:'center',fontSize:18}}>👤</div>
-          <div style={{flex:1}}>
-            <div style={{fontWeight:600,fontSize:13}}>{user?.displayName||user?.email}</div>
-            <div style={{fontSize:11,color:'var(--ink-3)'}}>{user?.email}</div>
+          <Avatar name={user?.displayName} email={user?.email} />
+          <div style={{flex:1,minWidth:0}}>
+            <div style={{fontWeight:600,fontSize:14,color:'var(--ink)'}}>{user?.displayName || '—'}</div>
+            <div style={{fontSize:12,color:'var(--ink-3)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{user?.email}</div>
           </div>
-          <span style={{background:ROLE_CLR[userRole||'owner']+'22',color:ROLE_CLR[userRole||'owner'],borderRadius:20,padding:'3px 12px',fontSize:11,fontWeight:700}}>
-            {ROLE_LBL[userRole||'owner']}
-          </span>
+          <span style={{background:'#0b6b4f22',color:'#0b6b4f',borderRadius:20,padding:'4px 14px',fontSize:11,fontWeight:700,whiteSpace:'nowrap'}}>Owner</span>
         </div>
       </div>
     </div>
 
-    {/* Shared members */}
+    {/* Active Members */}
+    <div style={{fontWeight:700,fontSize:11,color:'var(--ink-3)',letterSpacing:'.8px',textTransform:'uppercase',marginBottom:8}}>
+      Active Members ({totalActive})
+    </div>
     {members === null ? (
-      <div style={{textAlign:'center',padding:40,color:'var(--ink-3)'}}>Loading…</div>
+      <div style={{textAlign:'center',padding:32,color:'var(--ink-3)'}}>Loading…</div>
     ) : members.length === 0 ? (
-      <div className="card"><div className="card-body" style={{textAlign:'center',padding:'40px 20px'}}>
-        <div style={{fontSize:32,marginBottom:10}}>👥</div>
-        <div style={{fontWeight:600,fontSize:14,marginBottom:6}}>No shared members yet</div>
-        <div style={{fontSize:12,color:'var(--ink-3)',marginBottom:16}}>Invite team members to collaborate on this company's books.</div>
-        {isOwner && <button className="btn btn-primary" onClick={() => setShowInvite(true)}>+ Invite First Member</button>}
-      </div></div>
+      <div className="card" style={{marginBottom:20}}>
+        <div className="card-body" style={{textAlign:'center',padding:'32px 20px',color:'var(--ink-3)'}}>
+          <div style={{fontSize:28,marginBottom:8}}>👥</div>
+          <div style={{fontWeight:600,marginBottom:4}}>No members yet</div>
+          <div style={{fontSize:12,marginBottom:14}}>Invite team members to collaborate.</div>
+          {isOwner && <button className="btn btn-primary btn-sm" onClick={() => setShowInvite(true)}>+ Invite First Member</button>}
+        </div>
+      </div>
     ) : (
-      <div className="card"><div className="card-body" style={{padding:0}}>
-        <table style={{width:'100%',borderCollapse:'collapse'}}>
-          <thead><tr style={{background:'var(--surface-2)',borderBottom:'1px solid var(--line)'}}>
-            <th style={{padding:'10px 16px',textAlign:'left',fontSize:11,fontWeight:700,color:'var(--ink-3)'}}>USER ID</th>
-            <th style={{padding:'10px 16px',textAlign:'left',fontSize:11,fontWeight:700,color:'var(--ink-3)'}}>ROLE</th>
-            <th style={{padding:'10px 16px',textAlign:'left',fontSize:11,fontWeight:700,color:'var(--ink-3)'}}>GRANTED</th>
-            {isOwner && <th style={{padding:'10px 16px'}}></th>}
-          </tr></thead>
-          <tbody>{members.map(m => (
-            <tr key={m.memberUid} style={{borderBottom:'1px solid var(--line-2)'}}>
-              <td style={{padding:'12px 16px',fontFamily:'var(--mono)',fontSize:11}}>{m.memberUid}</td>
-              <td style={{padding:'12px 16px'}}>
-                <span style={{background:ROLE_CLR[m.role]+'22',color:ROLE_CLR[m.role],borderRadius:20,padding:'3px 10px',fontSize:11,fontWeight:700,textTransform:'capitalize'}}>
-                  {ROLE_LBL[m.role]||m.role}
-                </span>
-              </td>
-              <td style={{padding:'12px 16px',fontSize:12,color:'var(--ink-3)'}}>
-                {m.grantedAt?.toDate ? m.grantedAt.toDate().toLocaleDateString('en-IN') : '—'}
-              </td>
-              {isOwner && <td style={{padding:'12px 16px',textAlign:'right'}}>
-                <button className="btn btn-sm btn-danger" onClick={() => handleRevoke(m)} disabled={revoking===m.memberUid}>
-                  {revoking===m.memberUid?'…':'Revoke'}
-                </button>
-              </td>}
-            </tr>
-          ))}</tbody>
-        </table>
-      </div></div>
+      <div className="card" style={{marginBottom:20}}>
+        <div className="card-body" style={{padding:0}}>
+          {members.map((m, idx) => (
+            <div key={m.memberUid} style={{display:'flex',alignItems:'center',gap:14,padding:'14px 18px',borderBottom:idx<members.length-1?'1px solid var(--line-2)':'none'}}>
+              <Avatar name={m.memberName} email={m.memberEmail} />
+              <div style={{flex:1,minWidth:0}}>
+                <div style={{fontWeight:600,fontSize:13,color:'var(--ink)'}}>{m.memberName || <span style={{color:'var(--ink-3)',fontStyle:'italic'}}>Name not set</span>}</div>
+                <div style={{fontSize:12,color:'var(--ink-3)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{m.memberEmail || m.memberUid}</div>
+                <div style={{fontSize:10,color:'var(--ink-3)',marginTop:2}}>
+                  Joined {m.grantedAt?.toDate ? m.grantedAt.toDate().toLocaleDateString('en-IN',{day:'numeric',month:'short',year:'numeric'}) : '—'}
+                  {m.inviteCode && <span style={{marginLeft:8,fontFamily:'monospace',background:'var(--surface-2)',padding:'1px 6px',borderRadius:4}}>Code: {m.inviteCode}</span>}
+                </div>
+              </div>
+              <span style={{background:ROLE_CLR[m.role]+'22',color:ROLE_CLR[m.role],borderRadius:20,padding:'4px 12px',fontSize:11,fontWeight:700,whiteSpace:'nowrap'}}>
+                {ROLE_LBL[m.role]||m.role}
+              </span>
+              {isOwner && (
+                confirmRevoke?.memberUid === m.memberUid ? (
+                  <div style={{display:'flex',gap:6,alignItems:'center'}}>
+                    <span style={{fontSize:11,color:'var(--danger)',whiteSpace:'nowrap'}}>Revoke access?</span>
+                    <button className="btn btn-sm btn-danger" onClick={() => handleRevoke(m)} disabled={revoking===m.memberUid}>
+                      {revoking===m.memberUid ? '…' : 'Yes, Revoke'}
+                    </button>
+                    <button className="btn btn-sm btn-ghost" onClick={() => setConfirmRevoke(null)}>Cancel</button>
+                  </div>
+                ) : (
+                  <button className="btn btn-sm btn-danger" style={{opacity:.7}} onClick={() => setConfirmRevoke(m)}>
+                    Revoke
+                  </button>
+                )
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
+    )}
+
+    {/* Pending Invites */}
+    {isOwner && (
+      <>
+        <div style={{fontWeight:700,fontSize:11,color:'var(--ink-3)',letterSpacing:'.8px',textTransform:'uppercase',marginBottom:8}}>
+          Pending Invites ({pending.length})
+        </div>
+        {pending.length === 0 ? (
+          <div className="card" style={{marginBottom:20}}>
+            <div className="card-body" style={{fontSize:12,color:'var(--ink-3)',textAlign:'center',padding:'18px'}}>No pending invites.</div>
+          </div>
+        ) : (
+          <div className="card" style={{marginBottom:20}}>
+            <div className="card-body" style={{padding:0}}>
+              {pending.map((inv, idx) => (
+                <div key={inv.id} style={{display:'flex',alignItems:'center',gap:14,padding:'13px 18px',borderBottom:idx<pending.length-1?'1px solid var(--line-2)':'none'}}>
+                  <div style={{width:38,height:38,borderRadius:'50%',background:'#fff8e1',border:'2px dashed #ffe082',display:'flex',alignItems:'center',justifyContent:'center',fontSize:18,flexShrink:0}}>⏳</div>
+                  <div style={{flex:1,minWidth:0}}>
+                    <div style={{fontFamily:'monospace',fontSize:16,fontWeight:700,color:'var(--ink)',letterSpacing:2}}>{inv.id}</div>
+                    <div style={{fontSize:11,color:'var(--ink-3)',marginTop:2}}>
+                      Role: <b>{ROLE_LBL[inv.role]||inv.role}</b> ·
+                      Created {inv.createdAt?.toDate ? inv.createdAt.toDate().toLocaleDateString('en-IN') : '—'} ·
+                      Expires {inv.expiresAt?.toDate ? inv.expiresAt.toDate().toLocaleDateString('en-IN') : '—'}
+                    </div>
+                  </div>
+                  <span style={{background:'#fff8e1',color:'#f57c00',borderRadius:20,padding:'4px 12px',fontSize:11,fontWeight:700}}>Pending</span>
+                  <button className="btn btn-sm btn-ghost" style={{color:'var(--danger)',opacity:.7}}
+                    onClick={() => handleCancelInvite(inv.id)} disabled={cancelling===inv.id}>
+                    {cancelling===inv.id ? '…' : 'Cancel'}
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </>
     )}
 
     {/* Role guide */}
-    <div className="card" style={{marginTop:16}}>
-      <div className="card-body">
-        <div style={{fontWeight:700,fontSize:13,marginBottom:12}}>Role Permissions Guide</div>
-        <div style={{overflowX:'auto'}}>
-          <table style={{width:'100%',borderCollapse:'collapse',fontSize:12}}>
-            <thead><tr style={{background:'var(--surface-2)',borderBottom:'1px solid var(--line)'}}>
-              <th style={{padding:'8px 12px',textAlign:'left'}}>Permission</th>
-              {['Owner','Admin','Limited','Viewer'].map(r => <th key={r} style={{padding:'8px 12px',textAlign:'center'}}>{r}</th>)}
-            </tr></thead>
-            <tbody>{[
-              ['View all data & reports',      true, true, true, true],
-              ['Post / edit vouchers',          true, true, true, false],
-              ['Manage COA & parties',          true, true, false, false],
-              ['Manage employees',              true, true, false, false],
-              ['Company settings',              true, true, false, false],
-              ['Invite / revoke members',       true, false, false, false],
-              ['Delete company',                true, false, false, false],
-            ].map(([perm,...vals]) => (
-              <tr key={perm} style={{borderBottom:'1px solid var(--line-2)'}}>
-                <td style={{padding:'7px 12px'}}>{perm}</td>
-                {vals.map((v,i) => <td key={i} style={{padding:'7px 12px',textAlign:'center',color:v?'#0b6b4f':'#ccc',fontWeight:v?700:400}}>{v?'✓':'—'}</td>)}
-              </tr>
-            ))}</tbody>
-          </table>
-        </div>
+    <div style={{fontWeight:700,fontSize:11,color:'var(--ink-3)',letterSpacing:'.8px',textTransform:'uppercase',marginBottom:8}}>Role Permissions</div>
+    <div className="card" style={{marginBottom:20}}>
+      <div className="card-body" style={{padding:0,overflowX:'auto'}}>
+        <table style={{width:'100%',borderCollapse:'collapse',fontSize:12}}>
+          <thead><tr style={{background:'var(--surface-2)',borderBottom:'1px solid var(--line)'}}>
+            <th style={{padding:'10px 16px',textAlign:'left'}}>Permission</th>
+            {['Owner','Admin','Limited','Viewer'].map(r => (
+              <th key={r} style={{padding:'10px 16px',textAlign:'center',whiteSpace:'nowrap'}}>{r}</th>
+            ))}
+          </tr></thead>
+          <tbody>{[
+            ['View all data & reports',    true,true,true,true],
+            ['Post & edit vouchers',       true,true,true,false],
+            ['Manage COA & parties',       true,true,false,false],
+            ['Manage employees',           true,true,false,false],
+            ['Company settings',           true,true,false,false],
+            ['Invite / revoke members',    true,false,false,false],
+            ['Delete company',             true,false,false,false],
+          ].map(([perm,...vals]) => (
+            <tr key={perm} style={{borderBottom:'1px solid var(--line-2)'}}>
+              <td style={{padding:'9px 16px'}}>{perm}</td>
+              {vals.map((v,i) => (
+                <td key={i} style={{padding:'9px 16px',textAlign:'center',fontSize:15,color:v?'#0b6b4f':'#d0d0d0'}}>{v?'✓':'—'}</td>
+              ))}
+            </tr>
+          ))}</tbody>
+        </table>
       </div>
     </div>
 
-    {showInvite && <InviteModal ownerId={user.uid} companyId={companyId} companyName={data.company.name} onClose={() => { setShowInvite(false); load(); }} />}
+    {showInvite && <InviteModal ownerId={user.uid} companyId={companyId} companyName={data.company.name}
+      onClose={() => { setShowInvite(false); load(); }} />}
   </>);
 }
 
@@ -3187,8 +4018,8 @@ function VoucherModal({vtype, voucher, data, onSave, onClose, showToast}){
     fxRate: 1,
     placeOfSupply: data.company.stateCode,
     lines: [
-      {id:uid(), accountId:'', debit:0, credit:0, narration:''},
-      {id:uid(), accountId:'', debit:0, credit:0, narration:''},
+      {id:uid(), accountId:'', debit:0, credit:0, narration:'', costCentreId:'', departmentId:''},
+      {id:uid(), accountId:'', debit:0, credit:0, narration:'', costCentreId:'', departmentId:''},
     ],
     items: [],  // For sales/purchase: itemized lines
     amount: 0,
@@ -3248,7 +4079,7 @@ function VoucherModal({vtype, voucher, data, onSave, onClose, showToast}){
     }
   }, [f.items, f.partyId]);
 
-  const addLine = () => setF({...f, lines:[...f.lines, {id:uid(), accountId:'', debit:0, credit:0, narration:''}]});
+  const addLine = () => setF({...f, lines:[...f.lines, {id:uid(), accountId:'', debit:0, credit:0, narration:'', costCentreId:'', departmentId:''}]});
   const removeLine = (id) => setF({...f, lines:f.lines.filter(l => l.id !== id)});
   const updateLine = (id, field, value) => {
     const lines = f.lines.map(l => l.id === id ? {...l, [field]: field==='debit'||field==='credit' ? (parseFloat(value)||0) : value} : l);
@@ -3324,6 +4155,54 @@ function VoucherModal({vtype, voucher, data, onSave, onClose, showToast}){
       return;
     }
     if(dr2 === 0){ showToast('Cannot post a zero-value entry','error'); return; }
+
+    // Budget enforcement for Cost Centres
+    const ccBudgetWarnings = [];
+    const ccBudgetBlocks   = [];
+    const costCentres = data.costCentres || [];
+    if(costCentres.length > 0){
+      // Group expense debit amounts by costCentreId in this voucher
+      const voucherCcSpend = {};
+      finalData.lines.forEach(l => {
+        if(!l.costCentreId) return;
+        const acc = data.coa.find(a => a.id === l.accountId);
+        if(!acc || acc.type !== 'Expense') return; // only track expense lines
+        voucherCcSpend[l.costCentreId] = (voucherCcSpend[l.costCentreId] || 0) + (l.debit||0);
+      });
+      Object.entries(voucherCcSpend).forEach(([ccId, newAmt]) => {
+        const cc = costCentres.find(c => c.id === ccId);
+        if(!cc || !cc.budget || cc.budget <= 0) return;
+        // Sum existing posted vouchers for this cost centre (excluding current voucher if editing)
+        const existingSpend = (data.vouchers || []).reduce((total, v) => {
+          if(voucher && v.id === voucher.id) return total; // skip self on edit
+          return total + (v.lines||[]).reduce((ls, l) => {
+            if(l.costCentreId !== ccId) return ls;
+            const a = data.coa.find(a2 => a2.id === l.accountId);
+            if(!a || a.type !== 'Expense') return ls;
+            return ls + (l.debit||0);
+          }, 0);
+        }, 0);
+        const projected = existingSpend + newAmt;
+        const remaining = cc.budget - existingSpend;
+        if(projected > cc.budget){
+          const overBy = projected - cc.budget;
+          if(cc.budgetEnforce === 'block'){
+            ccBudgetBlocks.push(`Cost Centre "${cc.name}": Budget ₹${fmt(cc.budget)}, Spent ₹${fmt(existingSpend)}, This entry ₹${fmt(newAmt)} — OVER by ₹${fmt(overBy)}`);
+          } else {
+            ccBudgetWarnings.push(`Cost Centre "${cc.name}": Budget ₹${fmt(cc.budget)}, Spent ₹${fmt(existingSpend)}, This entry ₹${fmt(newAmt)} exceeds budget by ₹${fmt(overBy)}`);
+          }
+        }
+      });
+    }
+    if(ccBudgetBlocks.length > 0){
+      showToast('Budget Exceeded — Entry Blocked:\n' + ccBudgetBlocks.join('\n'), 'error');
+      return;
+    }
+    if(ccBudgetWarnings.length > 0){
+      const proceed = window.confirm('⚠ Budget Warning:\n\n' + ccBudgetWarnings.join('\n') + '\n\nDo you want to post anyway?');
+      if(!proceed) return;
+    }
+
     const party = data.parties.find(p => p.id === finalData.partyId);
     onSave({...finalData, partyName: party?.name||finalData.partyName, amount: dr2});
   };
@@ -3538,7 +4417,15 @@ function VoucherModal({vtype, voucher, data, onSave, onClose, showToast}){
               </div>
               <table className="lines-table">
                 <thead>
-                  <tr><th style={{width:'40%'}}>Account</th><th>Narration</th><th className="num" style={{width:130}}>Debit</th><th className="num" style={{width:130}}>Credit</th><th></th></tr>
+                  <tr>
+                    <th style={{width:'28%'}}>Account</th>
+                    <th>Narration</th>
+                    <th style={{width:120}}>Cost Centre</th>
+                    <th style={{width:110}}>Department</th>
+                    <th className="num" style={{width:110}}>Debit</th>
+                    <th className="num" style={{width:110}}>Credit</th>
+                    <th></th>
+                  </tr>
                 </thead>
                 <tbody>
                   {f.lines.map(l => {
@@ -3572,12 +4459,30 @@ function VoucherModal({vtype, voucher, data, onSave, onClose, showToast}){
                       <td>
                         <input value={l.narration} onChange={e => updateLine(l.id, 'narration', e.target.value)} placeholder="Line narration" />
                       </td>
+                      <td>
+                        <select value={l.costCentreId||''} onChange={e => updateLine(l.id,'costCentreId',e.target.value)}
+                          style={{width:'100%',padding:'5px 6px',border:'1px solid var(--line-2)',borderRadius:4,fontSize:12,background:'var(--surface)',color:'var(--ink)'}}>
+                          <option value="">— None —</option>
+                          {(data.costCentres||[]).filter(c=>c.active!==false).map(c=>(
+                            <option key={c.id} value={c.id}>[{c.code}] {c.name}</option>
+                          ))}
+                        </select>
+                      </td>
+                      <td>
+                        <select value={l.departmentId||''} onChange={e => updateLine(l.id,'departmentId',e.target.value)}
+                          style={{width:'100%',padding:'5px 6px',border:'1px solid var(--line-2)',borderRadius:4,fontSize:12,background:'var(--surface)',color:'var(--ink)'}}>
+                          <option value="">— None —</option>
+                          {(data.departments||[]).filter(d=>d.active!==false).map(d=>(
+                            <option key={d.id} value={d.id}>[{d.code}] {d.name}</option>
+                          ))}
+                        </select>
+                      </td>
                       <td><input type="number" step="0.01" value={l.debit||''} onChange={e => updateLine(l.id, 'debit', e.target.value)} style={{textAlign:'right'}} /></td>
                       <td><input type="number" step="0.01" value={l.credit||''} onChange={e => updateLine(l.id, 'credit', e.target.value)} style={{textAlign:'right'}} /></td>
                       <td><span className="row-del" onClick={() => removeLine(l.id)}>×</span></td>
                     </tr>
                     {isPartyAcc && (
-                      <tr><td colSpan="5" style={{padding:'4px 8px', background:'var(--primary-soft)', borderBottom:'1px solid var(--line)'}}>
+                      <tr><td colSpan="7" style={{padding:'4px 8px', background:'var(--primary-soft)', borderBottom:'1px solid var(--line)'}}>
                         <div style={{display:'flex', gap:8, alignItems:'center', fontSize:11}}>
                           <span style={{color:'var(--primary)', fontWeight:600}}>↳ Select {selAcc.name.includes('Creditor')||selAcc.name.includes('Payable')?'Vendor':'Customer'}:</span>
                           <select value={l.partyId||f.partyId||''} onChange={e => {
@@ -3609,13 +4514,13 @@ function VoucherModal({vtype, voucher, data, onSave, onClose, showToast}){
                     );
                   })}
                   <tr style={{background:'var(--surface-2)', fontWeight:700}}>
-                    <td colSpan="2" style={{textAlign:'right', padding:'8px 12px'}}>TOTAL</td>
+                    <td colSpan="4" style={{textAlign:'right', padding:'8px 12px'}}>TOTAL</td>
                     <td className="num bold" style={{padding:'8px 12px'}}>₹{fmt(totalDr)}</td>
                     <td className="num bold" style={{padding:'8px 12px'}}>₹{fmt(totalCr)}</td>
                     <td></td>
                   </tr>
                   <tr>
-                    <td colSpan="5" style={{textAlign:'right', padding:'6px 12px', fontSize:12}}>
+                    <td colSpan="7" style={{textAlign:'right', padding:'6px 12px', fontSize:12}}>
                       Difference: <b className={balanced?'pos':'neg'}>₹{fmt(totalDr-totalCr)}</b> {balanced && <span className="badge badge-success">Balanced</span>}
                       {!balanced && totalDr > 0 && (
                         <button className="btn btn-sm btn-primary" style={{marginLeft:10}} onClick={() => {
