@@ -1786,11 +1786,11 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
         </aside>
         <main className="main">
           {page==='dashboard' && <Dashboard data={data} balances={ledgerBalances} setPage={setPage} />}
-          {page==='coa' && <ChartOfAccounts data={data} setData={canWrite?setData:()=>{}} balances={ledgerBalances} showToast={showToast} />}
-          {page==='parties' && <Parties data={data} setData={canWrite?setData:()=>{}} showToast={showToast} />}
-          {page==='company' && <CompanySettings data={data} setData={canWrite?setData:()=>{}} showToast={showToast} />}
+          {page==='coa' && <ChartOfAccounts data={data} setData={canWrite?setData:()=>{}} balances={ledgerBalances} showToast={showToast} readOnly={isViewer} />}
+          {page==='parties' && <Parties data={data} setData={canWrite?setData:()=>{}} showToast={showToast} readOnly={isViewer} />}
+          {page==='company' && <CompanySettings data={data} setData={canWrite?setData:()=>{}} showToast={showToast} readOnly={isViewer} />}
           {page==='team'    && <TeamMembers data={data} user={user} companyId={companyId} userRole={userRole} />}
-          {page==='vouchers' && <Vouchers data={data} setData={canWrite?setData:()=>{}} showToast={showToast} />}
+          {page==='vouchers' && <Vouchers data={data} setData={canWrite?setData:()=>{}} showToast={showToast} readOnly={isViewer} />}
           {page==='daybook' && <DayBook data={data} />}
           {page==='trial' && <TrialBalance data={data} balances={ledgerBalances} />}
           {page==='pnl' && <ProfitLoss data={data} balances={ledgerBalances} />}
@@ -1805,10 +1805,10 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
           {page==='mis_aging' && <AgingAnalysis data={data} balances={ledgerBalances} />}
           {page==='datamanage' && <DataManagement data={data} setData={setData} showToast={showToast} />}
           {page==='gdrive' && <GoogleDriveSync data={data} setData={setData} showToast={showToast} />}
-          {page==='hr_employees' && <EmployeeMaster data={data} setData={canWrite?setData:()=>{}} showToast={showToast} />}
-          {page==='hr_payroll' && <RunPayroll data={data} setData={setData} showToast={showToast} />}
-          {page==='hr_payslips' && <Payslips data={data} setData={setData} showToast={showToast} />}
-          {page==='tds_sections' && <TDSSections data={data} setData={setData} showToast={showToast} />}
+          {page==='hr_employees' && <EmployeeMaster data={data} setData={canWrite?setData:()=>{}} showToast={showToast} readOnly={isViewer} />}
+          {page==='hr_payroll' && <RunPayroll data={data} setData={canWrite?setData:()=>{}} showToast={showToast} readOnly={isViewer} />}
+          {page==='hr_payslips' && <Payslips data={data} setData={canWrite?setData:()=>{}} showToast={showToast} readOnly={isViewer} />}
+          {page==='tds_sections' && <TDSSections data={data} setData={canWrite?setData:()=>{}} showToast={showToast} readOnly={isViewer} />}
           {page==='tds_report' && <TDSReport data={data} />}
           {page==='ledger_stmt' && <LedgerStatement data={data} balances={ledgerBalances} />}
           {page==='debtor_stmt' && <DebtorStatement data={data} />}
@@ -2265,7 +2265,7 @@ function TeamMembers({ data, user, companyId, userRole }) {
 // ============================================================================
 // CHART OF ACCOUNTS
 // ============================================================================
-function ChartOfAccounts({data, setData, balances, showToast}){
+function ChartOfAccounts({data, setData, balances, showToast, readOnly=false}){
   const [editing, setEditing] = useState(null);
   const [showModal, setShowModal] = useState(false);
   const [showImport, setShowImport] = useState(false);
@@ -2362,10 +2362,10 @@ function ChartOfAccounts({data, setData, balances, showToast}){
           <h1 className="page-title">Chart of Accounts</h1>
           <div className="page-sub">Schedule III aligned ledger master · {data.coa.length} accounts</div>
         </div>
-        <div className="page-actions">
+        {!readOnly && <div className="page-actions">
           <button className="btn" onClick={() => setShowImport(true)}>⬆ Import CSV</button>
           <button className="btn btn-primary" onClick={() => { setEditing(null); setShowModal(true); }}>+ New Account</button>
-        </div>
+        </div>}
       </div>
 
       <div className="filter-bar">
@@ -2410,8 +2410,8 @@ function ChartOfAccounts({data, setData, balances, showToast}){
                       <td className="num">₹{fmt(a.opening||0)}</td>
                       <td className="num bold">₹{fmt(displayBal)}</td>
                       <td className="actions">
-                        <button className="btn btn-sm btn-ghost" onClick={() => { setEditing(a); setShowModal(true); }}>Edit</button>
-                        <button className="btn btn-sm btn-danger" onClick={() => handleDelete(a)}>×</button>
+                        {!readOnly && <button className="btn btn-sm btn-ghost" onClick={() => { setEditing(a); setShowModal(true); }}>Edit</button>}
+                        {!readOnly && <button className="btn btn-sm btn-danger" onClick={() => handleDelete(a)}>×</button>}
                       </td>
                     </tr>
                   );
@@ -2505,7 +2505,7 @@ function AccountModal({account, onSave, onClose}){
 // ============================================================================
 // PARTIES (Customers & Vendors)
 // ============================================================================
-function Parties({data, setData, showToast}){
+function Parties({data, setData, showToast, readOnly=false}){
   const [editing, setEditing] = useState(null);
   const [showModal, setShowModal] = useState(false);
   const [filter, setFilter] = useState('All');
@@ -2542,9 +2542,9 @@ function Parties({data, setData, showToast}){
           <h1 className="page-title">Customers & Vendors</h1>
           <div className="page-sub">{data.parties.length} parties · GSTIN-validated master</div>
         </div>
-        <div className="page-actions">
+        {!readOnly && <div className="page-actions">
           <button className="btn btn-primary" onClick={() => { setEditing(null); setShowModal(true); }}>+ New Party</button>
-        </div>
+        </div>}
       </div>
 
       <div className="filter-bar">
@@ -2580,8 +2580,8 @@ function Parties({data, setData, showToast}){
                 <td style={{fontSize:11, color:'var(--ink-3)'}}>{p.email && <div>{p.email}</div>}{p.phone && <div>{p.phone}</div>}</td>
                 <td className="num bold">{p.currency==='INR'||!p.currency?'₹':p.currency+' '}{fmt(p.balance||0)}</td>
                 <td className="actions">
-                  <button className="btn btn-sm btn-ghost" onClick={() => { setEditing(p); setShowModal(true); }}>Edit</button>
-                  <button className="btn btn-sm btn-danger" onClick={() => handleDelete(p)}>×</button>
+                  {!readOnly && <button className="btn btn-sm btn-ghost" onClick={() => { setEditing(p); setShowModal(true); }}>Edit</button>}
+                  {!readOnly && <button className="btn btn-sm btn-danger" onClick={() => handleDelete(p)}>×</button>}
                 </td>
               </tr>
             ))}
@@ -2718,7 +2718,7 @@ function PartyModal({party, onSave, onClose}){
 // ============================================================================
 // COMPANY SETTINGS
 // ============================================================================
-function CompanySettings({data, setData, showToast}){
+function CompanySettings({data, setData, showToast, readOnly=false}){
   const [f, setF] = useState(data.company);
   const logoRef = useRef(null);
 
@@ -2878,8 +2878,11 @@ function CompanySettings({data, setData, showToast}){
             <div className="field" style={{gridColumn:'span 2'}}><label>Bank Details (for invoices)</label><input value={f.bankDetails||''} onChange={e => setF({...f, bankDetails:e.target.value})} placeholder="A/c No: XXXX | Bank: Kotak | IFSC: KKBK..." /></div>
           </div>
           <div style={{marginTop:18, display:'flex', gap:8, justifyContent:'space-between'}}>
-            <button className="btn btn-danger" onClick={resetData}>⚠ Reset All Data</button>
-            <button className="btn btn-primary" onClick={save}>Save Settings</button>
+            {!readOnly && <button className="btn btn-danger" onClick={resetData}>⚠ Reset All Data</button>}
+            {readOnly
+              ? <div style={{background:'#fff8e1',border:'1px solid #ffe082',borderRadius:8,padding:'10px 16px',fontSize:12,color:'#5d4037',flex:1,textAlign:'center'}}>👁 Viewer mode — settings are read-only</div>
+              : <button className="btn btn-primary" onClick={save}>Save Settings</button>
+            }
           </div>
         </div>
       </div>
@@ -2960,7 +2963,7 @@ function CompanySettings({data, setData, showToast}){
 // ============================================================================
 // VOUCHERS
 // ============================================================================
-function Vouchers({data, setData, showToast}){
+function Vouchers({data, setData, showToast, readOnly=false}){
   const [editing, setEditing] = useState(null);
   const [showModal, setShowModal] = useState(false);
   const [showImport, setShowImport] = useState(false);
@@ -3062,12 +3065,16 @@ function Vouchers({data, setData, showToast}){
           <h1 className="page-title">Vouchers</h1>
           <div className="page-sub">Double-entry posting · GST-aware · {data.vouchers.length} entries</div>
         </div>
-        <div className="page-actions">
+        {!readOnly && <div className="page-actions">
           <button className="btn" onClick={() => setShowImport(true)}>⬆ Bulk Import CSV</button>
-        </div>
+        </div>}
       </div>
 
-      <div className="voucher-types">
+      {readOnly && <div style={{background:'#fff8e1',border:'1px solid #ffe082',borderRadius:8,padding:'10px 16px',marginBottom:16,fontSize:12,color:'#5d4037'}}>
+        👁 <b>Viewer / Auditor mode</b> — you can view all entries but cannot create, edit or cancel vouchers.
+      </div>}
+
+      {!readOnly && <div className="voucher-types">
         {VOUCHER_TYPES.map(vt => (
           <button key={vt.code} className="vt-btn" onClick={() => openNew(vt.code)}>
             <div className="vt-icon">{vt.icon}</div>
@@ -3075,7 +3082,7 @@ function Vouchers({data, setData, showToast}){
             <div className="vt-desc">{vt.desc}</div>
           </button>
         ))}
-      </div>
+      </div>}
 
       <div className="filter-bar">
         <div className="field"><label>Filter by Type</label>
@@ -3104,9 +3111,9 @@ function Vouchers({data, setData, showToast}){
                 <td className="num bold">₹{fmt(v.amount||0)}</td>
                 <td><span className={'badge ' + (v.status==='Cancelled'?'badge-danger':'badge-success')}>{v.status||'Posted'}</span></td>
                 <td className="actions">
-                  <button className="btn btn-sm btn-ghost" onClick={() => { setEditing(v); setVtype(v.type); setShowModal(true); }}>{v.status==='Cancelled'?'View':'Edit'}</button>
+                  {!readOnly && <button className="btn btn-sm btn-ghost" onClick={() => { setEditing(v); setVtype(v.type); setShowModal(true); }}>{v.status==='Cancelled'?'View':'Edit'}</button>}
                   {['SAL','PUR','CRN','DBN'].includes(v.type) && v.status!=='Cancelled' && <button className="btn btn-sm btn-ghost" style={{color:'var(--primary)'}} onClick={() => generateInvoicePDF(v, data)}>⎙ PDF</button>}
-                  {v.status!=='Cancelled' && <button className="btn btn-sm btn-danger" onClick={() => handleDelete(v)}>×</button>}
+                  {!readOnly && v.status!=='Cancelled' && <button className="btn btn-sm btn-danger" onClick={() => handleDelete(v)}>×</button>}
                 </td>
               </tr>
             ))}
@@ -6321,7 +6328,7 @@ function GoogleDriveSync({data, setData, showToast}){
 // ============================================================================
 // HR MODULE — EMPLOYEE MASTER
 // ============================================================================
-function EmployeeMaster({data, setData, showToast}){
+function EmployeeMaster({data, setData, showToast, readOnly=false}){
   const [showModal, setShowModal] = useState(false);
   const [showImport, setShowImport] = useState(false);
   const [editing, setEditing] = useState(null);
@@ -6401,10 +6408,10 @@ function EmployeeMaster({data, setData, showToast}){
           <h1 className="page-title">Employee Master</h1>
           <div className="page-sub">HR module · {(data.employees||[]).length} employees · Salary structure & statutory config</div>
         </div>
-        <div className="page-actions">
+        {!readOnly && <div className="page-actions">
           <button className="btn" onClick={() => setShowImport(true)}>⬆ Import CSV</button>
           <button className="btn btn-primary" onClick={() => { setEditing(null); setShowModal(true); }}>+ Add Employee</button>
-        </div>
+        </div>}
       </div>
 
       <div className="filter-bar">
@@ -6438,8 +6445,8 @@ function EmployeeMaster({data, setData, showToast}){
                   <td className="num bold pos">₹{fmt(net)}</td>
                   <td><span className={'badge '+(e.status==='Active'?'badge-success':'badge-muted')}>{e.status||'Active'}</span></td>
                   <td className="actions">
-                    <button className="btn btn-sm btn-ghost" onClick={() => { setEditing(e); setShowModal(true); }}>Edit</button>
-                    <button className="btn btn-sm btn-danger" onClick={() => handleDelete(e)}>×</button>
+                    {!readOnly && <button className="btn btn-sm btn-ghost" onClick={() => { setEditing(e); setShowModal(true); }}>Edit</button>}
+                    {!readOnly && <button className="btn btn-sm btn-danger" onClick={() => handleDelete(e)}>×</button>}
                   </td>
                 </tr>
               );
