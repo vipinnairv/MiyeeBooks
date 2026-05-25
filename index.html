@@ -36,6 +36,8 @@
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+<!-- SheetJS — client-side Excel (.xlsx) export -->
+<script src="https://unpkg.com/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Cormorant+Garamond:wght@500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
   :root{
@@ -186,6 +188,9 @@
   .report-title{font-size:14px;text-transform:uppercase;letter-spacing:2px;color:var(--ink-2);margin-top:4px}
   .report-period{font-size:11px;color:var(--ink-3);margin-top:3px}
   .report-foot{margin-top:24px;padding-top:14px;border-top:1px solid var(--line);font-size:10.5px;color:var(--ink-3);display:flex;justify-content:space-between}
+  .drill-row:hover{background:var(--primary-soft)!important;cursor:pointer}
+  .drill-row:hover td{color:var(--primary)!important}
+  .hover-row:hover{background:var(--primary-soft)!important;cursor:pointer}
   /* Tag/chip */
   .chip-list{display:flex;flex-wrap:wrap;gap:6px}
   .chip{font-size:11px;padding:3px 9px;background:var(--surface-2);border:1px solid var(--line);border-radius:12px;color:var(--ink-2)}
@@ -565,6 +570,52 @@ const downloadCSV = (filename, csvText) => {
   const a = document.createElement('a');
   a.href = url; a.download = filename; a.click();
   URL.revokeObjectURL(url);
+};
+
+// Export multi-sheet .xlsx via SheetJS
+const exportXLSX = (filename, sheets) => {
+  // sheets = [{name:'Sheet1', rows:[[col1,col2,...], [val1,val2,...], ...]}, ...]
+  if(!window.XLSX){ alert('Excel library not loaded — check your internet connection.'); return; }
+  const wb = window.XLSX.utils.book_new();
+  sheets.forEach(s => {
+    const ws = window.XLSX.utils.aoa_to_sheet(s.rows);
+    // Bold first row (header styling)
+    if(s.rows && s.rows.length > 0){
+      const range = window.XLSX.utils.decode_range(ws['!ref']||'A1');
+      for(let C = range.s.c; C <= range.e.c; C++){
+        const cell = ws[window.XLSX.utils.encode_cell({r:0,c:C})];
+        if(cell) cell.s = {font:{bold:true}};
+      }
+    }
+    window.XLSX.utils.book_append_sheet(wb, ws, s.name.slice(0,31));
+  });
+  window.XLSX.writeFile(wb, filename);
+};
+
+// Compute per-account balances for a specific period
+// Returns { opening, period, asOn } maps
+// opening[id] = COA opening balance + all movements BEFORE fromDate
+// period[id]  = movements FROM fromDate TO toDate (inclusive)
+// asOn[id]    = opening[id] + period[id]
+const computePeriodBals = (data, fromDate, toDate) => {
+  const opening = {}, period = {};
+  data.coa.forEach(a => { opening[a.id] = a.opening || 0; period[a.id] = 0; });
+  data.vouchers.forEach(v => {
+    if(v.status === 'Cancelled') return;
+    (v.lines||[]).forEach(l => {
+      const id = l.accountId;
+      const mv = (l.debit||0) - (l.credit||0);
+      if(!opening[id]) opening[id] = 0;
+      if(!period[id])  period[id]  = 0;
+      if(fromDate && v.date < fromDate)  opening[id] += mv;
+      else if(!toDate || v.date <= toDate) period[id] += mv;
+    });
+  });
+  const asOn = {};
+  [...new Set([...Object.keys(opening),...Object.keys(period)])].forEach(id => {
+    asOn[id] = (opening[id]||0) + (period[id]||0);
+  });
+  return { opening, period, asOn };
 };
 
 // ============================================================================
@@ -2569,6 +2620,166 @@ function DepartmentReport({data}){
 }
 
 // ============================================================================
+// PERIOD FILTER — reusable date-range selector with FY / quarter presets
+// ============================================================================
+function PeriodFilter({data, from, to, onChange}){
+  const fyStart = data.company.fyStart || '';
+  const fyEnd   = data.company.fyEnd   || '';
+  const fyY     = parseInt((fyStart||'2025-04-01').slice(0,4));
+
+  const P = [
+    {id:'fy',  label:'Full FY',      from: fyStart,              to: fyEnd},
+    {id:'ytd', label:'YTD',          from: fyStart,              to: today()},
+    {id:'q1',  label:'Q1 Apr–Jun',   from:`${fyY}-04-01`,        to:`${fyY}-06-30`},
+    {id:'q2',  label:'Q2 Jul–Sep',   from:`${fyY}-07-01`,        to:`${fyY}-09-30`},
+    {id:'q3',  label:'Q3 Oct–Dec',   from:`${fyY}-10-01`,        to:`${fyY}-12-31`},
+    {id:'q4',  label:'Q4 Jan–Mar',   from:`${fyY+1}-01-01`,      to:`${fyY+1}-03-31`},
+    {id:'h1',  label:'H1 (Apr–Sep)', from:`${fyY}-04-01`,        to:`${fyY}-09-30`},
+    {id:'h2',  label:'H2 (Oct–Mar)', from:`${fyY}-10-01`,        to:`${fyY+1}-03-31`},
+  ];
+  const active = P.find(p => p.from===from && p.to===to);
+
+  return (
+    <div style={{display:'flex',gap:5,flexWrap:'wrap',alignItems:'center',background:'var(--surface-2)',padding:'8px 14px',borderRadius:'var(--radius)',border:'1px solid var(--line)'}}>
+      <span style={{fontSize:10,fontWeight:700,letterSpacing:'1px',textTransform:'uppercase',color:'var(--ink-3)',marginRight:4}}>Period</span>
+      {P.map(p=>(
+        <button key={p.id} onClick={()=>onChange(p.from,p.to,p.label)}
+          style={{padding:'3px 10px',borderRadius:20,border:'1px solid',fontSize:11,fontWeight:500,cursor:'pointer',
+            background:active?.id===p.id?'var(--primary)':'var(--surface)',
+            color:active?.id===p.id?'#fff':'var(--ink-2)',
+            borderColor:active?.id===p.id?'var(--primary)':'var(--line-2)'}}>
+          {p.label}
+        </button>
+      ))}
+      <span style={{color:'var(--line-2)',margin:'0 2px'}}>|</span>
+      <input type="date" value={from} onChange={e=>onChange(e.target.value,to,'Custom')}
+        style={{padding:'3px 8px',border:'1px solid var(--line-2)',borderRadius:4,fontSize:12,background:'var(--surface)'}} />
+      <span style={{color:'var(--ink-3)',fontSize:11}}>→</span>
+      <input type="date" value={to} onChange={e=>onChange(from,e.target.value,'Custom')}
+        style={{padding:'3px 8px',border:'1px solid var(--line-2)',borderRadius:4,fontSize:12,background:'var(--surface)'}} />
+    </div>
+  );
+}
+
+// ============================================================================
+// LEDGER DRILL-DOWN MODAL — clickable from any report
+// ============================================================================
+function LedgerDrillModal({accountIds, title, data, from, to, onClose}){
+  const ids = Array.isArray(accountIds) ? accountIds : [accountIds];
+  const multiAcc = ids.length > 1;
+
+  const {rows, openingBal} = useMemo(() => {
+    let bal = ids.reduce((s,id)=>s+(data.coa.find(a=>a.id===id)?.opening||0),0);
+    // Opening = COA opening + movements before 'from'
+    data.vouchers.forEach(v => {
+      if(v.status==='Cancelled') return;
+      if(v.date >= from) return;
+      (v.lines||[]).forEach(l => {
+        if(ids.includes(l.accountId)) bal += (l.debit||0)-(l.credit||0);
+      });
+    });
+    const lines = [];
+    data.vouchers.forEach(v => {
+      if(v.status==='Cancelled') return;
+      if(v.date < from || v.date > to) return;
+      (v.lines||[]).forEach(l => {
+        if(!ids.includes(l.accountId)) return;
+        const acc = data.coa.find(a=>a.id===l.accountId);
+        lines.push({date:v.date, vno:v.number||v.id.slice(0,8), type:v.type,
+          account: acc ? acc.id+' · '+acc.name : l.accountId,
+          narration:l.narration||v.narration||'', dr:l.debit||0, cr:l.credit||0});
+      });
+    });
+    lines.sort((a,b)=>a.date.localeCompare(b.date));
+    return {rows:lines, openingBal:bal};
+  }, [ids.join(','), from, to, data.vouchers]);
+
+  let run = openingBal;
+  const tableRows = rows.map(r => { run += r.dr-r.cr; return {...r, bal:run}; });
+  const totalDr = rows.reduce((s,r)=>s+r.dr,0);
+  const totalCr = rows.reduce((s,r)=>s+r.cr,0);
+  const closingBal = openingBal + totalDr - totalCr;
+  const balLabel = (v) => v>=0 ? `${fmt(v)} Dr` : `${fmt(-v)} Cr`;
+
+  const handleCSV = () => {
+    const hdr = multiAcc ? 'Date,Account,Voucher,Type,Narration,Debit,Credit,Balance\n'
+                         : 'Date,Voucher,Type,Narration,Debit,Credit,Balance\n';
+    const body = tableRows.map(r => multiAcc
+      ? `${r.date},"${r.account}",${r.vno},${r.type},"${r.narration}",${r.dr.toFixed(2)},${r.cr.toFixed(2)},${r.bal.toFixed(2)}`
+      : `${r.date},${r.vno},${r.type},"${r.narration}",${r.dr.toFixed(2)},${r.cr.toFixed(2)},${r.bal.toFixed(2)}`
+    ).join('\n');
+    downloadCSV(`Ledger_${title.replace(/[^a-z0-9]/gi,'_')}_${from}_${to}.csv`, hdr+body);
+  };
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal" style={{maxWidth:900,maxHeight:'88vh',display:'flex',flexDirection:'column'}} onClick={e=>e.stopPropagation()}>
+        <div className="modal-header" style={{display:'flex',alignItems:'center',gap:10}}>
+          <span style={{fontWeight:700}}>📒 {title}</span>
+          <span style={{fontSize:11,color:'var(--ink-3)'}}>Period: {from} → {to}</span>
+          <div style={{marginLeft:'auto',display:'flex',gap:8}}>
+            <button className="btn btn-sm" onClick={handleCSV}>⬇ CSV</button>
+            <button onClick={onClose} style={{background:'none',border:'none',fontSize:20,cursor:'pointer',color:'var(--ink-3)',lineHeight:1}}>×</button>
+          </div>
+        </div>
+        <div style={{padding:'8px 16px',background:'var(--surface-2)',fontSize:12,borderBottom:'1px solid var(--line)',display:'flex',gap:24}}>
+          <span>Opening: <b style={{fontFamily:'var(--mono)'}}>{balLabel(openingBal)}</b></span>
+          <span>Period Debit: <b style={{fontFamily:'var(--mono)',color:'var(--primary)'}}>₹{fmt(totalDr)}</b></span>
+          <span>Period Credit: <b style={{fontFamily:'var(--mono)',color:'var(--danger)'}}>₹{fmt(totalCr)}</b></span>
+          <span>Closing: <b style={{fontFamily:'var(--mono)'}}>{balLabel(closingBal)}</b></span>
+        </div>
+        <div style={{overflowY:'auto',flex:1}}>
+          <table style={{width:'100%',borderCollapse:'collapse',fontSize:12.5}}>
+            <thead style={{position:'sticky',top:0,background:'var(--surface-2)',zIndex:2}}>
+              <tr>
+                <th style={{padding:'8px 12px',textAlign:'left',borderBottom:'2px solid var(--line)'}}>Date</th>
+                {multiAcc && <th style={{padding:'8px 12px',textAlign:'left',borderBottom:'2px solid var(--line)'}}>Account</th>}
+                <th style={{padding:'8px 12px',textAlign:'left',borderBottom:'2px solid var(--line)'}}>Voucher</th>
+                <th style={{padding:'8px 12px',textAlign:'left',borderBottom:'2px solid var(--line)'}}>Type</th>
+                <th style={{padding:'8px 12px',textAlign:'left',borderBottom:'2px solid var(--line)'}}>Narration</th>
+                <th style={{padding:'8px 12px',textAlign:'right',borderBottom:'2px solid var(--line)'}}>Debit (₹)</th>
+                <th style={{padding:'8px 12px',textAlign:'right',borderBottom:'2px solid var(--line)'}}>Credit (₹)</th>
+                <th style={{padding:'8px 12px',textAlign:'right',borderBottom:'2px solid var(--line)'}}>Balance</th>
+              </tr>
+            </thead>
+            <tbody>
+              {tableRows.length===0 && (
+                <tr><td colSpan={multiAcc?8:7} style={{textAlign:'center',padding:24,color:'var(--ink-3)'}}>No transactions in selected period</td></tr>
+              )}
+              {tableRows.map((r,i)=>(
+                <tr key={i} style={{borderBottom:'1px solid var(--line)',background:i%2===0?'':'var(--surface-2)'}}>
+                  <td style={{padding:'6px 12px',fontFamily:'var(--mono)',fontSize:12}}>{r.date}</td>
+                  {multiAcc && <td style={{padding:'6px 12px',fontSize:11,color:'var(--ink-3)'}}>{r.account}</td>}
+                  <td style={{padding:'6px 12px',fontFamily:'var(--mono)',fontSize:11,color:'var(--ink-3)'}}>{r.vno}</td>
+                  <td style={{padding:'6px 12px'}}>
+                    <span style={{fontSize:10,padding:'2px 6px',borderRadius:10,background:'var(--primary-soft)',color:'var(--primary)',fontWeight:600}}>{r.type}</span>
+                  </td>
+                  <td style={{padding:'6px 12px',color:'var(--ink-2)'}}>{r.narration}</td>
+                  <td style={{padding:'6px 12px',textAlign:'right',fontFamily:'var(--mono)',color:'var(--primary)'}}>{r.dr>0?fmt(r.dr):'—'}</td>
+                  <td style={{padding:'6px 12px',textAlign:'right',fontFamily:'var(--mono)',color:'var(--danger)'}}>{r.cr>0?fmt(r.cr):'—'}</td>
+                  <td style={{padding:'6px 12px',textAlign:'right',fontFamily:'var(--mono)',fontWeight:600,color:r.bal>=0?'var(--ink)':'var(--danger)'}}>{balLabel(r.bal)}</td>
+                </tr>
+              ))}
+            </tbody>
+            <tfoot>
+              <tr style={{fontWeight:700,background:'var(--surface-2)',borderTop:'2px solid var(--line)'}}>
+                <td colSpan={multiAcc?5:4} style={{padding:'8px 12px',textAlign:'right'}}>TOTAL</td>
+                <td style={{padding:'8px 12px',textAlign:'right',fontFamily:'var(--mono)'}}>₹{fmt(totalDr)}</td>
+                <td style={{padding:'8px 12px',textAlign:'right',fontFamily:'var(--mono)'}}>₹{fmt(totalCr)}</td>
+                <td style={{padding:'8px 12px',textAlign:'right',fontFamily:'var(--mono)'}}>{balLabel(closingBal)}</td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+        <div className="modal-footer">
+          <button className="btn" onClick={onClose}>Close</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================================
 // DASHBOARD
 // ============================================================================
 function Dashboard({data, balances, setPage}){
@@ -3801,60 +4012,119 @@ function Vouchers({data, setData, showToast, readOnly=false}){
   const [vtype, setVtype] = useState('JV');
   const [filter, setFilter] = useState('All');
 
-  const VCHR_SAMPLE_HEADERS = ['date','type','partyName','narration','reference','debitAccount','creditAccount','amount','gstRate','tdsSection'];
+  // NEW multi-line format: each CSV row = one journal line; rows grouped by (date+type+reference) = one voucher
+  const VCHR_SAMPLE_HEADERS = ['date','type','reference','narration','accountCode','debit','credit','partyName','partyGSTIN','partyType','costCentre','department'];
   const VCHR_SAMPLE_ROWS = [
-    {date:'2025-04-01',type:'PAY',partyName:'Office Landlord — Mr. Patel',narration:'Office Rent April',reference:'APR-RENT',debitAccount:'4500',creditAccount:'2510',amount:'50000',gstRate:'18',tdsSection:''},
-    {date:'2025-04-02',type:'REC',partyName:'Reliance Industries Ltd',narration:'Receipt against Invoice',reference:'INV-001',debitAccount:'2510',creditAccount:'2400',amount:'120000',gstRate:'',tdsSection:''},
-    {date:'2025-04-05',type:'JV',partyName:'',narration:'Depreciation Q1 FY2025-26',reference:'DEP-Q1',debitAccount:'4400',creditAccount:'2130',amount:'25000',gstRate:'',tdsSection:''},
-    {date:'2025-04-10',type:'PAY',partyName:'Reliance Jio (Telecom)',narration:'Internet Bill March',reference:'JIO-APR',debitAccount:'4520',creditAccount:'2510',amount:'4000',gstRate:'18',tdsSection:'394(6)'},
+    // Voucher 1: Payment — Office Rent (two lines)
+    {date:'2025-04-01',type:'PAY',reference:'APR-RENT',narration:'Office Rent April',accountCode:'4500',debit:'50000',credit:'',partyName:'Mr. Patel (Landlord)',partyGSTIN:'',partyType:'Vendor',costCentre:'',department:'OPS'},
+    {date:'2025-04-01',type:'PAY',reference:'APR-RENT',narration:'Office Rent April',accountCode:'2510',debit:'',credit:'50000',partyName:'',partyGSTIN:'',partyType:'',costCentre:'',department:''},
+    // Voucher 2: Receipt from customer (two lines)
+    {date:'2025-04-02',type:'REC',reference:'REC-001',narration:'Receipt against Inv INV-001',accountCode:'2510',debit:'120000',credit:'',partyName:'Reliance Industries Ltd',partyGSTIN:'27AAACR5055K1ZZ',partyType:'Customer',costCentre:'',department:'SALES'},
+    {date:'2025-04-02',type:'REC',reference:'REC-001',narration:'Receipt against Inv INV-001',accountCode:'2400',debit:'',credit:'120000',partyName:'',partyGSTIN:'',partyType:'',costCentre:'',department:''},
+    // Voucher 3: Journal — Depreciation (two lines)
+    {date:'2025-04-05',type:'JV',reference:'DEP-Q1',narration:'Depreciation Q1 FY2025-26',accountCode:'4400',debit:'25000',credit:'',partyName:'',partyGSTIN:'',partyType:'',costCentre:'CC-01',department:'FIN'},
+    {date:'2025-04-05',type:'JV',reference:'DEP-Q1',narration:'Depreciation Q1 FY2025-26',accountCode:'2130',debit:'',credit:'25000',partyName:'',partyGSTIN:'',partyType:'',costCentre:'',department:''},
   ];
 
   const handleImportVouchers = (rows) => {
     const validTypes = VOUCHER_TYPES.map(v => v.code);
     const imported = [];
     const errors   = [];
+    const newParties = []; // Parties auto-created during import
+
+    // Group rows by (date + type + reference) → one voucher per group
+    const groups = {};
     rows.forEach((r, i) => {
-      const date   = r['date']?.trim();
-      const type   = r['type']?.trim().toUpperCase();
-      const amount = parseFloat(r['amount']);
-      const drAcc  = r['debitAccount']?.trim();
-      const crAcc  = r['creditAccount']?.trim();
-      if(!date || !type || !amount || !drAcc || !crAcc){
-        errors.push(`Row ${i+2}: date, type, debitAccount, creditAccount and amount are required`); return;
-      }
+      const date = r['date']?.trim();
+      const type = r['type']?.trim().toUpperCase();
+      const ref  = r['reference']?.trim() || `ROW${i+2}`;
+      if(!date || !type){ errors.push(`Row ${i+2}: date and type are required`); return; }
       if(!validTypes.includes(type)){ errors.push(`Row ${i+2}: invalid type "${type}"`); return; }
       if(!/^\d{4}-\d{2}-\d{2}$/.test(date)){ errors.push(`Row ${i+2}: date must be YYYY-MM-DD`); return; }
-      const gstRate = parseFloat(r['gstRate']) || 0;
-      const lines = [
-        { id:uid(), accountId:drAcc, debit:amount, credit:0, narration:r['narration']||'' },
-        { id:uid(), accountId:crAcc, debit:0, credit:amount, narration:r['narration']||'' },
-      ];
-      // Add GST lines for tax vouchers if gstRate given
-      if(gstRate > 0 && ['SAL','PUR'].includes(type)){
-        const taxAmt = Math.round(amount * gstRate / 100 * 100) / 100;
-        if(['SAL'].includes(type)){
-          lines.push({id:uid(), accountId:'2400', debit:taxAmt, credit:0, narration:'GST'});
-          lines.push({id:uid(), accountId:'1312', debit:0, credit:taxAmt, narration:'IGST Output'});
-        } else {
-          lines.push({id:uid(), accountId:'2602', debit:taxAmt, credit:0, narration:'IGST Input'});
-          lines.push({id:uid(), accountId:'1300', debit:0, credit:taxAmt, narration:'GST'});
+      const key = `${date}|${type}|${ref}`;
+      if(!groups[key]) groups[key] = {date, type, reference:ref, rows:[], key};
+      groups[key].rows.push({...r, _rowNum: i+2});
+    });
+
+    Object.values(groups).forEach(grp => {
+      const lines = [];
+      let vNarration = '', vPartyName = '', vPartyId = '';
+      let totalDr = 0, totalCr = 0;
+
+      grp.rows.forEach(r => {
+        const accCode = r['accountCode']?.trim();
+        const dr      = parseFloat(r['debit']) || 0;
+        const cr      = parseFloat(r['credit']) || 0;
+        const narr    = r['narration']?.trim() || '';
+
+        if(!accCode){ errors.push(`Row ${r._rowNum}: accountCode is required`); return; }
+        if(!data.coa.find(a => a.id === accCode)){
+          errors.push(`Row ${r._rowNum}: account "${accCode}" not found in Chart of Accounts`); return;
         }
+        if(dr===0 && cr===0){ errors.push(`Row ${r._rowNum}: both debit and credit are zero`); return; }
+
+        // Resolve cost centre + department codes to IDs
+        const ccCode   = r['costCentre']?.trim();
+        const deptCode = r['department']?.trim();
+        const ccId   = ccCode   ? (data.costCentres||[]).find(c=>c.code.toUpperCase()===ccCode.toUpperCase())?.id||'' : '';
+        const deptId = deptCode ? (data.departments||[]).find(d=>d.code.toUpperCase()===deptCode.toUpperCase())?.id||'' : '';
+
+        // Party lookup / auto-create
+        const pName  = r['partyName']?.trim();
+        const pGSTIN = r['partyGSTIN']?.trim();
+        const pType  = r['partyType']?.trim() || 'Vendor';
+        let   resolvedPartyId = '';
+        if(pName){
+          vPartyName = pName;
+          let party = data.parties.find(p => p.name.toLowerCase()===pName.toLowerCase());
+          if(!party) party = newParties.find(p => p.name.toLowerCase()===pName.toLowerCase());
+          if(!party){
+            party = {id:uid(), name:pName, type:pType==='Customer'?'Customer':'Vendor',
+              gstin:pGSTIN||'', state:'Gujarat', stateCode:'24', address:'', email:'', phone:'',
+              currency:'INR', balance:0, unregistered:!pGSTIN};
+            newParties.push(party);
+          }
+          resolvedPartyId = party.id;
+          vPartyId = party.id;
+        }
+
+        if(!vNarration && narr) vNarration = narr;
+        totalDr += dr; totalCr += cr;
+        lines.push({id:uid(), accountId:accCode, debit:dr, credit:cr, narration:narr,
+          costCentreId:ccId, departmentId:deptId,
+          ...(resolvedPartyId ? {partyId:resolvedPartyId} : {})});
+      });
+
+      if(lines.length === 0) return;
+      if(Math.abs(totalDr-totalCr) > 0.01){
+        errors.push(`Group ${grp.reference} (${grp.date}): Unbalanced — Dr ₹${fmt(totalDr)} ≠ Cr ₹${fmt(totalCr)}`);
+        return;
       }
+
       imported.push({
-        id: uid(), type, date, number:'', partyName:r['partyName']||'', narration:r['narration']||'',
-        reference:r['reference']||'', amount, lines, status:'Posted',
+        id:uid(), type:grp.type, date:grp.date, number:'',
+        partyName:vPartyName, partyId:vPartyId,
+        narration:vNarration, reference:grp.reference,
+        lines, amount:totalDr, status:'Posted',
         createdAt: new Date().toISOString(),
       });
     });
-    if(errors.length > 0 && imported.length === 0) return { count:0, error: errors.slice(0,3).join('; ') };
+
+    if(errors.length > 0 && imported.length === 0)
+      return { count:0, error: errors.slice(0,5).join(' | ') };
+
     setData(prev => {
+      // Add auto-created parties
+      const updatedParties = [...prev.parties, ...newParties.filter(np =>
+        !prev.parties.find(p=>p.name.toLowerCase()===np.name.toLowerCase()))];
       const numbered = imported.map(v => {
-        const typeCount = [...prev.vouchers, ...imported.filter(x => x !== v)].filter(x => x.type === v.type).length;
-        return { ...v, number: v.type + '/' + (typeCount+1).toString().padStart(4,'0') };
+        const typeCount = [...prev.vouchers, ...imported.filter(x=>x!==v)].filter(x=>x.type===v.type).length;
+        return {...v, number: v.type+'/'+String(typeCount+1).padStart(4,'0')};
       });
-      return {...prev, vouchers: [...prev.vouchers, ...numbered]};
+      return {...prev, vouchers:[...prev.vouchers,...numbered], parties:updatedParties};
     });
-    showToast('Imported ' + imported.length + ' vouchers' + (errors.length?' ('+errors.length+' skipped)':''));
+    const partiesMsg = newParties.length ? ` · ${newParties.length} new ${newParties.length===1?'party':'parties'} created` : '';
+    showToast(`Imported ${imported.length} voucher${imported.length!==1?'s':''}${partiesMsg}${errors.length?` (${errors.length} issue${errors.length!==1?'s':''} skipped)`:''}`);
     return { count: imported.length };
   };
 
@@ -4079,9 +4349,37 @@ function VoucherModal({vtype, voucher, data, onSave, onClose, showToast}){
     }
   }, [f.items, f.partyId]);
 
-  const addLine = () => setF({...f, lines:[...f.lines, {id:uid(), accountId:'', debit:0, credit:0, narration:'', costCentreId:'', departmentId:''}]});
+  // Track last-used cost centre and department for auto-propagation
+  const lastCC   = useRef('');
+  const lastDept = useRef('');
+
+  const addLine = () => {
+    // Auto-fill CC + Dept from the last line that had them set
+    const lastLine = [...f.lines].reverse().find(l => l.costCentreId || l.departmentId);
+    setF({...f, lines:[...f.lines, {id:uid(), accountId:'', debit:0, credit:0, narration:'',
+      costCentreId: lastCC.current || lastLine?.costCentreId || '',
+      departmentId: lastDept.current || lastLine?.departmentId || ''}]});
+  };
   const removeLine = (id) => setF({...f, lines:f.lines.filter(l => l.id !== id)});
   const updateLine = (id, field, value) => {
+    // Track last CC / Dept selection for auto-propagate
+    if(field==='costCentreId' && value) lastCC.current = value;
+    if(field==='departmentId' && value) lastDept.current = value;
+    // When user sets CC or Dept on one line, offer to apply to ALL blank lines
+    if((field==='costCentreId'||field==='departmentId') && value){
+      const blankOthers = f.lines.filter(l => l.id!==id && !l[field]);
+      if(blankOthers.length > 0){
+        // Silently auto-propagate to other blank lines (no prompt — easy to change)
+        const lines = f.lines.map(l => {
+          if(l.id===id) return {...l, [field]: value};
+          if(!l[field]) return {...l, [field]: value}; // auto-fill blank lines
+          return l;
+        });
+        const amt = lines.reduce((s,l)=>s+(l.debit||0),0);
+        setF({...f, lines, amount:f.amount||amt});
+        return;
+      }
+    }
     const lines = f.lines.map(l => l.id === id ? {...l, [field]: field==='debit'||field==='credit' ? (parseFloat(value)||0) : value} : l);
     // For non-GST manual entries, recalc amount
     const amt = lines.reduce((s,l) => s + (l.debit||0), 0);
@@ -4753,66 +5051,121 @@ function DayBook({data}){
 // TRIAL BALANCE
 // ============================================================================
 function TrialBalance({data, balances}){
-  const [asOn, setAsOn] = useState(today());
+  const fyStart = data.company.fyStart || '';
+  const [from, setFrom] = useState(fyStart);
+  const [to,   setTo]   = useState(today());
+  const [search, setSearch] = useState('');
+  const [typeFilter, setTypeFilter] = useState('');
+  const [drill, setDrill] = useState(null);
 
-  const rows = data.coa.map(a => {
-    const raw = balances[a.id] || 0;
-    return { ...a, balance: raw, dr: raw > 0 ? raw : 0, cr: raw < 0 ? -raw : 0 };
-  }).filter(r => r.dr > 0 || r.cr > 0 || r.opening !== 0);
+  // Compute as-on balances (opening + all movements up to 'to')
+  const bals = useMemo(() => computePeriodBals(data, from, to).asOn, [data, from, to]);
+
+  const rows = useMemo(() => data.coa.map(a => {
+    const raw = bals[a.id] || 0;
+    return { ...a, dr: raw > 0 ? raw : 0, cr: raw < 0 ? -raw : 0 };
+  }).filter(r => (r.dr > 0 || r.cr > 0 || r.opening !== 0)
+    && (!typeFilter || r.type === typeFilter)
+    && (!search || r.name.toLowerCase().includes(search.toLowerCase()) || r.id.includes(search))
+  ), [bals, data.coa, typeFilter, search]);
 
   const totalDr = rows.reduce((s,r) => s + r.dr, 0);
   const totalCr = rows.reduce((s,r) => s + r.cr, 0);
+
+  const handleExcel = () => exportXLSX(`TrialBalance_${data.company.name}_${to}.xlsx`, [{
+    name: 'Trial Balance',
+    rows: [
+      [`Trial Balance — ${data.company.name}`],
+      [`Period: ${from} to ${to}`],
+      [],
+      ['Code','Particulars','Type','Group','Debit (₹)','Credit (₹)'],
+      ...rows.map(r => [r.id, r.name, r.type, r.group, r.dr||'', r.cr||'']),
+      [],
+      ['','','','TOTAL', totalDr, totalCr],
+    ]
+  }]);
 
   return (
     <>
       <div className="page-head">
         <div>
           <h1 className="page-title">Trial Balance</h1>
-          <div className="page-sub">As on {asOn} · All ledger balances</div>
+          <div className="page-sub">As on {to} · {rows.length} accounts · Click any row to drill into the ledger</div>
         </div>
         <div className="page-actions">
-          <input type="date" value={asOn} onChange={e => setAsOn(e.target.value)} className="btn" style={{padding:'6px 10px'}} />
-          <button className="btn" onClick={() => window.print()}>⎙ Print</button>
+          <button className="btn btn-sm" onClick={handleExcel}>⬇ Excel</button>
+          <button className="btn btn-sm btn-primary" onClick={() => window.print()}>⎙ Print</button>
         </div>
+      </div>
+
+      {/* Period filter */}
+      <div style={{marginBottom:14}}>
+        <PeriodFilter data={data} from={from} to={to} onChange={(f,t)=>{setFrom(f);setTo(t);}} />
+      </div>
+
+      {/* Search + type filter */}
+      <div style={{display:'flex',gap:8,marginBottom:14,flexWrap:'wrap'}}>
+        <input placeholder="Search account name or code…" value={search} onChange={e=>setSearch(e.target.value)}
+          style={{padding:'6px 10px',border:'1px solid var(--line-2)',borderRadius:'var(--radius-sm)',fontSize:12,flex:1,minWidth:180}} />
+        <select value={typeFilter} onChange={e=>setTypeFilter(e.target.value)}
+          style={{padding:'6px 10px',border:'1px solid var(--line-2)',borderRadius:'var(--radius-sm)',fontSize:12,background:'var(--surface)'}}>
+          <option value="">All Types</option>
+          {['Asset','Liability','Equity','Income','Expense'].map(t=><option key={t}>{t}</option>)}
+        </select>
       </div>
 
       <div className="report">
         <div className="report-head">
           {data.company.logo && <img className="report-logo" src={data.company.logo} alt="Logo" />}
           <div className="report-co">{data.company.name}</div>
-          <div style={{fontSize:11, color:'var(--ink-3)'}}>{data.company.address} · GSTIN: {data.company.gstin}</div>
+          <div style={{fontSize:11,color:'var(--ink-3)'}}>{data.company.address} · GSTIN: {data.company.gstin}</div>
           <div className="report-title">Trial Balance</div>
-          <div className="report-period">As on {asOn}</div>
+          <div className="report-period">Period: {from} to {to}</div>
         </div>
         <table>
           <thead>
-            <tr><th style={{width:90}}>Code</th><th>Particulars</th><th>Group</th><th className="num">Debit (₹)</th><th className="num">Credit (₹)</th></tr>
+            <tr>
+              <th style={{width:80}}>Code</th>
+              <th>Particulars</th>
+              <th style={{width:80}}>Type</th>
+              <th>Group</th>
+              <th className="num">Debit (₹)</th>
+              <th className="num">Credit (₹)</th>
+            </tr>
           </thead>
           <tbody>
             {rows.map(r => (
-              <tr key={r.id}>
-                <td style={{fontFamily:'var(--mono)'}}>{r.id}</td>
-                <td><b>{r.name}</b></td>
-                <td style={{fontSize:11, color:'var(--ink-3)'}}>{r.group}</td>
+              <tr key={r.id} style={{cursor:'pointer'}} onClick={()=>setDrill({accountIds:[r.id],title:`${r.id} · ${r.name}`})}
+                className="hover-row">
+                <td style={{fontFamily:'var(--mono)',color:'var(--primary)'}}>{r.id}</td>
+                <td style={{color:'var(--primary)',textDecoration:'underline dotted',fontWeight:500}}>{r.name}</td>
+                <td><span style={{fontSize:10,padding:'1px 6px',borderRadius:10,fontWeight:600,
+                  background:r.type==='Asset'?'var(--info-soft)':r.type==='Income'?'var(--primary-soft)':r.type==='Expense'?'var(--danger-soft)':'var(--accent-soft)',
+                  color:r.type==='Asset'?'var(--info)':r.type==='Income'?'var(--primary)':r.type==='Expense'?'var(--danger)':'var(--warning)'}}>{r.type}</span></td>
+                <td style={{fontSize:11,color:'var(--ink-3)'}}>{r.group}</td>
                 <td className="num">{r.dr ? fmt(r.dr) : ''}</td>
                 <td className="num">{r.cr ? fmt(r.cr) : ''}</td>
               </tr>
             ))}
             <tr className="total">
-              <td colSpan="3" style={{textAlign:'right'}}>TOTAL</td>
+              <td colSpan="4" style={{textAlign:'right'}}>TOTAL</td>
               <td className="num">₹{fmt(totalDr)}</td>
               <td className="num">₹{fmt(totalCr)}</td>
             </tr>
-            <tr><td colSpan="5" style={{textAlign:'center', padding:14}}>
-              {Math.abs(totalDr-totalCr) < 0.01 ? <span className="badge badge-success">✓ Balanced — Books are in order</span> : <span className="badge badge-danger">✗ Difference: ₹{fmt(Math.abs(totalDr-totalCr))}</span>}
+            <tr><td colSpan="6" style={{textAlign:'center',padding:14}}>
+              {Math.abs(totalDr-totalCr) < 0.01
+                ? <span className="badge badge-success">✓ Balanced — Books are in order</span>
+                : <span className="badge badge-danger">✗ Difference: ₹{fmt(Math.abs(totalDr-totalCr))}</span>}
             </td></tr>
           </tbody>
         </table>
         <div className="report-foot">
-          <span>Generated by MiyeeBooks · {new Date().toLocaleString('en-IN')}</span>
+          <span>Click any account row to view detailed ledger · Generated by MiyeeBooks · {new Date().toLocaleString('en-IN')}</span>
           <span>For {data.company.name}</span>
         </div>
       </div>
+
+      {drill && <LedgerDrillModal accountIds={drill.accountIds} title={drill.title} data={data} from={from} to={to} onClose={()=>setDrill(null)} />}
     </>
   );
 }
@@ -4821,89 +5174,190 @@ function TrialBalance({data, balances}){
 // PROFIT & LOSS (Schedule III)
 // ============================================================================
 function ProfitLoss({data, balances}){
-  const [period, setPeriod] = useState('FY');
+  const fyStart = data.company.fyStart || '';
+  const fyEnd   = data.company.fyEnd   || '';
+  const [from, setFrom] = useState(fyStart);
+  const [to,   setTo]   = useState(today());
+  const [drill, setDrill] = useState(null);
 
-  const get = (filter) => data.coa.filter(filter).reduce((s,a) => {
-    const b = balances[a.id] || 0;
+  // Period movements only (income/expense for selected period)
+  const pb = useMemo(() => computePeriodBals(data, from, to), [data, from, to]);
+
+  const getGroup = (groupFilter) => data.coa.filter(groupFilter).reduce((s,a) => {
+    const b = pb.period[a.id] || 0;
     return s + (a.type==='Income' ? -b : b);
   }, 0);
 
-  const revenue = get(a => a.type==='Income' && a.group==='Revenue from Operations');
-  const otherIncome = get(a => a.type==='Income' && a.group==='Other Income');
-  const costMat = get(a => a.group==='Cost of Materials' || a.group==='Purchase of Stock-in-Trade');
-  const empBenefit = get(a => a.group==='Employee Benefit Expenses');
-  const finCost = get(a => a.group==='Finance Costs');
-  const depr = get(a => a.group==='Depreciation');
-  const otherExp = get(a => a.group==='Other Expenses');
-  const totalRev = revenue + otherIncome;
-  const totalExp = costMat + empBenefit + finCost + depr + otherExp;
-  const pbt = totalRev - totalExp;
-  const tax = pbt > 0 ? pbt * 0.25 : 0;  // 25% rough
-  const pat = pbt - tax;
+  const getGroupAccIds = (groupFilter) => data.coa.filter(groupFilter).map(a=>a.id);
 
-  const row = (label, val, isBold) => (
-    <tr style={isBold ? {fontWeight:700, background:'var(--surface-2)'} : {}}>
-      <td>{label}</td>
+  const revenue    = getGroup(a => a.type==='Income' && a.group==='Revenue from Operations');
+  const otherInc   = getGroup(a => a.type==='Income' && a.group==='Other Income');
+  const costMat    = getGroup(a => a.group==='Cost of Materials' || a.group==='Purchase of Stock-in-Trade');
+  const empBenefit = getGroup(a => a.group==='Employee Benefit Expenses');
+  const finCost    = getGroup(a => a.group==='Finance Costs');
+  const depr       = getGroup(a => a.group==='Depreciation');
+  const otherExp   = getGroup(a => a.group==='Other Expenses');
+  const totalRev   = revenue + otherInc;
+  const totalExp   = costMat + empBenefit + finCost + depr + otherExp;
+  const pbt        = totalRev - totalExp;
+  const tax        = pbt > 0 ? Math.round(pbt * 0.25 * 100)/100 : 0;
+  const pat        = pbt - tax;
+
+  // Per-account note lines (for Notes section)
+  const incomeAccounts  = data.coa.filter(a=>a.type==='Income');
+  const expenseAccounts = data.coa.filter(a=>a.type==='Expense');
+
+  const drillRow = (label, val, ids, bold=false, isGroup=false) => (
+    <tr style={bold?{fontWeight:700,background:'var(--surface-2)'}:{}} onClick={ids?.length?()=>setDrill({accountIds:ids,title:label}):undefined}
+      className={ids?.length?'drill-row':''}>
+      <td style={{paddingLeft: isGroup?0:14, cursor: ids?.length?'pointer':'default'}}>
+        {ids?.length ? <span style={{color:'var(--primary)',textDecoration:'underline dotted'}}>{label}</span> : label}
+      </td>
       <td className="num">₹{fmt(val)}</td>
     </tr>
   );
+
+  const handleExcel = () => {
+    const incRows = incomeAccounts.map(a => {
+      const v = -(pb.period[a.id]||0); return [a.id, a.name, a.group, v||''];
+    }).filter(r=>r[3]);
+    const expRows = expenseAccounts.map(a => {
+      const v = (pb.period[a.id]||0); return [a.id, a.name, a.group, ''||'', v||''];
+    }).filter(r=>r[4]);
+    exportXLSX(`PnL_${data.company.name}_${from}_${to}.xlsx`, [
+      { name:'P&L Summary', rows:[
+        [`Statement of Profit & Loss — ${data.company.name}`],
+        [`Period: ${from} to ${to}`],[],
+        ['Particulars','Amount (₹)'],
+        ['I. INCOME',''],
+        ['Revenue from Operations', revenue],['Other Income', otherInc],['Total Income', totalRev],['',''],
+        ['II. EXPENSES',''],
+        ['Cost of Materials / Purchases', costMat],['Employee Benefit Expenses', empBenefit],
+        ['Finance Costs', finCost],['Depreciation & Amortization', depr],['Other Expenses', otherExp],
+        ['Total Expenses', totalExp],['',''],
+        ['III. Profit Before Tax (PBT)', pbt],
+        ['Current Tax (est. 25%)', tax],['V. Profit After Tax (PAT)', pat],
+      ]},
+      { name:'Income (Note)', rows:[['Code','Account','Group','Income (₹)'],...incRows]},
+      { name:'Expenses (Note)', rows:[['Code','Account','Group','','Expense (₹)'],...expRows]},
+    ]);
+  };
 
   return (
     <>
       <div className="page-head">
         <div>
           <h1 className="page-title">Profit & Loss Statement</h1>
-          <div className="page-sub">Schedule III, Division I · Period: {data.company.fyStart} to {today()}</div>
+          <div className="page-sub">Schedule III · Period: {from} → {to} · Click any line to view ledger details</div>
         </div>
         <div className="page-actions">
-          <button className="btn" onClick={() => window.print()}>⎙ Print</button>
+          <button className="btn btn-sm" onClick={handleExcel}>⬇ Excel</button>
+          <button className="btn btn-sm btn-primary" onClick={() => window.print()}>⎙ Print</button>
         </div>
+      </div>
+
+      <div style={{marginBottom:14}}>
+        <PeriodFilter data={data} from={from} to={to} onChange={(f,t)=>{setFrom(f);setTo(t);}} />
       </div>
 
       <div className="report">
         <div className="report-head">
           {data.company.logo && <img className="report-logo" src={data.company.logo} alt="Logo" />}
           <div className="report-co">{data.company.name}</div>
-          <div style={{fontSize:11, color:'var(--ink-3)'}}>CIN: {data.company.cin} · GSTIN: {data.company.gstin}</div>
+          <div style={{fontSize:11,color:'var(--ink-3)'}}>CIN: {data.company.cin} · GSTIN: {data.company.gstin}</div>
           <div className="report-title">Statement of Profit & Loss</div>
-          <div className="report-period">For the period {data.company.fyStart} to {today()}</div>
+          <div className="report-period">For the period {from} to {to}</div>
         </div>
 
         <table>
-          <thead>
-            <tr><th>Particulars</th><th className="num" style={{width:180}}>Amount (₹)</th></tr>
-          </thead>
+          <thead><tr><th>Particulars</th><th className="num" style={{width:200}}>Amount (₹)</th></tr></thead>
           <tbody>
             <tr className="group"><td colSpan="2">I. INCOME</td></tr>
-            {row('Revenue from Operations', revenue)}
-            {row('Other Income', otherIncome)}
-            {row('Total Income (I)', totalRev, true)}
+            {drillRow('Revenue from Operations', revenue, getGroupAccIds(a=>a.type==='Income'&&a.group==='Revenue from Operations'))}
+            {drillRow('Other Income', otherInc, getGroupAccIds(a=>a.type==='Income'&&a.group==='Other Income'))}
+            {drillRow('Total Income (I)', totalRev, null, true)}
 
             <tr className="group"><td colSpan="2">II. EXPENSES</td></tr>
-            {row('Cost of Materials Consumed / Purchases', costMat)}
-            {row('Employee Benefit Expenses', empBenefit)}
-            {row('Finance Costs', finCost)}
-            {row('Depreciation & Amortization', depr)}
-            {row('Other Expenses', otherExp)}
-            {row('Total Expenses (II)', totalExp, true)}
+            {drillRow('Cost of Materials Consumed / Purchases', costMat, getGroupAccIds(a=>a.group==='Cost of Materials'||a.group==='Purchase of Stock-in-Trade'))}
+            {drillRow('Employee Benefit Expenses', empBenefit, getGroupAccIds(a=>a.group==='Employee Benefit Expenses'))}
+            {drillRow('Finance Costs', finCost, getGroupAccIds(a=>a.group==='Finance Costs'))}
+            {drillRow('Depreciation & Amortization', depr, getGroupAccIds(a=>a.group==='Depreciation'))}
+            {drillRow('Other Expenses', otherExp, getGroupAccIds(a=>a.group==='Other Expenses'))}
+            {drillRow('Total Expenses (II)', totalExp, null, true)}
 
-            <tr className="total"><td>III. Profit Before Tax (I − II)</td><td className="num">₹{fmt(pbt)}</td></tr>
-
+            <tr className="total"><td>III. Profit Before Tax (I − II)</td><td className="num" style={{color:pbt>=0?'var(--primary)':'var(--danger)'}}>₹{fmt(pbt)}</td></tr>
             <tr className="group"><td colSpan="2">IV. TAX EXPENSE</td></tr>
-            {row('Current Tax (estimated @ 25%)', tax)}
-            {row('Deferred Tax', 0)}
-
-            <tr className="total"><td>V. Profit for the Period (PAT)</td><td className="num">₹{fmt(pat)}</td></tr>
-
-            <tr><td style={{paddingTop:14, fontSize:11, color:'var(--ink-3)'}}>Earnings Per Share (Basic & Diluted)</td><td className="num" style={{fontSize:11, color:'var(--ink-3)'}}>₹{((pat / Math.max(1, (balances['1100']||1000000)/10)) || 0).toFixed(2)}</td></tr>
+            {drillRow(`Current Tax (estimated @ 25%)`, tax, [])}
+            {drillRow('Deferred Tax', 0, [])}
+            <tr className="total"><td>V. Profit After Tax (PAT)</td><td className="num" style={{color:pat>=0?'var(--primary)':'var(--danger)'}}>₹{fmt(pat)}</td></tr>
+            <tr><td style={{paddingTop:14,fontSize:11,color:'var(--ink-3)'}}>Earnings Per Share (Basic &amp; Diluted)</td>
+              <td className="num" style={{fontSize:11,color:'var(--ink-3)'}}>₹{((pat/Math.max(1,(balances['1100']||1000000)/10))||0).toFixed(2)}</td></tr>
           </tbody>
         </table>
 
+        {/* Notes — Income breakdown */}
+        <div style={{marginTop:24}}>
+          <div style={{fontWeight:700,fontSize:13,borderBottom:'2px solid var(--ink)',paddingBottom:6,marginBottom:10}}>
+            Notes to Accounts — Income (Period: {from} to {to})
+          </div>
+          <table>
+            <thead><tr><th style={{width:80}}>Code</th><th>Account</th><th>Group</th><th className="num">Amount (₹)</th></tr></thead>
+            <tbody>
+              {incomeAccounts.filter(a=>pb.period[a.id]).map(a=>{
+                const val = -(pb.period[a.id]||0);
+                if(!val) return null;
+                return (
+                  <tr key={a.id} style={{cursor:'pointer'}} onClick={()=>setDrill({accountIds:[a.id],title:`${a.id} · ${a.name}`})} className="drill-row">
+                    <td style={{fontFamily:'var(--mono)',color:'var(--primary)'}}>{a.id}</td>
+                    <td style={{color:'var(--primary)',textDecoration:'underline dotted'}}>{a.name}</td>
+                    <td style={{fontSize:11,color:'var(--ink-3)'}}>{a.group}</td>
+                    <td className="num">{fmt(val)}</td>
+                  </tr>
+                );
+              })}
+              <tr style={{fontWeight:700,background:'var(--surface-2)'}}>
+                <td colSpan="3" style={{textAlign:'right'}}>Total Income</td>
+                <td className="num">₹{fmt(totalRev)}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        {/* Notes — Expense breakdown */}
+        <div style={{marginTop:18}}>
+          <div style={{fontWeight:700,fontSize:13,borderBottom:'2px solid var(--ink)',paddingBottom:6,marginBottom:10}}>
+            Notes to Accounts — Expenses (Period: {from} to {to})
+          </div>
+          <table>
+            <thead><tr><th style={{width:80}}>Code</th><th>Account</th><th>Group</th><th className="num">Amount (₹)</th></tr></thead>
+            <tbody>
+              {expenseAccounts.filter(a=>pb.period[a.id]).map(a=>{
+                const val = pb.period[a.id]||0;
+                if(!val) return null;
+                return (
+                  <tr key={a.id} style={{cursor:'pointer'}} onClick={()=>setDrill({accountIds:[a.id],title:`${a.id} · ${a.name}`})} className="drill-row">
+                    <td style={{fontFamily:'var(--mono)',color:'var(--danger)'}}>{a.id}</td>
+                    <td style={{color:'var(--primary)',textDecoration:'underline dotted'}}>{a.name}</td>
+                    <td style={{fontSize:11,color:'var(--ink-3)'}}>{a.group}</td>
+                    <td className="num">{fmt(val)}</td>
+                  </tr>
+                );
+              })}
+              <tr style={{fontWeight:700,background:'var(--surface-2)'}}>
+                <td colSpan="3" style={{textAlign:'right'}}>Total Expenses</td>
+                <td className="num">₹{fmt(totalExp)}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
         <div className="report-foot">
-          <span>Notes: Tax estimate at 25% MSME rate · Subject to audit · Generated {new Date().toLocaleDateString('en-IN')}</span>
+          <span>Tax estimate at 25% MSME rate · Subject to audit · Click any line for ledger detail · Generated {new Date().toLocaleDateString('en-IN')}</span>
           <span>MiyeeBooks · {data.company.name}</span>
         </div>
       </div>
+
+      {drill && <LedgerDrillModal accountIds={drill.accountIds} title={drill.title} data={data} from={from} to={to} onClose={()=>setDrill(null)} />}
     </>
   );
 }
@@ -4913,73 +5367,119 @@ function ProfitLoss({data, balances}){
 // ============================================================================
 function BalanceSheet({data, balances}){
   const [asOn, setAsOn] = useState(today());
+  const [drill, setDrill] = useState(null);
 
-  // Compute current period profit (for Reserves & Surplus)
-  const getBal = (id) => balances[id] || 0;
-  const sumByGroup = (groupName) => data.coa.filter(a => a.group === groupName).reduce((s,a) => {
-    const b = getBal(a.id);
-    if(a.type==='Asset') return s + b;
-    if(['Liability','Equity'].includes(a.type)) return s + (-b);
-    return s;
-  }, 0);
-  const sumByType = (type, contraExclude=true) => data.coa.filter(a => a.type===type && (!contraExclude || !a.contra)).reduce((s,a) => {
-    const b = getBal(a.id);
-    if(a.type==='Asset') return s + b;
-    if(['Liability','Equity','Income'].includes(a.type)) return s + (-b);
-    if(a.type==='Expense') return s + b;
-    return s;
-  }, 0);
+  // Balance sheet uses as-on balances (all movements up to asOn date)
+  const pbFull = useMemo(() => computePeriodBals(data, data.company.fyStart||'', asOn), [data, asOn]);
+  const bals = pbFull.asOn;
+  const g = (id) => bals[id] || 0;
 
-  // Profit for period
-  const income = data.coa.filter(a => a.type==='Income').reduce((s,a) => s + (-getBal(a.id)), 0);
-  const expense = data.coa.filter(a => a.type==='Expense').reduce((s,a) => s + getBal(a.id), 0);
+  // P&L for the period (FY start → asOn) — uses period movements
+  const income   = data.coa.filter(a=>a.type==='Income').reduce((s,a)=>s+(-( pbFull.period[a.id]||0)),0);
+  const expense  = data.coa.filter(a=>a.type==='Expense').reduce((s,a)=>s+(pbFull.period[a.id]||0),0);
   const currentProfit = income - expense;
 
   // Equity & Liabilities
-  const shareCapital = -getBal('1100');
-  const reserves = -getBal('1110') + currentProfit;
-  const lt_borrowings = -getBal('1200');
-  const dtl = -getBal('1210');
-  const tradePayables = -getBal('1300');
-  const otherCL = -(getBal('1310')+getBal('1311')+getBal('1312')+getBal('1313')+getBal('1320'));
-  const provisions = -getBal('1330');
+  const shareCapital   = -g('1100');
+  const reserves       = -g('1110') + currentProfit;
+  const lt_borrowings  = -g('1200');
+  const dtl            = -g('1210');
+  const tradePayables  = -g('1300');
+  const otherCL        = -(g('1310')+g('1311')+g('1312')+g('1313')+g('1320'));
+  const provisions     = -g('1330');
+  const totalEquity    = shareCapital + reserves;
+  const totalNCL       = lt_borrowings + dtl;
+  const totalCL        = tradePayables + otherCL + provisions;
+  const totalLiab      = totalEquity + totalNCL + totalCL;
 
   // Assets
-  const grossPPE = getBal('2100') + getBal('2110') + getBal('2120');
-  const accDepr = getBal('2130');  // negative
-  const netPPE = grossPPE + accDepr;
-  const investments = getBal('2200');
-  const inventory = getBal('2300') + getBal('2310');
-  const tradeReceivables = getBal('2400');
-  const cashEq = getBal('2500') + getBal('2510') + getBal('2511') + getBal('2520');
-  const otherCA = getBal('2600') + getBal('2601') + getBal('2602') + getBal('2700');
+  const grossPPE        = g('2100')+g('2110')+g('2120');
+  const accDepr         = g('2130');
+  const netPPE          = grossPPE + accDepr;
+  const investments     = g('2200');
+  const inventory       = g('2300')+g('2310');
+  const tradeRec        = g('2400');
+  const cashEq          = g('2500')+g('2510')+g('2511')+g('2520');
+  const otherCA         = g('2600')+g('2601')+g('2602')+g('2700');
+  const totalNCA        = netPPE + investments;
+  const totalCA         = inventory + tradeRec + cashEq + otherCA;
+  const totalAssets     = totalNCA + totalCA;
 
-  const totalEquity = shareCapital + reserves;
-  const totalNCL = lt_borrowings + dtl;
-  const totalCL = tradePayables + otherCL + provisions;
-  const totalLiab = totalEquity + totalNCL + totalCL;
-
-  const totalNCA = netPPE + investments;
-  const totalCA = inventory + tradeReceivables + cashEq + otherCA;
-  const totalAssets = totalNCA + totalCA;
-
-  const row = (label, val, indent=false, bold=false) => (
-    <tr style={bold?{fontWeight:700}:{}}>
-      <td style={{paddingLeft: indent?28:12}}>{label}</td>
-      <td className="num">{val !== null ? '₹'+fmt(val) : ''}</td>
+  // Helper: clickable row
+  const dRow = (label, val, ids, indent=false, bold=false) => (
+    <tr style={bold?{fontWeight:700}:{}} onClick={ids?.length?()=>setDrill({accountIds:ids,title:label}):undefined}
+      className={ids?.length?'drill-row':''}>
+      <td style={{paddingLeft:indent?28:12, cursor:ids?.length?'pointer':'default'}}>
+        {ids?.length ? <span style={{color:'var(--primary)',textDecoration:'underline dotted'}}>{label}</span> : label}
+      </td>
+      <td className="num">{val!==null?'₹'+fmt(val):''}</td>
     </tr>
   );
+
+  const handleExcel = () => {
+    const assetRows = data.coa.filter(a=>a.type==='Asset'&&bals[a.id]).map(a=>[a.id,a.name,a.group,bals[a.id]||'']);
+    const liabRows  = data.coa.filter(a=>['Liability','Equity'].includes(a.type)&&bals[a.id]).map(a=>[a.id,a.name,a.group,-(bals[a.id]||0)]);
+    exportXLSX(`BalanceSheet_${data.company.name}_${asOn}.xlsx`,[
+      {name:'Balance Sheet', rows:[
+        [`Balance Sheet — ${data.company.name}`],[`As at ${asOn}`],[],
+        ['Particulars','Amount (₹)'],
+        ['I. EQUITY AND LIABILITIES',''],
+        ['Share Capital', shareCapital],['Reserves & Surplus (incl. profit)', reserves],
+        ['Sub-total — Shareholders\' Funds', totalEquity],
+        ['Long-term Borrowings', lt_borrowings],['Deferred Tax Liability', dtl],['Sub-total — NCL', totalNCL],
+        ['Trade Payables', tradePayables],['Other CL (Statutory)', otherCL],['Provisions', provisions],
+        ['Sub-total — CL', totalCL],['TOTAL EQUITY & LIABILITIES', totalLiab],['',''],
+        ['II. ASSETS',''],
+        ['PPE (Net)', netPPE],['  Gross Block', grossPPE],['  Acc. Depreciation', Math.abs(accDepr)],
+        ['Non-Current Investments', investments],['Sub-total — NCA', totalNCA],
+        ['Inventories', inventory],['Trade Receivables', tradeRec],
+        ['Cash & Equivalents', cashEq],['Other Current Assets', otherCA],['Sub-total — CA', totalCA],
+        ['TOTAL ASSETS', totalAssets],
+      ]},
+      {name:'Assets (Notes)', rows:[['Code','Account','Group','Balance (₹)'],...assetRows]},
+      {name:'Liabilities (Notes)', rows:[['Code','Account','Group','Balance (₹)'],...liabRows]},
+    ]);
+  };
+
+  // Notes: detailed account list per section
+  const noteSection = (title, filter, sign=1) => {
+    const accs = data.coa.filter(filter).filter(a=>bals[a.id]);
+    if(!accs.length) return null;
+    return (
+      <div style={{marginTop:16}}>
+        <div style={{fontWeight:600,fontSize:12,color:'var(--ink-2)',borderBottom:'1px solid var(--line)',paddingBottom:4,marginBottom:6}}>{title}</div>
+        <table style={{width:'100%',borderCollapse:'collapse',fontSize:12}}>
+          <thead><tr>
+            <th style={{padding:'5px 8px',textAlign:'left',background:'var(--surface-2)',borderBottom:'1px solid var(--line)',width:80}}>Code</th>
+            <th style={{padding:'5px 8px',textAlign:'left',background:'var(--surface-2)',borderBottom:'1px solid var(--line)'}}>Account</th>
+            <th style={{padding:'5px 8px',textAlign:'right',background:'var(--surface-2)',borderBottom:'1px solid var(--line)',width:140}}>Balance (₹)</th>
+          </tr></thead>
+          <tbody>
+            {accs.map(a=>(
+              <tr key={a.id} style={{cursor:'pointer',borderBottom:'1px solid var(--line)'}}
+                onClick={()=>setDrill({accountIds:[a.id],title:`${a.id} · ${a.name}`})} className="drill-row">
+                <td style={{padding:'5px 8px',fontFamily:'var(--mono)',color:'var(--primary)'}}>{a.id}</td>
+                <td style={{padding:'5px 8px',color:'var(--primary)',textDecoration:'underline dotted'}}>{a.name}</td>
+                <td style={{padding:'5px 8px',textAlign:'right',fontFamily:'var(--mono)'}}>{fmt(Math.abs(bals[a.id]||0))}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    );
+  };
 
   return (
     <>
       <div className="page-head">
         <div>
           <h1 className="page-title">Balance Sheet</h1>
-          <div className="page-sub">Schedule III, Division I · Vertical format · As on {asOn}</div>
+          <div className="page-sub">Schedule III · As at {asOn} · Click any line to drill into the ledger</div>
         </div>
         <div className="page-actions">
-          <input type="date" value={asOn} onChange={e => setAsOn(e.target.value)} className="btn" style={{padding:'6px 10px'}} />
-          <button className="btn" onClick={() => window.print()}>⎙ Print</button>
+          <input type="date" value={asOn} onChange={e=>setAsOn(e.target.value)} className="btn" style={{padding:'6px 10px'}} />
+          <button className="btn btn-sm" onClick={handleExcel}>⬇ Excel</button>
+          <button className="btn btn-sm btn-primary" onClick={()=>window.print()}>⎙ Print</button>
         </div>
       </div>
 
@@ -4987,64 +5487,84 @@ function BalanceSheet({data, balances}){
         <div className="report-head">
           {data.company.logo && <img className="report-logo" src={data.company.logo} alt="Logo" />}
           <div className="report-co">{data.company.name}</div>
-          <div style={{fontSize:11, color:'var(--ink-3)'}}>CIN: {data.company.cin} · PAN: {data.company.pan} · GSTIN: {data.company.gstin}</div>
+          <div style={{fontSize:11,color:'var(--ink-3)'}}>CIN: {data.company.cin} · PAN: {data.company.pan} · GSTIN: {data.company.gstin}</div>
           <div className="report-title">Balance Sheet</div>
           <div className="report-period">As at {asOn}</div>
         </div>
 
         <table>
-          <thead>
-            <tr><th>Particulars</th><th className="num" style={{width:180}}>Amount (₹)</th></tr>
-          </thead>
+          <thead><tr><th>Particulars</th><th className="num" style={{width:200}}>Amount (₹)</th></tr></thead>
           <tbody>
             <tr className="group"><td colSpan="2">I. EQUITY AND LIABILITIES</td></tr>
-
             <tr style={{fontWeight:600}}><td>(1) Shareholders' Funds</td><td></td></tr>
-            {row('(a) Share Capital', shareCapital, true)}
-            {row('(b) Reserves & Surplus (incl. current profit)', reserves, true)}
-            <tr style={{fontWeight:600, background:'var(--surface-2)'}}><td style={{paddingLeft:12}}>Sub-total — Shareholders' Funds</td><td className="num">₹{fmt(totalEquity)}</td></tr>
+            {dRow('(a) Share Capital', shareCapital, ['1100'], true)}
+            {dRow('(b) Reserves & Surplus (incl. current profit ₹'+fmt(currentProfit)+')', reserves, ['1110'], true)}
+            <tr style={{fontWeight:700,background:'var(--surface-2)'}}><td style={{paddingLeft:12}}>Sub-total — Shareholders' Funds</td><td className="num">₹{fmt(totalEquity)}</td></tr>
 
             <tr style={{fontWeight:600}}><td>(2) Non-Current Liabilities</td><td></td></tr>
-            {row('(a) Long-term Borrowings', lt_borrowings, true)}
-            {row('(b) Deferred Tax Liabilities (Net)', dtl, true)}
-            <tr style={{fontWeight:600, background:'var(--surface-2)'}}><td style={{paddingLeft:12}}>Sub-total — Non-Current Liab.</td><td className="num">₹{fmt(totalNCL)}</td></tr>
+            {dRow('(a) Long-term Borrowings', lt_borrowings, ['1200'], true)}
+            {dRow('(b) Deferred Tax Liabilities (Net)', dtl, ['1210'], true)}
+            <tr style={{fontWeight:700,background:'var(--surface-2)'}}><td style={{paddingLeft:12}}>Sub-total — Non-Current Liab.</td><td className="num">₹{fmt(totalNCL)}</td></tr>
 
             <tr style={{fontWeight:600}}><td>(3) Current Liabilities</td><td></td></tr>
-            {row('(a) Trade Payables', tradePayables, true)}
-            {row('(b) Other Current Liabilities (Statutory: GST, TDS, Salary)', otherCL, true)}
-            {row('(c) Short-term Provisions', provisions, true)}
-            <tr style={{fontWeight:600, background:'var(--surface-2)'}}><td style={{paddingLeft:12}}>Sub-total — Current Liab.</td><td className="num">₹{fmt(totalCL)}</td></tr>
-
-            <tr className="total"><td>TOTAL EQUITY & LIABILITIES</td><td className="num">₹{fmt(totalLiab)}</td></tr>
+            {dRow('(a) Trade Payables', tradePayables, ['1300'], true)}
+            {dRow('(b) Other Current Liabilities (Statutory: GST, TDS, Salary)', otherCL, ['1310','1311','1312','1313','1320'], true)}
+            {dRow('(c) Short-term Provisions', provisions, ['1330'], true)}
+            <tr style={{fontWeight:700,background:'var(--surface-2)'}}><td style={{paddingLeft:12}}>Sub-total — Current Liab.</td><td className="num">₹{fmt(totalCL)}</td></tr>
+            <tr className="total"><td>TOTAL EQUITY &amp; LIABILITIES</td><td className="num">₹{fmt(totalLiab)}</td></tr>
 
             <tr className="group"><td colSpan="2">II. ASSETS</td></tr>
-
             <tr style={{fontWeight:600}}><td>(1) Non-Current Assets</td><td></td></tr>
-            {row('(a) Property, Plant & Equipment (Net of depreciation)', netPPE, true)}
-            <tr><td style={{paddingLeft:42, fontSize:11, color:'var(--ink-3)'}}>Gross Block: ₹{fmt(grossPPE)} · Acc. Depr: ₹{fmt(Math.abs(accDepr))}</td><td></td></tr>
-            {row('(b) Non-Current Investments', investments, true)}
-            <tr style={{fontWeight:600, background:'var(--surface-2)'}}><td style={{paddingLeft:12}}>Sub-total — Non-Current Assets</td><td className="num">₹{fmt(totalNCA)}</td></tr>
+            {dRow('(a) Property, Plant & Equipment (Net)', netPPE, ['2100','2110','2120','2130'], true)}
+            <tr><td style={{paddingLeft:42,fontSize:11,color:'var(--ink-3)'}}>Gross Block: ₹{fmt(grossPPE)} · Acc. Depr: ₹{fmt(Math.abs(accDepr))}</td><td></td></tr>
+            {dRow('(b) Non-Current Investments', investments, ['2200'], true)}
+            <tr style={{fontWeight:700,background:'var(--surface-2)'}}><td style={{paddingLeft:12}}>Sub-total — Non-Current Assets</td><td className="num">₹{fmt(totalNCA)}</td></tr>
 
             <tr style={{fontWeight:600}}><td>(2) Current Assets</td><td></td></tr>
-            {row('(a) Inventories', inventory, true)}
-            {row('(b) Trade Receivables', tradeReceivables, true)}
-            {row('(c) Cash & Cash Equivalents', cashEq, true)}
-            {row('(d) Other Current Assets (GST ITC, TDS Receivable)', otherCA, true)}
-            <tr style={{fontWeight:600, background:'var(--surface-2)'}}><td style={{paddingLeft:12}}>Sub-total — Current Assets</td><td className="num">₹{fmt(totalCA)}</td></tr>
-
+            {dRow('(a) Inventories', inventory, ['2300','2310'], true)}
+            {dRow('(b) Trade Receivables', tradeRec, ['2400'], true)}
+            {dRow('(c) Cash & Cash Equivalents', cashEq, ['2500','2510','2511','2520'], true)}
+            {dRow('(d) Other Current Assets (GST ITC, TDS Receivable)', otherCA, ['2600','2601','2602','2700'], true)}
+            <tr style={{fontWeight:700,background:'var(--surface-2)'}}><td style={{paddingLeft:12}}>Sub-total — Current Assets</td><td className="num">₹{fmt(totalCA)}</td></tr>
             <tr className="total"><td>TOTAL ASSETS</td><td className="num">₹{fmt(totalAssets)}</td></tr>
 
-            <tr><td colSpan="2" style={{textAlign:'center', padding:14}}>
-              {Math.abs(totalLiab-totalAssets) < 1 ? <span className="badge badge-success">✓ Balance Sheet Tallied</span> : <span className="badge badge-danger">⚠ Difference: ₹{fmt(totalLiab-totalAssets)} — check entries</span>}
+            <tr><td colSpan="2" style={{textAlign:'center',padding:14}}>
+              {Math.abs(totalLiab-totalAssets) < 1
+                ? <span className="badge badge-success">✓ Balance Sheet Tallied</span>
+                : <span className="badge badge-danger">⚠ Difference: ₹{fmt(totalLiab-totalAssets)} — check entries</span>}
             </td></tr>
           </tbody>
         </table>
 
+        {/* Notes section */}
+        <div style={{marginTop:28}}>
+          <div style={{fontWeight:700,fontSize:14,borderBottom:'2px solid var(--ink)',paddingBottom:6,marginBottom:12}}>Notes to Balance Sheet — As at {asOn}</div>
+          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:20}}>
+            <div>
+              {noteSection('Note 1 — Fixed Assets', a=>a.group==='Fixed Assets'||a.group==='Plant & Machinery'||a.group==='Furniture & Fixtures'||a.schedule==='Property, Plant & Equipment')}
+              {noteSection('Note 2 — Investments', a=>a.group==='Investments'||a.group==='Non-Current Investments')}
+              {noteSection('Note 3 — Inventories', a=>a.group==='Inventories'||a.id==='2300'||a.id==='2310')}
+              {noteSection('Note 4 — Trade Receivables', a=>a.id==='2400'||a.group==='Trade Receivables')}
+              {noteSection('Note 5 — Cash & Bank', a=>a.isBank||a.schedule==='Cash & Equivalents'||['2500','2510','2511','2520'].includes(a.id))}
+              {noteSection('Note 6 — Other Current Assets', a=>['2600','2601','2602','2700'].includes(a.id)||a.group==='Other Current Assets')}
+            </div>
+            <div>
+              {noteSection('Note 7 — Share Capital & Equity', a=>a.type==='Equity'||a.id==='1100'||a.id==='1110')}
+              {noteSection('Note 8 — Long-term Borrowings', a=>a.id==='1200'||a.group==='Long-term Borrowings')}
+              {noteSection('Note 9 — Trade Payables', a=>a.id==='1300'||a.group==='Trade Payables')}
+              {noteSection('Note 10 — Other Current Liabilities', a=>['1310','1311','1312','1313','1320','1330'].includes(a.id)||a.group==='Other Current Liabilities')}
+            </div>
+          </div>
+        </div>
+
         <div className="report-foot">
-          <span>Significant Accounting Policies & Notes form integral part · Subject to audit</span>
+          <span>Significant Accounting Policies &amp; Notes form integral part · Subject to audit · Click any line for ledger detail</span>
           <span>For {data.company.name} · MiyeeBooks</span>
         </div>
       </div>
+
+      {drill && <LedgerDrillModal accountIds={drill.accountIds} title={drill.title} data={data}
+        from={data.company.fyStart||''} to={asOn} onClose={()=>setDrill(null)} />}
     </>
   );
 }
@@ -5053,73 +5573,101 @@ function BalanceSheet({data, balances}){
 // CASH FLOW (AS-3 Indirect Method)
 // ============================================================================
 function CashFlow({data, balances}){
-  const getBal = (id) => balances[id] || 0;
+  const fyStart = data.company.fyStart || '';
+  const [from, setFrom] = useState(fyStart);
+  const [to,   setTo]   = useState(today());
 
-  // Net profit before tax (indirect method starting point)
-  const income = data.coa.filter(a => a.type==='Income').reduce((s,a) => s + (-getBal(a.id)), 0);
-  const expense = data.coa.filter(a => a.type==='Expense').reduce((s,a) => s + getBal(a.id), 0);
+  const pb = useMemo(() => computePeriodBals(data, from, to), [data, from, to]);
+  const g  = (id) => pb.asOn[id] || 0;
+  const op = (id) => pb.opening[id] || 0;
+  const pd = (id) => pb.period[id] || 0;
+
+  // PBT from period movements
+  const income  = data.coa.filter(a=>a.type==='Income').reduce((s,a)=>s+(-pd(a.id)),0);
+  const expense = data.coa.filter(a=>a.type==='Expense').reduce((s,a)=>s+pd(a.id),0);
   const pbt = income - expense;
 
-  // Non-cash adjustments
-  const depr = getBal('4400');
-  const interestExp = getBal('4300');
-  const interestInc = -getBal('3200');
-  const forexLoss = getBal('4560');
-  const forexGain = -getBal('3210');
+  // Non-cash adjustments (period movements)
+  const depr       = pd('4400');
+  const interestExp= pd('4300');
+  const interestInc= -pd('3200');
+  const forexLoss  = pd('4560');
+  const forexGain  = -pd('3210');
 
-  // Working capital changes (current - opening, sign-adjusted)
-  const wcChange = (id, isAsset) => {
-    const acc = data.coa.find(a => a.id === id);
-    if(!acc) return 0;
-    const opening = acc.opening || 0;
-    const current = getBal(id);
-    const movement = current - opening;
-    // Asset increase = cash outflow (negative); Liability increase = cash inflow (positive)
-    return isAsset ? -movement : -movement;  // For liability stored as negative balance, increase in liab = more negative balance => -(more negative - less negative) = positive
+  // Working capital changes = asOn balance - opening balance (sign-adjusted)
+  const wcDelta = (id, isAsset) => {
+    const delta = g(id) - op(id);  // movement in period
+    return isAsset ? -delta : delta;
   };
-
-  const debtorsChange = -((getBal('2400')) - (data.coa.find(a => a.id==='2400')?.opening || 0));
-  const inventoryChange = -(((getBal('2300')+getBal('2310'))) - ((data.coa.find(a=>a.id==='2300')?.opening||0)+(data.coa.find(a=>a.id==='2310')?.opening||0)));
-  const creditorsChange = -(((-getBal('1300'))) - ((-(data.coa.find(a=>a.id==='1300')?.opening||0))));
-  const gstChange = -(((-getBal('1310'))+(-getBal('1311'))+(-getBal('1312'))) - 0);
+  const debtorsChange   = wcDelta('2400', true);
+  const inventoryChange = (wcDelta('2300',true)+wcDelta('2310',true));
+  const creditorsChange = -(g('1300')-op('1300')); // creditor increase = positive cash
+  const gstChange       = -((g('1310')-op('1310'))+(g('1311')-op('1311'))+(g('1312')-op('1312')));
 
   const operatingProfit = pbt + depr + interestExp - interestInc + forexLoss - forexGain;
-  const cfo = operatingProfit + debtorsChange + inventoryChange + creditorsChange + gstChange;
-  const taxPaid = 0;  // Simplified
-  const netCFO = cfo - taxPaid;
+  const cfo    = operatingProfit + debtorsChange + inventoryChange + creditorsChange + gstChange;
+  const netCFO = cfo; // tax paid simplified = 0
 
-  // Investing
-  const ppeChange = -(((getBal('2100')+getBal('2110')+getBal('2120'))) - ((data.coa.find(a=>a.id==='2100')?.opening||0)+(data.coa.find(a=>a.id==='2110')?.opening||0)+(data.coa.find(a=>a.id==='2120')?.opening||0)));
-  const investChange = -((getBal('2200')) - (data.coa.find(a=>a.id==='2200')?.opening||0));
+  // Investing — change in non-current assets during period
+  const ppeChange    = -((g('2100')+g('2110')+g('2120'))-(op('2100')+op('2110')+op('2120')));
+  const investChange = -(g('2200')-op('2200'));
   const netCFI = ppeChange + investChange + interestInc;
 
-  // Financing
-  const borrowingChange = (-getBal('1200')) - (-(data.coa.find(a=>a.id==='1200')?.opening||0));
-  const capitalChange = (-getBal('1100')) - (-(data.coa.find(a=>a.id==='1100')?.opening||0));
+  // Financing — change in long-term liabilities + capital during period
+  const borrowingChange = -(g('1200')-op('1200'));  // liability decrease = positive
+  const capitalChange   = -(g('1100')-op('1100'));
   const netCFF = borrowingChange + capitalChange - interestExp;
 
-  const netChange = netCFO + netCFI + netCFF;
-  const openingCash = (data.coa.find(a=>a.id==='2500')?.opening||0) + (data.coa.find(a=>a.id==='2510')?.opening||0) + (data.coa.find(a=>a.id==='2511')?.opening||0) + (data.coa.find(a=>a.id==='2520')?.opening||0);
-  const closingCash = openingCash + netChange;
-  const actualClosingCash = getBal('2500') + getBal('2510') + getBal('2511') + getBal('2520');
+  const netChange    = netCFO + netCFI + netCFF;
+  const openingCash  = op('2500')+op('2510')+op('2511')+op('2520');
+  const closingCash  = openingCash + netChange;
+  const actualClose  = g('2500')+g('2510')+g('2511')+g('2520');
 
   const row = (label, val, indent=false, bold=false) => (
-    <tr style={bold?{fontWeight:700, background:'var(--surface-2)'}:{}}>
+    <tr style={bold?{fontWeight:700,background:'var(--surface-2)'}:{}}>
       <td style={{paddingLeft:indent?28:12}}>{label}</td>
-      <td className="num">{val !== null ? '₹'+fmt(val) : ''}</td>
+      <td className="num" style={{color:val<0?'var(--danger)':undefined}}>₹{fmt(val)}</td>
     </tr>
   );
+
+  const handleExcel = () => exportXLSX(`CashFlow_${data.company.name}_${from}_${to}.xlsx`,[{
+    name:'Cash Flow', rows:[
+      [`Cash Flow Statement — ${data.company.name}`],[`Period: ${from} to ${to}`],[`AS-3 (Revised) · Indirect Method`],[],
+      ['Particulars','Amount (₹)'],
+      ['A. OPERATING ACTIVITIES',''],
+      ['Net Profit Before Tax (PBT)', pbt],
+      ['Add: Depreciation', depr],['Add: Interest Expense', interestExp],
+      ['Less: Interest Income', -interestInc],['Forex Loss/(Gain)', forexLoss-forexGain],
+      ['Operating Profit before WC Changes', operatingProfit],
+      ['(Inc)/Dec in Trade Receivables', debtorsChange],['(Inc)/Dec in Inventories', inventoryChange],
+      ['Inc/(Dec) in Trade Payables', creditorsChange],['Inc/(Dec) in GST Payable', gstChange],
+      ['Net Cash from Operating (A)', netCFO],['',''],
+      ['B. INVESTING ACTIVITIES',''],
+      ['Purchase of PPE (net)', ppeChange],['Purchase/Sale of Investments', investChange],
+      ['Interest Received', interestInc],['Net Cash from Investing (B)', netCFI],['',''],
+      ['C. FINANCING ACTIVITIES',''],
+      ['Borrowings Net Change', borrowingChange],['Capital Issued', capitalChange],
+      ['Less: Interest Paid', -interestExp],['Net Cash from Financing (C)', netCFF],['',''],
+      ['NET CHANGE IN CASH (A+B+C)', netChange],
+      ['Opening Cash & Equivalents', openingCash],['Closing Cash & Equivalents', closingCash],
+    ]
+  }]);
 
   return (
     <>
       <div className="page-head">
         <div>
           <h1 className="page-title">Cash Flow Statement</h1>
-          <div className="page-sub">AS-3 (Revised) · Indirect Method · {data.company.fyStart} to {today()}</div>
+          <div className="page-sub">AS-3 (Revised) · Indirect Method · Period: {from} → {to}</div>
         </div>
         <div className="page-actions">
-          <button className="btn" onClick={() => window.print()}>⎙ Print</button>
+          <button className="btn btn-sm" onClick={handleExcel}>⬇ Excel</button>
+          <button className="btn btn-sm btn-primary" onClick={() => window.print()}>⎙ Print</button>
         </div>
+      </div>
+
+      <div style={{marginBottom:14}}>
+        <PeriodFilter data={data} from={from} to={to} onChange={(f,t)=>{setFrom(f);setTo(t);}} />
       </div>
 
       <div className="report">
@@ -5127,53 +5675,54 @@ function CashFlow({data, balances}){
           {data.company.logo && <img className="report-logo" src={data.company.logo} alt="Logo" />}
           <div className="report-co">{data.company.name}</div>
           <div className="report-title">Cash Flow Statement</div>
-          <div className="report-period">For the period ended {today()}</div>
+          <div className="report-period">For the period {from} to {to}</div>
         </div>
-
         <table>
-          <thead><tr><th>Particulars</th><th className="num" style={{width:180}}>Amount (₹)</th></tr></thead>
+          <thead><tr><th>Particulars</th><th className="num" style={{width:200}}>Amount (₹)</th></tr></thead>
           <tbody>
             <tr className="group"><td colSpan="2">A. CASH FLOW FROM OPERATING ACTIVITIES</td></tr>
             {row('Net Profit Before Tax', pbt)}
-            <tr><td style={{paddingLeft:12, fontStyle:'italic', color:'var(--ink-3)'}}>Adjustments for non-cash items:</td><td></td></tr>
-            {row('Add: Depreciation', depr, true)}
-            {row('Add: Interest Expense', interestExp, true)}
+            <tr><td style={{paddingLeft:12,fontStyle:'italic',color:'var(--ink-3)'}}>Adjustments for non-cash items:</td><td></td></tr>
+            {row('Add: Depreciation & Amortization', depr, true)}
+            {row('Add: Interest / Finance Cost', interestExp, true)}
             {row('Less: Interest Income', -interestInc, true)}
-            {row('Add: Forex Loss / (Less: Forex Gain)', forexLoss-forexGain, true)}
+            {row('Add: Forex Loss / (Less: Gain)', forexLoss-forexGain, true)}
             {row('Operating Profit before Working Capital Changes', operatingProfit, false, true)}
-            <tr><td style={{paddingLeft:12, fontStyle:'italic', color:'var(--ink-3)'}}>Adjustments for working capital:</td><td></td></tr>
+            <tr><td style={{paddingLeft:12,fontStyle:'italic',color:'var(--ink-3)'}}>Working capital adjustments:</td><td></td></tr>
             {row('(Increase) / Decrease in Trade Receivables', debtorsChange, true)}
             {row('(Increase) / Decrease in Inventories', inventoryChange, true)}
             {row('Increase / (Decrease) in Trade Payables', creditorsChange, true)}
             {row('Increase / (Decrease) in GST Payable (net)', gstChange, true)}
             {row('Cash Generated from Operations', cfo, false, true)}
-            {row('Less: Income Tax Paid', -taxPaid, true)}
+            {row('Less: Income Tax Paid (estimated)', 0, true)}
             {row('Net Cash from Operating Activities (A)', netCFO, false, true)}
 
             <tr className="group"><td colSpan="2">B. CASH FLOW FROM INVESTING ACTIVITIES</td></tr>
-            {row('Purchase of PPE (net)', ppeChange, true)}
-            {row('Purchase / (Sale) of Investments', investChange, true)}
-            {row('Interest Received', interestInc, true)}
+            {row('(Purchase) / Sale of PPE — net', ppeChange, true)}
+            {row('(Purchase) / Sale of Investments', investChange, true)}
+            {row('Interest / Dividend Received', interestInc, true)}
             {row('Net Cash from Investing Activities (B)', netCFI, false, true)}
 
             <tr className="group"><td colSpan="2">C. CASH FLOW FROM FINANCING ACTIVITIES</td></tr>
             {row('Proceeds from / (Repayment of) Borrowings', borrowingChange, true)}
             {row('Proceeds from Share Capital Issue', capitalChange, true)}
-            {row('Less: Interest Paid', -interestExp, true)}
+            {row('Less: Interest / Finance Cost Paid', -interestExp, true)}
             {row('Net Cash from Financing Activities (C)', netCFF, false, true)}
 
-            <tr className="total"><td>NET INCREASE / (DECREASE) IN CASH (A+B+C)</td><td className="num">₹{fmt(netChange)}</td></tr>
+            <tr className="total"><td>NET INCREASE / (DECREASE) IN CASH (A+B+C)</td>
+              <td className="num" style={{color:netChange>=0?'var(--primary)':'var(--danger)'}}>₹{fmt(netChange)}</td></tr>
             {row('Cash & Equivalents at Beginning of Period', openingCash)}
             {row('Cash & Equivalents at End of Period', closingCash, false, true)}
 
-            <tr><td colSpan="2" style={{textAlign:'center', padding:14}}>
-              {Math.abs(closingCash - actualClosingCash) < 1 ? <span className="badge badge-success">✓ Reconciled with Balance Sheet</span> : <span className="badge badge-gold">Difference: ₹{fmt(closingCash - actualClosingCash)} — check non-trade items</span>}
+            <tr><td colSpan="2" style={{textAlign:'center',padding:14}}>
+              {Math.abs(closingCash-actualClose) < 1
+                ? <span className="badge badge-success">✓ Reconciled with Balance Sheet (Actual: ₹{fmt(actualClose)})</span>
+                : <span className="badge badge-gold">Note: Difference ₹{fmt(Math.abs(closingCash-actualClose))} — may include non-operating items</span>}
             </td></tr>
           </tbody>
         </table>
-
         <div className="report-foot">
-          <span>Prepared under AS-3 (Indirect Method) · Forex gains/losses are unrealised unless on monetary items at year-end</span>
+          <span>Prepared under AS-3 (Indirect Method) · Period: {from} to {to}</span>
           <span>MiyeeBooks · For {data.company.name}</span>
         </div>
       </div>
