@@ -618,6 +618,104 @@ const computePeriodBals = (data, fromDate, toDate) => {
   return { opening, period, asOn };
 };
 
+// Open a standalone ledger page in a new browser tab for one or more account IDs
+const openLedgerTab = (accountIds, title, data, from, to) => {
+  const ids = new Set(accountIds);
+  const accounts = accountIds.map(id => data.coa.find(a=>a.id===id)).filter(Boolean);
+  const fmtN = (n) => n.toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2});
+
+  // Opening balance (COA opening + all movements BEFORE from)
+  let openingBal = 0;
+  accounts.forEach(a => { openingBal += (a.opening||0); });
+  data.vouchers
+    .filter(v => v.status!=='Cancelled' && (!from || v.date < from))
+    .sort((a,b) => a.date.localeCompare(b.date))
+    .forEach(v => (v.lines||[]).forEach(l => {
+      if(ids.has(l.accountId)) openingBal += (l.debit||0) - (l.credit||0);
+    }));
+
+  // Period transactions
+  const txns = [];
+  data.vouchers
+    .filter(v => v.status!=='Cancelled' && (!from||v.date>=from) && (!to||v.date<=to))
+    .sort((a,b) => a.date.localeCompare(b.date)||a.number.localeCompare(b.number))
+    .forEach(v => (v.lines||[]).forEach(l => {
+      if(ids.has(l.accountId))
+        txns.push({date:v.date,vchNo:v.number,type:v.type,narration:l.narration||v.narration||v.partyName||'',debit:l.debit||0,credit:l.credit||0});
+    }));
+
+  let running = openingBal;
+  let rowsHtml = '';
+  txns.forEach((e,i) => {
+    running += e.debit - e.credit;
+    const balStr = fmtN(Math.abs(running)) + (running>=0?' Dr':' Cr');
+    rowsHtml += `<tr>
+      <td>${i+1}</td><td>${e.date}</td><td style="font-family:monospace">${e.vchNo}</td>
+      <td><span style="background:#e8f5e9;color:#0b6b4f;padding:2px 7px;border-radius:10px;font-size:11px;font-weight:600">${e.type}</span></td>
+      <td>${e.narration||''}</td>
+      <td style="text-align:right;color:#0b6b4f;font-weight:${e.debit?600:400}">${e.debit?fmtN(e.debit):''}</td>
+      <td style="text-align:right;color:#c62828;font-weight:${e.credit?600:400}">${e.credit?fmtN(e.credit):''}</td>
+      <td style="text-align:right;font-weight:600">${balStr}</td>
+    </tr>`;
+  });
+  const totalDr = txns.reduce((s,e)=>s+e.debit,0);
+  const totalCr = txns.reduce((s,e)=>s+e.credit,0);
+  const closingBal = running;
+  const accNames = accounts.map(a=>`${a.id} — ${a.name}`).join(', ');
+
+  const html = `<!DOCTYPE html><html><head><title>Ledger: ${title}</title>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  *{box-sizing:border-box}body{font-family:'Segoe UI',Arial,sans-serif;margin:0;padding:20px 24px;color:#1a1a2e;background:#f8fafc}
+  h1{font-size:17px;margin:0 0 2px;color:#0b6b4f}.sub{font-size:11.5px;color:#6b7280;margin-bottom:14px}
+  .summary{display:flex;gap:12px;margin-bottom:16px;flex-wrap:wrap}
+  .sc{background:#fff;border-radius:8px;padding:11px 16px;box-shadow:0 1px 4px #0001;min-width:130px}
+  .sl{font-size:10px;color:#6b7280;text-transform:uppercase;letter-spacing:.6px;margin-bottom:3px}
+  .sv{font-size:17px;font-weight:700;color:#0b6b4f}
+  table{width:100%;border-collapse:collapse;font-size:12.5px;background:#fff;border-radius:8px;overflow:hidden;box-shadow:0 1px 4px #0001}
+  th{background:#0b6b4f;color:#fff;padding:9px 11px;text-align:left;font-size:11.5px;font-weight:600;white-space:nowrap}
+  td{padding:7px 11px;border-bottom:1px solid #f0f0f0;vertical-align:top}
+  tr:hover td{background:#f0fdf4}
+  .total td{background:#f0fdf4;font-weight:700;border-top:2px solid #0b6b4f}
+  .op td{background:#fafafa;color:#6b7280;font-style:italic}
+  @media print{body{padding:0}button{display:none}.noprt{display:none}}
+</style></head><body>
+<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px">
+  <div>
+    <h1>📒 Ledger: ${title}</h1>
+    <div class="sub">${accNames} &nbsp;·&nbsp; Period: ${from||'Opening'} → ${to||'Date'}</div>
+  </div>
+  <button onclick="window.print()" style="padding:7px 16px;background:#0b6b4f;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:12px">⎙ Print / Save PDF</button>
+</div>
+<div class="summary">
+  <div class="sc"><div class="sl">Opening Balance</div><div class="sv">${fmtN(Math.abs(openingBal))}<span style="font-size:12px;font-weight:400"> ${openingBal>=0?'Dr':'Cr'}</span></div></div>
+  <div class="sc"><div class="sl">Period Debit</div><div class="sv">${fmtN(totalDr)}</div></div>
+  <div class="sc"><div class="sl">Period Credit</div><div class="sv">${fmtN(totalCr)}</div></div>
+  <div class="sc"><div class="sl">Closing Balance</div><div class="sv">${fmtN(Math.abs(closingBal))}<span style="font-size:12px;font-weight:400"> ${closingBal>=0?'Dr':'Cr'}</span></div></div>
+</div>
+<table>
+  <thead><tr>
+    <th style="width:38px">#</th><th style="width:86px">Date</th><th style="width:88px">Vch No.</th><th style="width:46px">Type</th>
+    <th>Narration</th><th style="text-align:right;width:115px">Debit (₹)</th><th style="text-align:right;width:115px">Credit (₹)</th><th style="text-align:right;width:125px">Balance</th>
+  </tr></thead>
+  <tbody>
+    <tr class="op"><td colspan="4" style="text-align:right">Opening Balance</td><td></td><td></td><td></td>
+      <td style="text-align:right;font-weight:600">${fmtN(Math.abs(openingBal))} ${openingBal>=0?'Dr':'Cr'}</td></tr>
+    ${rowsHtml||'<tr><td colspan="8" style="text-align:center;padding:20px;color:#9ca3af">No transactions in this period</td></tr>'}
+    <tr class="total"><td colspan="4" style="text-align:right">TOTAL</td><td></td>
+      <td style="text-align:right">${fmtN(totalDr)}</td>
+      <td style="text-align:right">${fmtN(totalCr)}</td>
+      <td style="text-align:right">${fmtN(Math.abs(closingBal))} ${closingBal>=0?'Dr':'Cr'}</td>
+    </tr>
+  </tbody>
+</table>
+<div style="margin-top:10px;font-size:10.5px;color:#9ca3af">Generated by MiyeeBooks · ${new Date().toLocaleDateString('en-IN',{day:'numeric',month:'long',year:'numeric'})}</div>
+</body></html>`;
+  const blob = new Blob([html], {type:'text/html'});
+  const url = URL.createObjectURL(blob);
+  window.open(url, '_blank');
+};
+
 // ============================================================================
 // GST INVOICE PDF GENERATOR (Pure HTML → Browser Print/Save as PDF)
 // ============================================================================
@@ -1035,6 +1133,8 @@ const buildDefaultData = (companyOverrides = {}) => ({
   productionOrders: [],
   costCentres: [],
   departments: [],
+  bankRecon: [],
+  allocations: [],
 });
 
 // ============================================================================
@@ -1610,6 +1710,8 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
       // Migrate: ensure cost centres & departments
       if(!saved.costCentres) saved.costCentres = [];
       if(!saved.departments) saved.departments = [];
+      if(!saved.bankRecon)   saved.bankRecon   = [];
+      if(!saved.allocations) saved.allocations = [];
       // Migrate: ensure modules config exists (preserve existing true for legacy installs)
       if(!saved.company.modules) {
         saved.company.modules = { gst:true, tds:true, payroll:true, factory:false, trader:false, service:false };
@@ -1634,6 +1736,8 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
       productionOrders: [],
       costCentres: [],
       departments: [],
+      bankRecon: [],
+      allocations: [],
     };
   });
   const [page, setPage] = useState('dashboard');
@@ -1675,6 +1779,8 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
         if(!cloudData.productionOrders)  cloudData.productionOrders = [];
         if(!cloudData.costCentres)       cloudData.costCentres = [];
         if(!cloudData.departments)       cloudData.departments = [];
+        if(!cloudData.bankRecon)         cloudData.bankRecon   = [];
+        if(!cloudData.allocations)       cloudData.allocations = [];
         if(!cloudData.tdsSections)       cloudData.tdsSections = SEED_TDS_SECTIONS;
         if(!cloudData.company.modules){
           cloudData.company.modules = { gst:true, tds:true, payroll:true, factory:false, trader:false, service:false };
@@ -1776,6 +1882,7 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
       {id:'dept_report', label:'Department Expenses', ico:'🏢'},
     ]},
     {section:'Registers', items:[
+      {id:'bank_recon', label:'Bank Reconciliation', ico:'🏦'},
       {id:'ledger_stmt', label:'Ledger Statement', ico:'≡'},
       {id:'debtor_stmt', label:'Debtors Statement', ico:'↗'},
       {id:'vendor_stmt', label:'Vendor Statement', ico:'↙'},
@@ -1895,6 +2002,7 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
           {page==='hr_payslips' && <Payslips data={data} setData={canWrite?setData:()=>{}} showToast={showToast} readOnly={isViewer} />}
           {page==='tds_sections' && <TDSSections data={data} setData={canWrite?setData:()=>{}} showToast={showToast} readOnly={isViewer} />}
           {page==='tds_report' && <TDSReport data={data} />}
+          {page==='bank_recon' && <BankReconciliation data={data} setData={canWrite?setData:()=>{}} showToast={showToast} />}
           {page==='ledger_stmt' && <LedgerStatement data={data} balances={ledgerBalances} />}
           {page==='debtor_stmt' && <DebtorStatement data={data} />}
           {page==='vendor_stmt' && <VendorStatement data={data} />}
@@ -3178,7 +3286,7 @@ function TeamMembers({ data, user, companyId, userRole }) {
       </div>
     </div>
 
-    {/* Active Members */}
+    {/* Active Members Table */}
     <div style={{fontWeight:700,fontSize:11,color:'var(--ink-3)',letterSpacing:'.8px',textTransform:'uppercase',marginBottom:8}}>
       Active Members ({totalActive})
     </div>
@@ -3195,38 +3303,79 @@ function TeamMembers({ data, user, companyId, userRole }) {
       </div>
     ) : (
       <div className="card" style={{marginBottom:20}}>
-        <div className="card-body" style={{padding:0}}>
-          {members.map((m, idx) => (
-            <div key={m.memberUid} style={{display:'flex',alignItems:'center',gap:14,padding:'14px 18px',borderBottom:idx<members.length-1?'1px solid var(--line-2)':'none'}}>
-              <Avatar name={m.memberName} email={m.memberEmail} />
-              <div style={{flex:1,minWidth:0}}>
-                <div style={{fontWeight:600,fontSize:13,color:'var(--ink)'}}>{m.memberName || <span style={{color:'var(--ink-3)',fontStyle:'italic'}}>Name not set</span>}</div>
-                <div style={{fontSize:12,color:'var(--ink-3)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{m.memberEmail || m.memberUid}</div>
-                <div style={{fontSize:10,color:'var(--ink-3)',marginTop:2}}>
-                  Joined {m.grantedAt?.toDate ? m.grantedAt.toDate().toLocaleDateString('en-IN',{day:'numeric',month:'short',year:'numeric'}) : '—'}
-                  {m.inviteCode && <span style={{marginLeft:8,fontFamily:'monospace',background:'var(--surface-2)',padding:'1px 6px',borderRadius:4}}>Code: {m.inviteCode}</span>}
-                </div>
-              </div>
-              <span style={{background:ROLE_CLR[m.role]+'22',color:ROLE_CLR[m.role],borderRadius:20,padding:'4px 12px',fontSize:11,fontWeight:700,whiteSpace:'nowrap'}}>
-                {ROLE_LBL[m.role]||m.role}
-              </span>
-              {isOwner && (
-                confirmRevoke?.memberUid === m.memberUid ? (
-                  <div style={{display:'flex',gap:6,alignItems:'center'}}>
-                    <span style={{fontSize:11,color:'var(--danger)',whiteSpace:'nowrap'}}>Revoke access?</span>
-                    <button className="btn btn-sm btn-danger" onClick={() => handleRevoke(m)} disabled={revoking===m.memberUid}>
-                      {revoking===m.memberUid ? '…' : 'Yes, Revoke'}
-                    </button>
-                    <button className="btn btn-sm btn-ghost" onClick={() => setConfirmRevoke(null)}>Cancel</button>
-                  </div>
-                ) : (
-                  <button className="btn btn-sm btn-danger" style={{opacity:.7}} onClick={() => setConfirmRevoke(m)}>
-                    Revoke
-                  </button>
-                )
-              )}
-            </div>
-          ))}
+        <div className="card-body" style={{padding:0,overflowX:'auto'}}>
+          <table style={{width:'100%',borderCollapse:'collapse',fontSize:13}}>
+            <thead>
+              <tr style={{background:'var(--surface-2)',borderBottom:'1px solid var(--line)'}}>
+                <th style={{padding:'10px 14px',textAlign:'left',width:40}}>Sr</th>
+                <th style={{padding:'10px 14px',textAlign:'left',width:44}}></th>
+                <th style={{padding:'10px 14px',textAlign:'left'}}>Name</th>
+                <th style={{padding:'10px 14px',textAlign:'left'}}>Email ID</th>
+                <th style={{padding:'10px 14px',textAlign:'left',width:120}}>Access Type</th>
+                <th style={{padding:'10px 14px',textAlign:'left',width:110}}>Joined</th>
+                <th style={{padding:'10px 14px',textAlign:'center',width:80}}>Status</th>
+                {isOwner && <th style={{padding:'10px 14px',textAlign:'center',width:180}}>Actions</th>}
+              </tr>
+            </thead>
+            <tbody>
+              {/* Owner row */}
+              <tr style={{borderBottom:'1px solid var(--line-2)',background:'#f0fdf4'}}>
+                <td style={{padding:'11px 14px',color:'var(--ink-3)',fontSize:12}}>1</td>
+                <td style={{padding:'11px 14px'}}><Avatar name={user?.displayName} email={user?.email} /></td>
+                <td style={{padding:'11px 14px',fontWeight:600}}>{user?.displayName || '—'} <span style={{fontSize:10,color:'var(--ink-3)',fontWeight:400}}>(You)</span></td>
+                <td style={{padding:'11px 14px',color:'var(--ink-3)',fontSize:12}}>{user?.email}</td>
+                <td style={{padding:'11px 14px'}}><span style={{background:'#0b6b4f22',color:'#0b6b4f',borderRadius:20,padding:'3px 12px',fontSize:11,fontWeight:700}}>Owner</span></td>
+                <td style={{padding:'11px 14px',fontSize:11,color:'var(--ink-3)'}}>—</td>
+                <td style={{padding:'11px 14px',textAlign:'center'}}><span className="badge badge-success" style={{fontSize:10}}>Active</span></td>
+                {isOwner && <td style={{padding:'11px 14px',textAlign:'center',color:'var(--ink-3)',fontSize:11}}>—</td>}
+              </tr>
+              {members.map((m, idx) => (
+                <tr key={m.memberUid} style={{borderBottom:'1px solid var(--line-2)'}}>
+                  <td style={{padding:'11px 14px',color:'var(--ink-3)',fontSize:12}}>{idx+2}</td>
+                  <td style={{padding:'11px 14px'}}><Avatar name={m.memberName} email={m.memberEmail} /></td>
+                  <td style={{padding:'11px 14px',fontWeight:600,color:'var(--ink)'}}>
+                    {m.memberName || <span style={{color:'var(--ink-3)',fontStyle:'italic'}}>Name not set</span>}
+                  </td>
+                  <td style={{padding:'11px 14px',color:'var(--ink-3)',fontSize:12,maxWidth:200,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>
+                    {m.memberEmail || m.memberUid}
+                  </td>
+                  <td style={{padding:'11px 14px'}}>
+                    <span style={{background:ROLE_CLR[m.role]+'22',color:ROLE_CLR[m.role],borderRadius:20,padding:'3px 12px',fontSize:11,fontWeight:700,whiteSpace:'nowrap'}}>
+                      {ROLE_LBL[m.role]||m.role}
+                    </span>
+                  </td>
+                  <td style={{padding:'11px 14px',fontSize:11,color:'var(--ink-3)',whiteSpace:'nowrap'}}>
+                    {m.grantedAt?.toDate ? m.grantedAt.toDate().toLocaleDateString('en-IN',{day:'numeric',month:'short',year:'numeric'}) : '—'}
+                  </td>
+                  <td style={{padding:'11px 14px',textAlign:'center'}}>
+                    <span className="badge badge-success" style={{fontSize:10}}>Active</span>
+                  </td>
+                  {isOwner && (
+                    <td style={{padding:'8px 14px',textAlign:'center'}}>
+                      {confirmRevoke?.memberUid === m.memberUid ? (
+                        <div style={{display:'flex',gap:6,alignItems:'center',justifyContent:'center'}}>
+                          <span style={{fontSize:10,color:'var(--danger)',whiteSpace:'nowrap'}}>Confirm?</span>
+                          <button className="btn btn-sm btn-danger" style={{padding:'3px 10px',fontSize:11}} onClick={() => handleRevoke(m)} disabled={revoking===m.memberUid}>
+                            {revoking===m.memberUid ? '…' : 'Yes'}
+                          </button>
+                          <button className="btn btn-sm btn-ghost" style={{padding:'3px 10px',fontSize:11}} onClick={() => setConfirmRevoke(null)}>No</button>
+                        </div>
+                      ) : (
+                        <div style={{display:'flex',gap:6,justifyContent:'center'}}>
+                          <button className="btn btn-sm btn-danger" style={{opacity:.75,fontSize:11}} onClick={() => setConfirmRevoke(m)}>
+                            🔒 Revoke
+                          </button>
+                          <button className="btn btn-sm" style={{fontSize:11,opacity:.5,cursor:'not-allowed'}} title="Member is active — revoke first to reactivate via a new invite" disabled>
+                            ↺ Reactivate
+                          </button>
+                        </div>
+                      )}
+                    </td>
+                  )}
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       </div>
     )}
@@ -4410,6 +4559,49 @@ function VoucherModal({vtype, voucher, data, onSave, onClose, showToast}){
   const totalCr = f.lines.reduce((s,l) => s + (l.credit||0), 0);
   const balanced = Math.abs(totalDr - totalCr) < 0.01;
 
+  // ── Bill Tagging (PAY / REC) ─────────────────────────────────────────────
+  const isBillType = ['PAY','REC'].includes(vtype);
+  // PAY → outstanding PUR invoices; REC → outstanding SAL invoices
+  const invType = vtype==='PAY' ? 'PUR' : 'SAL';
+  const [billTags, setBillTags] = useState(voucher?.billTags || []);
+  const [isAdvance, setIsAdvance] = useState(voucher?.isAdvance || false);
+
+  // Compute outstanding invoices for selected party
+  const outstandingInvoices = useMemo(() => {
+    if(!isBillType || !f.partyId) return [];
+    const invoices = data.vouchers.filter(v =>
+      v.type === invType && v.status !== 'Cancelled' && v.partyId === f.partyId
+    );
+    // Sum all existing allocations from OTHER vouchers
+    const allocMap = {};
+    data.vouchers.forEach(v => {
+      if(voucher && v.id === voucher.id) return;
+      (v.billTags||[]).forEach(bt => {
+        allocMap[bt.voucherId] = (allocMap[bt.voucherId]||0) + (bt.allocated||0);
+      });
+    });
+    return invoices.map(inv => {
+      const invTotal = (inv.lines||[]).reduce((s,l) => s+(invType==='SAL'?l.credit:l.debit||0),0) || inv.amount || 0;
+      const alreadyPaid = allocMap[inv.id] || 0;
+      const outstanding = Math.max(0, invTotal - alreadyPaid);
+      return {...inv, invTotal, alreadyPaid, outstanding};
+    }).filter(inv => inv.outstanding > 0.01)
+      .sort((a,b) => a.date.localeCompare(b.date));
+  }, [isBillType, f.partyId, invType, data.vouchers, voucher]);
+
+  const totalTagged = billTags.reduce((s,bt) => s+(bt.allocated||0), 0);
+
+  const updateBillTag = (voucherId, allocated) => {
+    const existing = billTags.find(bt => bt.voucherId === voucherId);
+    if(allocated <= 0){
+      setBillTags(billTags.filter(bt => bt.voucherId !== voucherId));
+    } else if(existing){
+      setBillTags(billTags.map(bt => bt.voucherId===voucherId ? {...bt, allocated} : bt));
+    } else {
+      setBillTags([...billTags, {voucherId, allocated}]);
+    }
+  };
+
   const submit = () => {
     let finalLines = [...f.lines];
     let finalData = {...f};
@@ -4502,7 +4694,10 @@ function VoucherModal({vtype, voucher, data, onSave, onClose, showToast}){
     }
 
     const party = data.parties.find(p => p.id === finalData.partyId);
-    onSave({...finalData, partyName: party?.name||finalData.partyName, amount: dr2});
+    onSave({...finalData, partyName: party?.name||finalData.partyName, amount: dr2,
+      billTags: isBillType ? billTags : (finalData.billTags||[]),
+      isAdvance: isBillType ? isAdvance : (finalData.isAdvance||false),
+    });
   };
 
   // PAY/REC/CON — state lifted to avoid nested-component re-mount flicker
@@ -4944,6 +5139,82 @@ function VoucherModal({vtype, voucher, data, onSave, onClose, showToast}){
             <label>Narration</label>
             <textarea rows="2" value={f.narration} onChange={e => setF({...f, narration:e.target.value})} placeholder="Being..." style={{padding:8, border:'1px solid var(--line-2)', borderRadius:6, resize:'vertical'}} />
           </div>
+
+          {/* ── Bill Tagging for PAY / REC ─────────────────────────────── */}
+          {isBillType && (
+            <div style={{marginTop:16, padding:'14px 16px', background:'var(--surface-2)', borderRadius:8, border:'1px solid var(--line)'}}>
+              <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:10}}>
+                <div style={{fontWeight:700,fontSize:13,color:'var(--ink)'}}>
+                  {vtype==='PAY' ? '📋 Tag Outstanding Purchase Bills' : '📋 Tag Outstanding Sales Invoices'}
+                </div>
+                <label style={{display:'flex',alignItems:'center',gap:6,fontSize:12,cursor:'pointer',color:'var(--ink-2)'}}>
+                  <input type="checkbox" checked={isAdvance} onChange={e=>{setIsAdvance(e.target.checked); if(e.target.checked) setBillTags([]);}} />
+                  <b>Advance Payment</b> (no bill to tag)
+                </label>
+              </div>
+              {isAdvance ? (
+                <div style={{padding:'10px 12px',background:'#fff8e1',borderRadius:6,border:'1px solid #ffe082',fontSize:12,color:'#f57c00'}}>
+                  ⚡ This {vtype==='PAY'?'payment':'receipt'} will be posted as an <b>Advance</b> — no invoice tagged. Reconcile later when the invoice arrives.
+                </div>
+              ) : !f.partyId ? (
+                <div style={{fontSize:12,color:'var(--ink-3)',textAlign:'center',padding:'12px 0'}}>
+                  Select a party above to see outstanding {vtype==='PAY'?'purchase bills':'sales invoices'}.
+                </div>
+              ) : outstandingInvoices.length === 0 ? (
+                <div style={{fontSize:12,color:'var(--ink-3)',textAlign:'center',padding:'12px 0'}}>
+                  ✓ No outstanding {vtype==='PAY'?'purchase bills':'invoices'} found for this party.
+                  <button className="btn btn-sm" style={{marginLeft:8,fontSize:11}} onClick={()=>setIsAdvance(true)}>Post as Advance</button>
+                </div>
+              ) : (
+                <>
+                  <div style={{overflowX:'auto'}}>
+                    <table style={{width:'100%',borderCollapse:'collapse',fontSize:12}}>
+                      <thead><tr style={{background:'var(--surface)',borderBottom:'1px solid var(--line)'}}>
+                        <th style={{padding:'6px 8px',textAlign:'left'}}>Date</th>
+                        <th style={{padding:'6px 8px',textAlign:'left'}}>Ref / Voucher No.</th>
+                        <th style={{padding:'6px 8px',textAlign:'right'}}>Invoice Amt</th>
+                        <th style={{padding:'6px 8px',textAlign:'right'}}>Already Paid</th>
+                        <th style={{padding:'6px 8px',textAlign:'right',color:'var(--danger)'}}>Outstanding</th>
+                        <th style={{padding:'6px 8px',textAlign:'right',width:130,color:'var(--primary)'}}>Allocate Now (₹)</th>
+                      </tr></thead>
+                      <tbody>
+                        {outstandingInvoices.map(inv => {
+                          const tagged = billTags.find(bt=>bt.voucherId===inv.id);
+                          return (
+                            <tr key={inv.id} style={{borderBottom:'1px solid var(--line-2)',background:tagged?'var(--primary-soft)':''}}>
+                              <td style={{padding:'6px 8px'}}>{inv.date}</td>
+                              <td style={{padding:'6px 8px',fontFamily:'var(--mono)',color:'var(--primary)'}}>{inv.number}{inv.reference?` · ${inv.reference}`:''}</td>
+                              <td style={{padding:'6px 8px',textAlign:'right',fontFamily:'var(--mono)'}}>{fmt(inv.invTotal)}</td>
+                              <td style={{padding:'6px 8px',textAlign:'right',color:'var(--ink-3)',fontFamily:'var(--mono)'}}>{inv.alreadyPaid>0?fmt(inv.alreadyPaid):''}</td>
+                              <td style={{padding:'6px 8px',textAlign:'right',fontWeight:600,color:'var(--danger)',fontFamily:'var(--mono)'}}>{fmt(inv.outstanding)}</td>
+                              <td style={{padding:'4px 8px'}}>
+                                <input type="number" min="0" max={inv.outstanding} step="0.01"
+                                  value={tagged?.allocated||''}
+                                  placeholder="0.00"
+                                  onChange={e => updateBillTag(inv.id, parseFloat(e.target.value)||0)}
+                                  style={{width:'100%',padding:'4px 8px',border:'1px solid var(--line)',borderRadius:4,textAlign:'right',fontSize:12,background:tagged?'#fff':''}}
+                                />
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                  <div style={{display:'flex',justifyContent:'flex-end',gap:16,marginTop:10,fontSize:12,alignItems:'center'}}>
+                    <span style={{color:'var(--ink-3)'}}>Payment Amount: <b style={{color:'var(--ink)'}}>₹{fmt(totalDr||totalCr)}</b></span>
+                    <span style={{color:'var(--ink-3)'}}>Tagged: <b style={{color:'var(--primary)'}}>₹{fmt(totalTagged)}</b></span>
+                    {Math.abs((totalDr||totalCr) - totalTagged) > 0.01 && (
+                      <span style={{color:'var(--warning)',fontWeight:600}}>
+                        Untagged: ₹{fmt(Math.abs((totalDr||totalCr) - totalTagged))}
+                        <button className="btn btn-sm" style={{marginLeft:8,fontSize:10}} onClick={()=>setIsAdvance(true)}>→ Mark as Advance</button>
+                      </span>
+                    )}
+                  </div>
+                </>
+              )}
+            </div>
+          )}
         </div>
         <div className="modal-foot">
           <button className="btn" onClick={onClose}>Cancel</button>
@@ -4953,6 +5224,300 @@ function VoucherModal({vtype, voucher, data, onSave, onClose, showToast}){
         </div>
       </div>
     </div>
+  );
+}
+
+// ============================================================================
+// BANK RECONCILIATION
+// ============================================================================
+function BankReconciliation({data, setData, showToast}){
+  const [bankRows, setBankRows]   = useState([]);
+  const [fileName, setFileName]   = useState('');
+  const [selected, setSelected]   = useState(new Set());
+  const [matchMap, setMatchMap]   = useState({}); // rowIdx -> voucherId
+  const [search, setSearch]       = useState('');
+  const [tab, setTab]             = useState('upload');
+
+  const bookVouchers = useMemo(() => {
+    return data.vouchers
+      .filter(v => v.status !== 'Cancelled')
+      .map(v => ({ ...v, total: (v.lines||[]).reduce((s,l)=>s+(l.debit||0),0) }));
+  }, [data.vouchers]);
+
+  const reconSet = useMemo(() => new Set((data.bankRecon||[]).map(r=>r.bankRef)), [data.bankRecon]);
+
+  // Parse bank CSV
+  const handleFile = (e) => {
+    const file = e.target.files[0];
+    if(!file) return;
+    setFileName(file.name);
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const text = ev.target.result;
+      const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+      if(lines.length < 2){ showToast('Empty or invalid CSV','error'); return; }
+      const headers = lines[0].split(',').map(h => h.replace(/["\s]/g,'').toLowerCase());
+      const col = (keys) => { for(const k of keys){ const i=headers.findIndex(h=>h.includes(k)); if(i>=0)return i; } return -1; };
+      const iDate = col(['valuedate','date','txndate','valudate']);
+      const iDesc = col(['particulars','description','narration','details','remarks']);
+      const iRef  = col(['referenceno','reference','refno','cheque','chqno','txnid']);
+      const iDr   = col(['debit','dr','withdrawal','withdrawl']);
+      const iCr   = col(['credit','cr','deposit']);
+      const rows = [];
+      lines.slice(1).forEach((line, idx) => {
+        const cols = line.split(',').map(c => c.replace(/^"|"$/g,'').trim());
+        if(cols.length < 2) return;
+        const drAmt = parseFloat((cols[iDr]||'').replace(/[,\s]/g,''))||0;
+        const crAmt = parseFloat((cols[iCr]||'').replace(/[,\s]/g,''))||0;
+        if(drAmt === 0 && crAmt === 0) return;
+        rows.push({ idx, date:cols[iDate]||'', desc:cols[iDesc]||'', ref:cols[iRef]||'',
+          debit:drAmt, credit:crAmt });
+      });
+      setBankRows(rows);
+      setMatchMap({});
+      setSelected(new Set());
+      setTab('reconcile');
+      showToast(`Loaded ${rows.length} bank transactions from ${file.name}`);
+    };
+    reader.readAsText(file);
+    e.target.value = '';
+  };
+
+  const filtered = bankRows.filter(r =>
+    !search || r.desc.toLowerCase().includes(search.toLowerCase()) || r.ref.toLowerCase().includes(search.toLowerCase())
+  );
+
+  const handleReconcile = () => {
+    if(selected.size === 0) return;
+    const newEntries = [];
+    selected.forEach(idx => {
+      const row = bankRows[idx];
+      const bankRef = `${row.date}|${row.ref||row.desc}|${(row.debit||row.credit).toFixed(2)}`;
+      if(reconSet.has(bankRef)) return; // already reconciled
+      newEntries.push({ bankRef, date:row.date, desc:row.desc, ref:row.ref,
+        debit:row.debit, credit:row.credit, voucherId:matchMap[idx]||null, reconDate:today() });
+    });
+    if(!newEntries.length){ showToast('All selected rows already reconciled','error'); return; }
+    setData({...data, bankRecon:[...(data.bankRecon||[]),...newEntries]});
+    setSelected(new Set());
+    showToast(`✓ ${newEntries.length} transaction(s) marked reconciled`);
+  };
+
+  const handleRemoveRecon = (bankRef) => {
+    setData({...data, bankRecon:(data.bankRecon||[]).filter(r=>r.bankRef!==bankRef)});
+    showToast('Reconciliation removed');
+  };
+
+  const totalDr   = filtered.reduce((s,r)=>s+r.debit,0);
+  const totalCr   = filtered.reduce((s,r)=>s+r.credit,0);
+  const reconCount = filtered.filter(r=>reconSet.has(`${r.date}|${r.ref||r.desc}|${(r.debit||r.credit).toFixed(2)}`)).length;
+
+  return (
+    <>
+      <div className="page-head">
+        <div>
+          <h1 className="page-title">Bank Reconciliation</h1>
+          <div className="page-sub">Upload bank statement CSV · Match with book entries · Mark reconciled</div>
+        </div>
+      </div>
+
+      {/* Tabs */}
+      <div style={{display:'flex',gap:8,marginBottom:16}}>
+        {[['upload','⬆ Upload Statement'],['reconcile','⊞ Reconcile'],['history','📋 History']].map(([t,l])=>(
+          <button key={t} className={`btn${tab===t?' btn-primary':''}`} onClick={()=>setTab(t)}
+            style={t==='reconcile'&&bankRows.length===0?{opacity:.5,cursor:'not-allowed'}:{}}>
+            {l}{t==='reconcile'&&bankRows.length>0?` (${bankRows.length})`:''}
+          </button>
+        ))}
+      </div>
+
+      {/* UPLOAD TAB */}
+      {tab==='upload' && (
+        <div className="card">
+          <div className="card-body" style={{textAlign:'center',padding:'36px 20px'}}>
+            <div style={{fontSize:44,marginBottom:12}}>🏦</div>
+            <div style={{fontWeight:700,fontSize:16,marginBottom:6}}>Upload Bank Statement CSV</div>
+            <div style={{fontSize:12,color:'var(--ink-3)',marginBottom:22}}>
+              Auto-detects columns: <b>Value Date, Particulars, Reference No, Debit, Credit</b><br/>
+              Supports exports from most Indian banks (HDFC, ICICI, SBI, Axis, Kotak…)
+            </div>
+            <label className="btn btn-primary" style={{cursor:'pointer',padding:'10px 28px',fontSize:13}}>
+              📂 Choose CSV File
+              <input type="file" accept=".csv,.CSV,.txt" onChange={handleFile} style={{display:'none'}} />
+            </label>
+            {fileName && <div style={{marginTop:14,fontSize:12,color:'var(--primary)',fontWeight:600}}>📄 {fileName}</div>}
+          </div>
+          <div style={{padding:'0 20px 20px'}}>
+            <div className="card" style={{background:'var(--surface-2)',padding:'12px 16px'}}>
+              <div style={{fontWeight:600,fontSize:12,marginBottom:6,color:'var(--ink-2)'}}>Sample CSV Format (any order of columns is fine):</div>
+              <pre style={{fontSize:11,margin:0,color:'var(--ink-3)',overflowX:'auto'}}>{`Value Date,Particulars,Reference No,Debit,Credit
+01-04-2025,Opening Balance,OB001,,100000.00
+05-04-2025,NEFT To XYZ Ltd,NEFT00123,50000.00,
+10-04-2025,Receipt From ABC Corp,IMPS00456,,75000.00
+15-04-2025,Bank Charges,,850.00,`}</pre>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* RECONCILE TAB */}
+      {tab==='reconcile' && (
+        <>
+          <div className="filter-bar">
+            <div className="field"><label>Search</label>
+              <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Description or reference…" style={{minWidth:240}} />
+            </div>
+            <div style={{marginLeft:'auto',display:'flex',gap:8,alignItems:'center'}}>
+              <span style={{fontSize:12,color:'var(--ink-3)'}}>{reconCount}/{filtered.length} reconciled</span>
+              <label className="btn btn-sm" style={{cursor:'pointer'}}>
+                ↺ Load New CSV
+                <input type="file" accept=".csv,.CSV" onChange={handleFile} style={{display:'none'}} />
+              </label>
+              <button className="btn btn-primary" disabled={selected.size===0} onClick={handleReconcile}>
+                ✓ Reconcile {selected.size>0?`(${selected.size})`:''}
+              </button>
+            </div>
+          </div>
+          {bankRows.length === 0 ? (
+            <div className="card"><div className="card-body" style={{textAlign:'center',padding:'32px 20px',color:'var(--ink-3)'}}>
+              <div style={{fontSize:28,marginBottom:8}}>📂</div>No bank statement loaded. Upload one first.
+            </div></div>
+          ) : (
+            <div className="table-wrap">
+              <table>
+                <thead><tr>
+                  <th style={{width:38}}>
+                    <input type="checkbox" onChange={e => {
+                      const unreconciled = filtered.filter(r=>{
+                        const br=`${r.date}|${r.ref||r.desc}|${(r.debit||r.credit).toFixed(2)}`;
+                        return !reconSet.has(br);
+                      }).map(r=>r.idx);
+                      setSelected(e.target.checked ? new Set(unreconciled) : new Set());
+                    }} />
+                  </th>
+                  <th style={{width:90}}>Date</th>
+                  <th>Particulars</th>
+                  <th style={{width:110}}>Reference</th>
+                  <th className="num" style={{width:108}}>Debit (₹)</th>
+                  <th className="num" style={{width:108}}>Credit (₹)</th>
+                  <th style={{width:200}}>Match Book Entry</th>
+                  <th style={{width:88}}>Status</th>
+                </tr></thead>
+                <tbody>
+                  {filtered.map(row => {
+                    const bankRef = `${row.date}|${row.ref||row.desc}|${(row.debit||row.credit).toFixed(2)}`;
+                    const isRecon = reconSet.has(bankRef);
+                    const isSel   = selected.has(row.idx);
+                    // Auto-suggest: match by amount ±1 or reference substring
+                    const amt = row.debit || row.credit;
+                    const suggestions = bookVouchers.filter(v =>
+                      Math.abs(v.total - amt) < 1 ||
+                      (row.ref && v.number && v.number.toLowerCase().includes(row.ref.toLowerCase().slice(0,8)))
+                    ).slice(0,10);
+                    return (
+                      <tr key={row.idx} style={{
+                        background: isRecon?'#f0fdf4': isSel?'var(--primary-soft)':'',
+                        opacity: isRecon?.75:1,
+                      }}>
+                        <td>
+                          <input type="checkbox" disabled={isRecon} checked={isSel&&!isRecon}
+                            onChange={e=>{const s=new Set(selected); e.target.checked?s.add(row.idx):s.delete(row.idx); setSelected(s);}} />
+                        </td>
+                        <td style={{fontSize:12,whiteSpace:'nowrap'}}>{row.date}</td>
+                        <td style={{fontSize:12}}>{row.desc}</td>
+                        <td style={{fontFamily:'var(--mono)',fontSize:11,color:'var(--ink-3)'}}>{row.ref}</td>
+                        <td className="num" style={{color:row.debit?'var(--danger)':'',fontWeight:row.debit?600:400}}>{row.debit?fmt(row.debit):''}</td>
+                        <td className="num" style={{color:row.credit?'var(--primary)':'',fontWeight:row.credit?600:400}}>{row.credit?fmt(row.credit):''}</td>
+                        <td>
+                          {isRecon ? (
+                            <span style={{fontSize:11,color:'var(--primary)',fontWeight:600}}>✓ Reconciled</span>
+                          ) : (
+                            <select
+                              style={{width:'100%',fontSize:11,padding:'3px 6px',borderRadius:4,border:'1px solid var(--line)',background:'var(--surface)'}}
+                              value={matchMap[row.idx]||''}
+                              onChange={e=>setMatchMap({...matchMap,[row.idx]:e.target.value})}>
+                              <option value="">— Select voucher —</option>
+                              <option value="direct">Direct / Advance / Opening</option>
+                              {suggestions.length>0 && <option disabled>── Suggested matches ──</option>}
+                              {suggestions.map(v=>(
+                                <option key={v.id} value={v.id}>{v.date} · {v.number} · {v.type} · ₹{fmt(v.total)}</option>
+                              ))}
+                              {suggestions.length>0 && <option disabled>── All vouchers ──</option>}
+                              {bookVouchers.filter(v=>!suggestions.find(s=>s.id===v.id)).slice(0,40).map(v=>(
+                                <option key={v.id+'all'} value={v.id}>{v.date} · {v.number} · {v.type} · ₹{fmt(v.total)}</option>
+                              ))}
+                            </select>
+                          )}
+                        </td>
+                        <td style={{textAlign:'center'}}>
+                          {isRecon
+                            ? <span className="badge badge-success" style={{fontSize:10}}>✓ Done</span>
+                            : <span className="badge badge-info" style={{fontSize:10}}>Pending</span>}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                  {filtered.length > 0 && (
+                    <tr className="total">
+                      <td colSpan="4" style={{textAlign:'right'}}>TOTAL</td>
+                      <td className="num">₹{fmt(totalDr)}</td>
+                      <td className="num">₹{fmt(totalCr)}</td>
+                      <td colSpan="2"></td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </>
+      )}
+
+      {/* HISTORY TAB */}
+      {tab==='history' && (
+        <div className="table-wrap">
+          <table>
+            <thead><tr>
+              <th style={{width:42}}>Sr</th>
+              <th style={{width:90}}>Date</th>
+              <th>Particulars</th>
+              <th style={{width:110}}>Reference</th>
+              <th className="num" style={{width:108}}>Debit (₹)</th>
+              <th className="num" style={{width:108}}>Credit (₹)</th>
+              <th style={{width:160}}>Matched Voucher</th>
+              <th style={{width:90}}>Recon Date</th>
+              <th style={{width:56}}></th>
+            </tr></thead>
+            <tbody>
+              {(data.bankRecon||[]).length === 0 ? (
+                <tr><td colSpan="9"><div className="empty"><div className="empty-ico">∅</div>No reconciled entries yet</div></td></tr>
+              ) : [...(data.bankRecon||[])].reverse().map((r, i) => {
+                const mv = data.vouchers.find(v=>v.id===r.voucherId);
+                return (
+                  <tr key={i}>
+                    <td style={{fontSize:11,color:'var(--ink-3)'}}>{i+1}</td>
+                    <td style={{fontSize:12}}>{r.date}</td>
+                    <td style={{fontSize:12}}>{r.desc}</td>
+                    <td style={{fontFamily:'var(--mono)',fontSize:11,color:'var(--ink-3)'}}>{r.ref}</td>
+                    <td className="num" style={{color:r.debit?'var(--danger)':''}}>{r.debit?fmt(r.debit):''}</td>
+                    <td className="num" style={{color:r.credit?'var(--primary)':''}}>{r.credit?fmt(r.credit):''}</td>
+                    <td style={{fontSize:11}}>
+                      {mv ? <span style={{fontFamily:'var(--mono)',color:'var(--primary)'}}>{mv.number} · {mv.type}</span>
+                          : r.voucherId === 'direct' ? <span style={{color:'var(--ink-3)'}}>Direct/Advance</span>
+                          : <span style={{color:'var(--ink-3)'}}>—</span>}
+                    </td>
+                    <td style={{fontSize:11,color:'var(--ink-3)'}}>{r.reconDate}</td>
+                    <td style={{textAlign:'center'}}>
+                      <button className="btn btn-sm btn-ghost" style={{fontSize:10,color:'var(--danger)',opacity:.7}}
+                        onClick={()=>handleRemoveRecon(r.bankRef)} title="Undo reconciliation">✕</button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </>
   );
 }
 
@@ -4969,19 +5534,57 @@ function DayBook({data}){
     .filter(v => typeFilter === 'All' || v.type === typeFilter)
     .sort((a,b) => a.date.localeCompare(b.date) || a.number.localeCompare(b.number));
 
-  const totalDr = entries.reduce((s,v) => s + (v.lines||[]).reduce((ss,l) => ss + (l.debit||0), 0), 0);
-  const totalCr = entries.reduce((s,v) => s + (v.lines||[]).reduce((ss,l) => ss + (l.credit||0), 0), 0);
-
   const findAcc = (id) => data.coa.find(a => a.id === id);
+
+  // Build flat rows: pair Dr lines with Cr lines per voucher
+  const rows = [];
+  entries.forEach(v => {
+    const drLines = (v.lines||[]).filter(l => (l.debit||0) > 0);
+    const crLines = (v.lines||[]).filter(l => (l.credit||0) > 0);
+    const maxLen = Math.max(drLines.length, crLines.length, 1);
+    for(let i = 0; i < maxLen; i++){
+      const dr = drLines[i];
+      const cr = crLines[i];
+      rows.push({
+        sr: rows.length + 1,
+        date:   i === 0 ? v.date   : '',
+        vchNo:  i === 0 ? v.number : '',
+        type:   i === 0 ? v.type   : '',
+        drAcc:  dr ? (findAcc(dr.accountId)?.name || dr.accountId) : '',
+        drAmt:  dr ? (dr.debit||0)  : 0,
+        crAcc:  cr ? (findAcc(cr.accountId)?.name || cr.accountId) : '',
+        crAmt:  cr ? (cr.credit||0) : 0,
+        narration: i === 0 ? (v.narration || v.partyName || '') : (dr?.narration || cr?.narration || ''),
+        isFirst: i === 0,
+        key: v.id + '-' + i,
+      });
+    }
+  });
+
+  const totalDr = rows.reduce((s,r) => s + r.drAmt, 0);
+  const totalCr = rows.reduce((s,r) => s + r.crAmt, 0);
+
+  const handleExcel = () => {
+    exportXLSX(`DayBook_${from}_${to}.xlsx`, [{
+      name: 'Day Book',
+      rows: [
+        [`Day Book — ${data.company.name}`], [`Period: ${from} to ${to}`], [],
+        ['Sr No','Date','Vch No.','Type','Dr Account','Dr Amt (₹)','Cr Account','Cr Amt (₹)','Narration'],
+        ...rows.map(r => [r.sr, r.date, r.vchNo, r.type, r.drAcc, r.drAmt||'', r.crAcc, r.crAmt||'', r.narration]),
+        [],['','','','','TOTAL', totalDr,'', totalCr,''],
+      ],
+    }]);
+  };
 
   return (
     <>
       <div className="page-head">
         <div>
           <h1 className="page-title">Day Book</h1>
-          <div className="page-sub">Chronological journal · {entries.length} vouchers in period</div>
+          <div className="page-sub">Chronological journal · {entries.length} vouchers · {rows.length} entries in period</div>
         </div>
         <div className="page-actions">
+          <button className="btn btn-sm" onClick={handleExcel}>⬇ Excel</button>
           <button className="btn" onClick={() => window.print()}>⎙ Print</button>
         </div>
       </div>
@@ -5001,43 +5604,49 @@ function DayBook({data}){
         <table>
           <thead>
             <tr>
-              <th style={{width:90}}>Date</th>
-              <th style={{width:100}}>Vch No.</th>
-              <th style={{width:60}}>Type</th>
-              <th>Particulars</th>
-              <th className="num" style={{width:120}}>Debit (₹)</th>
-              <th className="num" style={{width:120}}>Credit (₹)</th>
+              <th style={{width:42}}>Sr</th>
+              <th style={{width:88}}>Date</th>
+              <th style={{width:90}}>Vch No.</th>
+              <th style={{width:52}}>Type</th>
+              <th>Dr Account</th>
+              <th className="num" style={{width:112}}>Dr Amt (₹)</th>
+              <th>Cr Account</th>
+              <th className="num" style={{width:112}}>Cr Amt (₹)</th>
+              <th style={{width:180}}>Narration</th>
             </tr>
           </thead>
           <tbody>
-            {entries.length === 0 ? (
-              <tr><td colSpan="6"><div className="empty"><div className="empty-ico">∅</div><div>No vouchers in this period</div></div></td></tr>
-            ) : entries.map(v => (
-              <React.Fragment key={v.id}>
-                <tr style={{background:'var(--surface-2)'}}>
-                  <td>{v.date}</td>
-                  <td style={{fontFamily:'var(--mono)', fontWeight:600}}>{v.number}</td>
-                  <td><span className="badge badge-info">{v.type}</span></td>
-                  <td colSpan="3"><i style={{color:'var(--ink-3)'}}>{v.narration || v.partyName || '—'}</i></td>
-                </tr>
-                {(v.lines||[]).map(l => {
-                  const acc = findAcc(l.accountId);
-                  return (
-                    <tr key={l.id}>
-                      <td></td><td></td><td></td>
-                      <td style={{paddingLeft:30, fontSize:12}}>{l.debit>0 ? '' : '   '}<b>{acc?.name || l.accountId}</b>{l.narration && <span style={{color:'var(--ink-3)'}}> — {l.narration}</span>}</td>
-                      <td className="num">{l.debit>0 ? fmt(l.debit) : ''}</td>
-                      <td className="num">{l.credit>0 ? fmt(l.credit) : ''}</td>
-                    </tr>
-                  );
-                })}
-              </React.Fragment>
+            {rows.length === 0 ? (
+              <tr><td colSpan="9"><div className="empty"><div className="empty-ico">∅</div><div>No vouchers in this period</div></div></td></tr>
+            ) : rows.map((r, idx) => (
+              <tr key={r.key}
+                style={{
+                  borderTop: r.isFirst && idx > 0 ? '2px solid var(--line)' : undefined,
+                  background: r.isFirst && idx > 0 ? 'var(--surface-2)' : undefined,
+                }}>
+                <td style={{color:'var(--ink-3)', fontSize:11, fontFamily:'var(--mono)'}}>{r.sr}</td>
+                <td style={{fontSize:12, whiteSpace:'nowrap'}}>{r.date}</td>
+                <td style={{fontFamily:'var(--mono)', fontSize:12, fontWeight: r.vchNo ? 600 : 400, color:'var(--ink-2)'}}>{r.vchNo}</td>
+                <td>{r.type ? <span className="badge badge-info" style={{fontSize:10}}>{r.type}</span> : ''}</td>
+                <td style={{color:'var(--primary)', fontSize:13}}>{r.drAcc}</td>
+                <td className="num" style={{color: r.drAmt ? 'var(--primary)' : 'var(--ink-3)', fontWeight: r.drAmt ? 600 : 400}}>
+                  {r.drAmt ? fmt(r.drAmt) : ''}
+                </td>
+                <td style={{color:'var(--danger)', fontSize:13}}>{r.crAcc}</td>
+                <td className="num" style={{color: r.crAmt ? 'var(--danger)' : 'var(--ink-3)', fontWeight: r.crAmt ? 600 : 400}}>
+                  {r.crAmt ? fmt(r.crAmt) : ''}
+                </td>
+                <td style={{fontSize:11, color:'var(--ink-3)', maxWidth:180, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap'}} title={r.narration}>{r.narration}</td>
+              </tr>
             ))}
-            {entries.length > 0 && (
+            {rows.length > 0 && (
               <tr className="total">
                 <td colSpan="4" style={{textAlign:'right'}}>TOTAL</td>
+                <td></td>
                 <td className="num">₹{fmt(totalDr)}</td>
+                <td></td>
                 <td className="num">₹{fmt(totalCr)}</td>
+                <td></td>
               </tr>
             )}
           </tbody>
@@ -5297,26 +5906,31 @@ function ProfitLoss({data, balances}){
 
         {/* Notes — Income breakdown */}
         <div style={{marginTop:24}}>
-          <div style={{fontWeight:700,fontSize:13,borderBottom:'2px solid var(--ink)',paddingBottom:6,marginBottom:10}}>
-            Notes to Accounts — Income (Period: {from} to {to})
+          <div style={{fontWeight:700,fontSize:13,borderBottom:'2px solid var(--ink)',paddingBottom:6,marginBottom:10,display:'flex',alignItems:'center',gap:8}}>
+            <span style={{background:'var(--primary)',color:'#fff',borderRadius:4,padding:'2px 9px',fontSize:12}}>Note A</span>
+            <span>Income Breakdown (Period: {from} to {to})</span>
           </div>
           <table>
-            <thead><tr><th style={{width:80}}>Code</th><th>Account</th><th>Group</th><th className="num">Amount (₹)</th></tr></thead>
+            <thead><tr>
+              <th style={{width:52}}>Note</th>
+              <th style={{width:80}}>Code</th><th>Account</th><th>Group</th><th className="num">Amount (₹)</th>
+            </tr></thead>
             <tbody>
-              {incomeAccounts.filter(a=>pb.period[a.id]).map(a=>{
+              {incomeAccounts.filter(a=>pb.period[a.id]).map((a,ni)=>{
                 const val = -(pb.period[a.id]||0);
                 if(!val) return null;
                 return (
-                  <tr key={a.id} style={{cursor:'pointer'}} onClick={()=>setDrill({accountIds:[a.id],title:`${a.id} · ${a.name}`})} className="drill-row">
+                  <tr key={a.id} style={{cursor:'pointer'}} onClick={()=>openLedgerTab([a.id],`${a.id} · ${a.name}`,data,from,to)} className="drill-row">
+                    <td style={{fontSize:10,color:'var(--ink-3)',fontWeight:600}}>A-{ni+1}</td>
                     <td style={{fontFamily:'var(--mono)',color:'var(--primary)'}}>{a.id}</td>
-                    <td style={{color:'var(--primary)',textDecoration:'underline dotted'}}>{a.name}</td>
+                    <td style={{color:'var(--primary)',textDecoration:'underline dotted'}}>{a.name} <span style={{fontSize:9,color:'var(--ink-3)'}}>↗</span></td>
                     <td style={{fontSize:11,color:'var(--ink-3)'}}>{a.group}</td>
                     <td className="num">{fmt(val)}</td>
                   </tr>
                 );
               })}
               <tr style={{fontWeight:700,background:'var(--surface-2)'}}>
-                <td colSpan="3" style={{textAlign:'right'}}>Total Income</td>
+                <td colSpan="4" style={{textAlign:'right'}}>Total Income</td>
                 <td className="num">₹{fmt(totalRev)}</td>
               </tr>
             </tbody>
@@ -5325,26 +5939,31 @@ function ProfitLoss({data, balances}){
 
         {/* Notes — Expense breakdown */}
         <div style={{marginTop:18}}>
-          <div style={{fontWeight:700,fontSize:13,borderBottom:'2px solid var(--ink)',paddingBottom:6,marginBottom:10}}>
-            Notes to Accounts — Expenses (Period: {from} to {to})
+          <div style={{fontWeight:700,fontSize:13,borderBottom:'2px solid var(--ink)',paddingBottom:6,marginBottom:10,display:'flex',alignItems:'center',gap:8}}>
+            <span style={{background:'var(--danger)',color:'#fff',borderRadius:4,padding:'2px 9px',fontSize:12}}>Note B</span>
+            <span>Expense Breakdown (Period: {from} to {to})</span>
           </div>
           <table>
-            <thead><tr><th style={{width:80}}>Code</th><th>Account</th><th>Group</th><th className="num">Amount (₹)</th></tr></thead>
+            <thead><tr>
+              <th style={{width:52}}>Note</th>
+              <th style={{width:80}}>Code</th><th>Account</th><th>Group</th><th className="num">Amount (₹)</th>
+            </tr></thead>
             <tbody>
-              {expenseAccounts.filter(a=>pb.period[a.id]).map(a=>{
+              {expenseAccounts.filter(a=>pb.period[a.id]).map((a,ni)=>{
                 const val = pb.period[a.id]||0;
                 if(!val) return null;
                 return (
-                  <tr key={a.id} style={{cursor:'pointer'}} onClick={()=>setDrill({accountIds:[a.id],title:`${a.id} · ${a.name}`})} className="drill-row">
+                  <tr key={a.id} style={{cursor:'pointer'}} onClick={()=>openLedgerTab([a.id],`${a.id} · ${a.name}`,data,from,to)} className="drill-row">
+                    <td style={{fontSize:10,color:'var(--ink-3)',fontWeight:600}}>B-{ni+1}</td>
                     <td style={{fontFamily:'var(--mono)',color:'var(--danger)'}}>{a.id}</td>
-                    <td style={{color:'var(--primary)',textDecoration:'underline dotted'}}>{a.name}</td>
+                    <td style={{color:'var(--primary)',textDecoration:'underline dotted'}}>{a.name} <span style={{fontSize:9,color:'var(--ink-3)'}}>↗</span></td>
                     <td style={{fontSize:11,color:'var(--ink-3)'}}>{a.group}</td>
                     <td className="num">{fmt(val)}</td>
                   </tr>
                 );
               })}
               <tr style={{fontWeight:700,background:'var(--surface-2)'}}>
-                <td colSpan="3" style={{textAlign:'right'}}>Total Expenses</td>
+                <td colSpan="4" style={{textAlign:'right'}}>Total Expenses</td>
                 <td className="num">₹{fmt(totalExp)}</td>
               </tr>
             </tbody>
@@ -5441,25 +6060,32 @@ function BalanceSheet({data, balances}){
     ]);
   };
 
-  // Notes: detailed account list per section
-  const noteSection = (title, filter, sign=1) => {
+  // Notes: detailed account list per section — click opens ledger in new tab
+  const noteSection = (noteNo, title, filter, sign=1) => {
     const accs = data.coa.filter(filter).filter(a=>bals[a.id]);
     if(!accs.length) return null;
+    const shortTitle = title.replace(/^Note \d+ — /, '');
     return (
       <div style={{marginTop:16}}>
-        <div style={{fontWeight:600,fontSize:12,color:'var(--ink-2)',borderBottom:'1px solid var(--line)',paddingBottom:4,marginBottom:6}}>{title}</div>
+        <div style={{fontWeight:600,fontSize:12,color:'var(--ink-2)',borderBottom:'1px solid var(--line)',paddingBottom:4,marginBottom:6,display:'flex',alignItems:'center',gap:8}}>
+          <span style={{background:'var(--primary)',color:'#fff',borderRadius:4,padding:'1px 7px',fontSize:11,fontWeight:700,flexShrink:0}}>{noteNo}</span>
+          <span>{shortTitle}</span>
+        </div>
         <table style={{width:'100%',borderCollapse:'collapse',fontSize:12}}>
           <thead><tr>
-            <th style={{padding:'5px 8px',textAlign:'left',background:'var(--surface-2)',borderBottom:'1px solid var(--line)',width:80}}>Code</th>
+            <th style={{padding:'5px 8px',textAlign:'left',background:'var(--surface-2)',borderBottom:'1px solid var(--line)',width:36,color:'var(--ink-3)'}}>Note</th>
+            <th style={{padding:'5px 8px',textAlign:'left',background:'var(--surface-2)',borderBottom:'1px solid var(--line)',width:72}}>Code</th>
             <th style={{padding:'5px 8px',textAlign:'left',background:'var(--surface-2)',borderBottom:'1px solid var(--line)'}}>Account</th>
             <th style={{padding:'5px 8px',textAlign:'right',background:'var(--surface-2)',borderBottom:'1px solid var(--line)',width:140}}>Balance (₹)</th>
           </tr></thead>
           <tbody>
             {accs.map(a=>(
               <tr key={a.id} style={{cursor:'pointer',borderBottom:'1px solid var(--line)'}}
-                onClick={()=>setDrill({accountIds:[a.id],title:`${a.id} · ${a.name}`})} className="drill-row">
+                onClick={()=>openLedgerTab([a.id],`${a.id} · ${a.name}`,data,data.company.fyStart||'',asOn)}
+                className="drill-row">
+                <td style={{padding:'5px 8px',fontSize:10,color:'var(--ink-3)',fontWeight:600}}>{noteNo}</td>
                 <td style={{padding:'5px 8px',fontFamily:'var(--mono)',color:'var(--primary)'}}>{a.id}</td>
-                <td style={{padding:'5px 8px',color:'var(--primary)',textDecoration:'underline dotted'}}>{a.name}</td>
+                <td style={{padding:'5px 8px',color:'var(--primary)',textDecoration:'underline dotted'}}>{a.name} <span style={{fontSize:9,color:'var(--ink-3)'}}>↗</span></td>
                 <td style={{padding:'5px 8px',textAlign:'right',fontFamily:'var(--mono)'}}>{fmt(Math.abs(bals[a.id]||0))}</td>
               </tr>
             ))}
@@ -5541,18 +6167,18 @@ function BalanceSheet({data, balances}){
           <div style={{fontWeight:700,fontSize:14,borderBottom:'2px solid var(--ink)',paddingBottom:6,marginBottom:12}}>Notes to Balance Sheet — As at {asOn}</div>
           <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:20}}>
             <div>
-              {noteSection('Note 1 — Fixed Assets', a=>a.group==='Fixed Assets'||a.group==='Plant & Machinery'||a.group==='Furniture & Fixtures'||a.schedule==='Property, Plant & Equipment')}
-              {noteSection('Note 2 — Investments', a=>a.group==='Investments'||a.group==='Non-Current Investments')}
-              {noteSection('Note 3 — Inventories', a=>a.group==='Inventories'||a.id==='2300'||a.id==='2310')}
-              {noteSection('Note 4 — Trade Receivables', a=>a.id==='2400'||a.group==='Trade Receivables')}
-              {noteSection('Note 5 — Cash & Bank', a=>a.isBank||a.schedule==='Cash & Equivalents'||['2500','2510','2511','2520'].includes(a.id))}
-              {noteSection('Note 6 — Other Current Assets', a=>['2600','2601','2602','2700'].includes(a.id)||a.group==='Other Current Assets')}
+              {noteSection('1','Note 1 — Fixed Assets', a=>a.group==='Fixed Assets'||a.group==='Plant & Machinery'||a.group==='Furniture & Fixtures'||a.schedule==='Property, Plant & Equipment')}
+              {noteSection('2','Note 2 — Investments', a=>a.group==='Investments'||a.group==='Non-Current Investments')}
+              {noteSection('3','Note 3 — Inventories', a=>a.group==='Inventories'||a.id==='2300'||a.id==='2310')}
+              {noteSection('4','Note 4 — Trade Receivables', a=>a.id==='2400'||a.group==='Trade Receivables')}
+              {noteSection('5','Note 5 — Cash & Bank', a=>a.isBank||a.schedule==='Cash & Equivalents'||['2500','2510','2511','2520'].includes(a.id))}
+              {noteSection('6','Note 6 — Other Current Assets', a=>['2600','2601','2602','2700'].includes(a.id)||a.group==='Other Current Assets')}
             </div>
             <div>
-              {noteSection('Note 7 — Share Capital & Equity', a=>a.type==='Equity'||a.id==='1100'||a.id==='1110')}
-              {noteSection('Note 8 — Long-term Borrowings', a=>a.id==='1200'||a.group==='Long-term Borrowings')}
-              {noteSection('Note 9 — Trade Payables', a=>a.id==='1300'||a.group==='Trade Payables')}
-              {noteSection('Note 10 — Other Current Liabilities', a=>['1310','1311','1312','1313','1320','1330'].includes(a.id)||a.group==='Other Current Liabilities')}
+              {noteSection('7','Note 7 — Share Capital & Equity', a=>a.type==='Equity'||a.id==='1100'||a.id==='1110')}
+              {noteSection('8','Note 8 — Long-term Borrowings', a=>a.id==='1200'||a.group==='Long-term Borrowings')}
+              {noteSection('9','Note 9 — Trade Payables', a=>a.id==='1300'||a.group==='Trade Payables')}
+              {noteSection('10','Note 10 — Other Current Liabilities', a=>['1310','1311','1312','1313','1320','1330'].includes(a.id)||a.group==='Other Current Liabilities')}
             </div>
           </div>
         </div>
