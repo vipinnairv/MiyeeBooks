@@ -417,17 +417,36 @@ const fbLoadCompany = async (uid, companyId) => {
   try {
     const snap = await fbCompanyRef(uid, companyId).get();
     if(!snap.exists) return null;
-    return JSON.parse(snap.data().payload || 'null');
+    const doc  = snap.data();
+    const data = JSON.parse(doc.payload || 'null');
+    if(!data) return null;
+    // isPremium is stored as a TOP-LEVEL Firestore field so the developer
+    // can set it directly in Firebase Console without touching the payload.
+    // The app always trusts the Firestore field over anything in the payload.
+    if(doc.isPremium === true){
+      data.company.isPremium    = true;
+      data.company.premiumSince = doc.premiumSince || data.company.premiumSince || '';
+    } else {
+      data.company.isPremium    = false;
+    }
+    return data;
   } catch(e){ console.warn('fbLoadCompany:', e); return null; }
 };
 
 const fbSaveCompany = async (uid, companyId, data) => {
   if(!fbDb) return;
   await fbCompanyRef(uid, companyId).set({
-    name:      data.company?.name  || 'My Company',
-    gstin:     data.company?.gstin || '',
-    updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
-    payload:   JSON.stringify(data),
+    name:         data.company?.name     || 'My Company',
+    gstin:        data.company?.gstin    || '',
+    updatedAt:    firebase.firestore.FieldValue.serverTimestamp(),
+    payload:      JSON.stringify(data),
+    // isPremium is a top-level field so the developer can set it directly
+    // in Firebase Console without parsing the payload JSON.
+    // We write it here only if it's already true (never downgrade via app save).
+    ...(data.company?.isPremium ? {
+      isPremium:    true,
+      premiumSince: data.company.premiumSince || '',
+    } : {}),
   }, { merge: true });
 };
 
@@ -1086,7 +1105,21 @@ const DEFAULT_COMPANY = {
     trader:  false,  // Trader — Stock Items, Stock Ledger, Inventory Movements
     service: false,  // Service Sector — Service-specific features
   },
+  isPremium:    false,
+  premiumSince: '',
+  booksLockedUpto: '',   // vouchers on/before this date cannot be added/edited/cancelled
 };
+
+// ── Audit trail helper ───────────────────────────────────────────────────────
+// Records who did what, when. User email is set globally by App on login.
+const auditEntry = (action, detail) => ({
+  ts: new Date().toISOString(),
+  user: window.__miyeeUserEmail || 'local',
+  action, detail,
+});
+// Returns true if the date falls in a locked period (and shows why via toast fn)
+const isDateLocked = (company, date) =>
+  !!(company?.booksLockedUpto && date && date <= company.booksLockedUpto);
 
 const VOUCHER_TYPES = [
   {code:'JV', name:'Journal Entry', icon:'≡', desc:'General journal entry', double:true},
@@ -1098,6 +1131,20 @@ const VOUCHER_TYPES = [
   {code:'CRN', name:'Credit Note', icon:'⊖', desc:'Sales return / credit', double:true},
   {code:'DBN', name:'Debit Note', icon:'⊕', desc:'Purchase return / debit', double:true},
 ];
+
+// ── PREMIUM / FREEMIUM ───────────────────────────────────────────────────────
+const FREE_VOUCHER_LIMIT  = 10;          // max active vouchers in free tier
+const PREMIUM_PRICE_INR   = 1500;        // ₹1500 / month
+const PREMIUM_CONTACT     = 'audit.vipin@gmail.com';
+const PREMIUM_PHONE       = '+91 81602 03197';
+const PREMIUM_UPI         = 'audit.vipin@okicici';   // UPI for payment
+
+// Premium status is set ONLY by the developer in Firebase Firestore.
+// There is no client-side key or algorithm — this is a single-file app and
+// any client-side "key generator" would be visible to all users.
+// Activation path: customer pays → developer sets isPremium:true in Firestore
+// for that company document → app reads it on next sync.
+const isPremiumActive = (company) => company?.isPremium === true;
 
 const FOREX_RATES = {
   USD: 83.50, EUR: 89.20, GBP: 105.75, AED: 22.75, SGD: 61.40, JPY: 0.56,
@@ -1135,7 +1182,199 @@ const buildDefaultData = (companyOverrides = {}) => ({
   departments: [],
   bankRecon: [],
   allocations: [],
+  bankRules: [],
+  auditLog: [],
 });
+
+// ============================================================================
+// UPGRADE MODAL — shown when free tier limit is reached or from settings
+// ============================================================================
+function UpgradeModal({ data, setData, showToast, onClose, triggerReason='limit', companyId=null, userUid=null }) {
+  const activeCount = (data.vouchers||[]).filter(v=>v.status!=='Cancelled').length;
+  const isPrem      = isPremiumActive(data.company);
+
+  const FEATURES_FREE    = ['Double-entry accounting','Chart of Accounts','GST — GSTR-1 / 3B / 2B','Parties — Debtors & Creditors','Balance Sheet, P&L, Cash Flow'];
+  const FEATURES_PREMIUM = ['✦ Unlimited vouchers & entries','All free features included','Bank Reconciliation','Bill Tagging on PAY / REC','Cost Centres & Departments','TDS, Payroll, HR module','Inventory & Factory BOM','Excel export — all reports','Multi-user team access (Cloud)','Firebase cloud sync & backup','Priority support — email & phone'];
+
+  // ── How activation works ─────────────────────────────────────────────────
+  // This is a single-file app. No client-side key can be secure — the
+  // customer uses the SAME file as the developer, so any key generator
+  // embedded here is visible to everyone.
+  // Premium is therefore activated ONLY by the developer in Firebase Firestore:
+  //   Firebase Console → miyeebooks → companies → <companyId> → isPremium: true
+  // On next cloud sync the app reads the flag and unlocks automatically.
+  // For customers NOT using Firebase cloud: ask them to enable cloud sync first
+  // (Help & Guide → User Configuration).
+
+  return (
+    <div className="modal-overlay" style={{zIndex:3000}} onClick={e=>{if(e.target===e.currentTarget)onClose()}}>
+      <div className="modal" style={{maxWidth:660,maxHeight:'93vh',overflowY:'auto',padding:0}}>
+
+        {/* Hero */}
+        <div style={{background:'linear-gradient(135deg,#0b6b4f 0%,#1a9a72 100%)',padding:'26px 30px 20px',color:'#fff',borderRadius:'12px 12px 0 0',position:'relative'}}>
+          <button onClick={onClose} style={{position:'absolute',top:13,right:16,background:'rgba(255,255,255,.18)',border:'none',color:'#fff',width:28,height:28,borderRadius:'50%',cursor:'pointer',fontSize:16,lineHeight:1,display:'flex',alignItems:'center',justifyContent:'center'}}>✕</button>
+          {isPrem ? (
+            <>
+              <div style={{fontSize:34,marginBottom:6}}>✅</div>
+              <div style={{fontSize:20,fontWeight:800}}>Premium is Active</div>
+              <div style={{fontSize:12,opacity:.85,marginTop:4}}>Your account is fully unlocked. Thank you for supporting MiyeeBooks!</div>
+              <div style={{marginTop:8,fontSize:11,opacity:.7}}>Active since: {data.company.premiumSince||'—'}</div>
+            </>
+          ) : (
+            <>
+              <div style={{fontSize:32,marginBottom:6}}>🚀</div>
+              <div style={{fontSize:21,fontWeight:800}}>Upgrade to MiyeeBooks Premium</div>
+              <div style={{fontSize:12,opacity:.85,marginTop:4}}>
+                {triggerReason==='limit'
+                  ? `Free limit reached — ${activeCount} of ${FREE_VOUCHER_LIMIT} entries used. Unlock unlimited access.`
+                  : 'Unlimited entries, all modules, cloud sync, priority support.'}
+              </div>
+              {triggerReason==='limit' && (
+                <div style={{marginTop:10,display:'inline-flex',alignItems:'center',gap:10,background:'rgba(255,255,255,.15)',borderRadius:8,padding:'7px 13px'}}>
+                  <span style={{fontSize:11}}>Free usage</span>
+                  <div style={{background:'rgba(255,255,255,.3)',borderRadius:20,width:110,height:7,overflow:'hidden'}}>
+                    <div style={{background:'#fff',height:'100%',borderRadius:20,width:`${(activeCount/FREE_VOUCHER_LIMIT)*100}%`}}></div>
+                  </div>
+                  <span style={{fontSize:11,fontWeight:700}}>{activeCount}/{FREE_VOUCHER_LIMIT}</span>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+
+        <div style={{padding:'22px 26px'}}>
+          {isPrem ? (
+            /* ── ALREADY PREMIUM ── */
+            <div style={{textAlign:'center',padding:'12px 0 24px'}}>
+              <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(140px,1fr))',gap:12,marginBottom:20}}>
+                {[['Vouchers','Unlimited','📝'],['Team Users','Multi-user','👥'],['Reports','All modules','📊'],['Support','Priority','💬']].map(([l,v,ic])=>(
+                  <div key={l} style={{background:'var(--primary-soft)',border:'1px solid var(--primary)',borderRadius:8,padding:'12px 10px',textAlign:'center'}}>
+                    <div style={{fontSize:22,marginBottom:4}}>{ic}</div>
+                    <div style={{fontSize:11,color:'var(--ink-3)',marginBottom:2}}>{l}</div>
+                    <div style={{fontWeight:700,fontSize:13,color:'var(--primary)'}}>{v}</div>
+                  </div>
+                ))}
+              </div>
+              <button className="btn btn-primary" style={{padding:'9px 28px'}} onClick={onClose}>Continue working →</button>
+            </div>
+          ) : (
+            <>
+              {/* ── PLAN COMPARISON ── */}
+              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:14,marginBottom:20}}>
+                {/* Free */}
+                <div style={{border:'1px solid var(--line)',borderRadius:10,padding:'16px 15px'}}>
+                  <div style={{fontWeight:700,fontSize:14,marginBottom:3}}>Free</div>
+                  <div style={{fontSize:22,fontWeight:800,marginBottom:10}}>₹0 <span style={{fontSize:11,fontWeight:400,color:'var(--ink-3)'}}>forever</span></div>
+                  <ul style={{listStyle:'none',padding:0,margin:0,fontSize:12,color:'var(--ink-2)'}}>
+                    {FEATURES_FREE.map((f,i)=>(
+                      <li key={i} style={{padding:'3px 0',display:'flex',gap:6,alignItems:'flex-start'}}>
+                        <span style={{color:'var(--ink-3)',marginTop:1}}>✓</span>{f}
+                      </li>
+                    ))}
+                  </ul>
+                  <div style={{marginTop:12,background:'#fff3e0',borderRadius:6,padding:'7px 10px',fontSize:11,color:'#e65100'}}>
+                    ⚠ Max <b>{FREE_VOUCHER_LIMIT} entries</b> only
+                  </div>
+                </div>
+
+                {/* Premium */}
+                <div style={{border:'2px solid var(--primary)',borderRadius:10,padding:'16px 15px',background:'var(--primary-soft)',position:'relative'}}>
+                  <div style={{position:'absolute',top:-10,left:'50%',transform:'translateX(-50%)',background:'var(--primary)',color:'#fff',fontSize:10,fontWeight:700,padding:'2px 12px',borderRadius:20,whiteSpace:'nowrap'}}>RECOMMENDED</div>
+                  <div style={{fontWeight:700,fontSize:14,color:'var(--primary)',marginBottom:3}}>Premium</div>
+                  <div style={{fontSize:22,fontWeight:800,color:'var(--primary)',marginBottom:10}}>
+                    ₹{PREMIUM_PRICE_INR.toLocaleString('en-IN')} <span style={{fontSize:11,fontWeight:400,color:'var(--ink-3)'}}>/ month</span>
+                  </div>
+                  <ul style={{listStyle:'none',padding:0,margin:0,fontSize:12,color:'var(--ink-2)'}}>
+                    {FEATURES_PREMIUM.map((f,i)=>(
+                      <li key={i} style={{padding:'3px 0',display:'flex',gap:6,alignItems:'flex-start',fontWeight:f.startsWith('✦')?700:400}}>
+                        <span style={{color:'var(--primary)',marginTop:1,flexShrink:0}}>✓</span>{f.replace('✦ ','')}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              </div>
+
+              {/* ── HOW TO ACTIVATE ── */}
+              <div style={{background:'var(--surface-2)',borderRadius:10,padding:'16px 18px',marginBottom:18}}>
+                <div style={{fontWeight:700,fontSize:13,marginBottom:14,color:'var(--ink)'}}>💳 How to Subscribe — 3 Simple Steps</div>
+                <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(170px,1fr))',gap:12}}>
+                  {[
+                    { n:'1', ico:'💸', title:'Pay ₹1,500/month',
+                      lines:[`UPI: ${PREMIUM_UPI}`, 'GPay / PhonePe / Paytm', 'Bank transfer on request'] },
+                    { n:'2', ico:'📩', title:'Send payment proof',
+                      lines:[`WhatsApp / email`, `${PREMIUM_CONTACT}`, `${PREMIUM_PHONE}`] },
+                    { n:'3', ico:'☁', title:'Activated in Firestore',
+                      lines:['Developer enables premium', 'in your cloud account', 'App unlocks on next sync'] },
+                  ].map(s=>(
+                    <div key={s.n} style={{background:'#fff',borderRadius:8,padding:'12px 13px',border:'1px solid var(--line)'}}>
+                      <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:7}}>
+                        <span style={{background:'var(--primary)',color:'#fff',borderRadius:'50%',width:20,height:20,display:'flex',alignItems:'center',justifyContent:'center',fontSize:11,fontWeight:800,flexShrink:0}}>{s.n}</span>
+                        <span style={{fontWeight:600,fontSize:12}}>{s.title}</span>
+                      </div>
+                      {s.lines.map((l,i)=><div key={i} style={{fontSize:11,color:'var(--ink-3)',marginBottom:1}}>{l}</div>)}
+                    </div>
+                  ))}
+                </div>
+                <div style={{marginTop:12,padding:'9px 12px',background:'#e8f5e9',borderRadius:6,fontSize:11,color:'#2e7d32',border:'1px solid #a5d6a7'}}>
+                  ☁ <b>Cloud sync is required for Premium.</b> Make sure you're signed in with Firebase (see Help → User Configuration).
+                  Once the developer enables your plan, the app unlocks automatically on the next sync — no key to enter, nothing to download.
+                </div>
+              </div>
+
+              {/* Contact strip */}
+              <div style={{display:'flex',gap:10,justifyContent:'center',flexWrap:'wrap'}}>
+                <a href={`https://wa.me/${PREMIUM_PHONE.replace(/[^0-9]/g,'')}`} target="_blank" rel="noopener"
+                  className="btn btn-primary" style={{fontSize:12,padding:'8px 18px'}}>
+                  💬 WhatsApp Us to Subscribe
+                </a>
+                <a href={`mailto:${PREMIUM_CONTACT}?subject=MiyeeBooks Premium Subscription&body=Company: ${data.company.name}%0AFirebase UID: (from Help page)%0APayment: done`}
+                  className="btn btn-sm" style={{fontSize:12}}>
+                  📧 Email: {PREMIUM_CONTACT}
+                </a>
+                <a href={`tel:${PREMIUM_PHONE.replace(/\s/g,'')}`} className="btn btn-sm" style={{fontSize:12}}>
+                  📱 {PREMIUM_PHONE}
+                </a>
+              </div>
+
+              {/* Account identifiers — customer must share these for activation */}
+              <div style={{marginTop:16,padding:'12px 16px',background:'#e8f5e9',borderRadius:8,border:'1px solid #a5d6a7'}}>
+                <div style={{fontWeight:700,fontSize:12,color:'#1b5e20',marginBottom:8}}>
+                  📋 Share these details with us when you pay — required for activation:
+                </div>
+                <div style={{display:'grid',gap:6}}>
+                  {[
+                    ['Company Name', data.company.name],
+                    ['User UID',     userUid  || '— sign in with Firebase to see —'],
+                    ['Company ID',   companyId || '— sign in with Firebase to see —'],
+                  ].map(([label, value])=>(
+                    <div key={label} style={{display:'flex',alignItems:'center',gap:8,background:'#fff',borderRadius:6,padding:'6px 10px',border:'1px solid #c8e6c9'}}>
+                      <span style={{fontSize:11,color:'#388e3c',minWidth:100,flexShrink:0,fontWeight:600}}>{label}</span>
+                      <code style={{fontFamily:'var(--mono)',fontSize:11,color:'#1b5e20',wordBreak:'break-all',flex:1}}>{value}</code>
+                      {value && value !== '— sign in with Firebase to see —' && (
+                        <button onClick={()=>{navigator.clipboard?.writeText(value); showToast(`${label} copied`);}}
+                          style={{background:'none',border:'none',cursor:'pointer',fontSize:13,opacity:.6,padding:'2px 4px',flexShrink:0}} title="Copy">📋</button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+                {(!userUid || !companyId) && (
+                  <div style={{marginTop:8,fontSize:11,color:'#f57c00',background:'#fff8e1',borderRadius:6,padding:'6px 10px',border:'1px solid #ffe082'}}>
+                    ⚠ You're in local mode. Enable cloud sync (Help → User Configuration) first to get your Firebase IDs.
+                  </div>
+                )}
+              </div>
+            </>
+          )}
+        </div>
+
+        <div style={{borderTop:'1px solid var(--line)',padding:'11px 22px',background:'var(--surface-2)',borderRadius:'0 0 12px 12px',display:'flex',justifyContent:'space-between',alignItems:'center',fontSize:11,color:'var(--ink-3)'}}>
+          <span>MiyeeBooks by Vipin Nair · MSME Accounting Suite</span>
+          {!isPrem && <span>⚡ Your data is always safe — upgrade when ready</span>}
+        </div>
+      </div>
+    </div>
+  );
+}
 
 // ============================================================================
 // LOGIN SCREEN
@@ -1712,6 +1951,11 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
       if(!saved.departments) saved.departments = [];
       if(!saved.bankRecon)   saved.bankRecon   = [];
       if(!saved.allocations) saved.allocations = [];
+      if(!saved.bankRules)   saved.bankRules   = [];
+      if(!saved.auditLog)    saved.auditLog    = [];
+      if(saved.company.isPremium === undefined) saved.company.isPremium = false;
+      if(!saved.company.premiumSince) saved.company.premiumSince = '';
+      if(!saved.company.booksLockedUpto) saved.company.booksLockedUpto = '';
       // Migrate: ensure modules config exists (preserve existing true for legacy installs)
       if(!saved.company.modules) {
         saved.company.modules = { gst:true, tds:true, payroll:true, factory:false, trader:false, service:false };
@@ -1738,10 +1982,38 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
       departments: [],
       bankRecon: [],
       allocations: [],
+      bankRules: [],
+      auditLog: [],
     };
   });
   const [page, setPage] = useState('dashboard');
   const [toast, setToast] = useState(null);
+  const [showUpgrade, setShowUpgrade] = useState(false);
+  const [upgradeReason, setUpgradeReason] = useState('limit');
+
+  const triggerUpgrade = (reason='limit') => { setUpgradeReason(reason); setShowUpgrade(true); };
+  const activeVoucherCount = useMemo(() => (data.vouchers||[]).filter(v=>v.status!=='Cancelled').length, [data.vouchers]);
+  const isPrem = isPremiumActive(data.company);
+
+  // Expose user identity for audit-trail entries written deep in components
+  useEffect(() => { window.__miyeeUserEmail = user?.email || 'local'; }, [user]);
+
+  // ── Weekly auto-backup: download a JSON snapshot if the last one is >7 days old
+  useEffect(() => {
+    try {
+      const last = localStorage.getItem('miyee_last_backup');
+      const now  = Date.now();
+      if(last && now - parseInt(last) < 7*24*60*60*1000) return;
+      if((data.vouchers||[]).length === 0) return;   // nothing worth backing up yet
+      const blob = new Blob([JSON.stringify(data, null, 2)], {type:'application/json'});
+      const url  = URL.createObjectURL(blob);
+      const a    = document.createElement('a');
+      a.href = url; a.download = `MiyeeBooks_AutoBackup_${today()}.json`; a.click();
+      URL.revokeObjectURL(url);
+      localStorage.setItem('miyee_last_backup', String(now));
+      setTimeout(() => showToast('📦 Weekly auto-backup downloaded — keep it safe'), 600);
+    } catch(e){ /* backups must never break the app */ }
+  }, []);
 
   // Quick-create handlers from VoucherModal (avoids prop-drilling setData)
   useEffect(() => {
@@ -1781,6 +2053,11 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
         if(!cloudData.departments)       cloudData.departments = [];
         if(!cloudData.bankRecon)         cloudData.bankRecon   = [];
         if(!cloudData.allocations)       cloudData.allocations = [];
+        if(!cloudData.bankRules)         cloudData.bankRules   = [];
+        if(!cloudData.auditLog)          cloudData.auditLog    = [];
+        if(cloudData.company.isPremium === undefined) cloudData.company.isPremium = false;
+        if(!cloudData.company.premiumSince) cloudData.company.premiumSince = '';
+        if(!cloudData.company.booksLockedUpto) cloudData.company.booksLockedUpto = '';
         if(!cloudData.tdsSections)       cloudData.tdsSections = SEED_TDS_SECTIONS;
         if(!cloudData.company.modules){
           cloudData.company.modules = { gst:true, tds:true, payroll:true, factory:false, trader:false, service:false };
@@ -1876,6 +2153,7 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
     {section:'Reports', items:[
       {id:'trial', label:'Trial Balance', ico:'⊟'},
       {id:'pnl', label:'Profit & Loss', ico:'⊞'},
+      {id:'pnl_trend', label:'P&L Monthly Trend', ico:'📈'},
       {id:'bs', label:'Balance Sheet', ico:'⊠'},
       {id:'cashflow', label:'Cash Flow (AS-3)', ico:'⊜'},
       {id:'cc_report', label:'Cost Centre P&L', ico:'🎯'},
@@ -1883,6 +2161,7 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
     ]},
     {section:'Registers', items:[
       {id:'bank_recon', label:'Bank Reconciliation', ico:'🏦'},
+      {id:'billwise', label:'Bill-wise Outstanding', ico:'📋'},
       {id:'ledger_stmt', label:'Ledger Statement', ico:'≡'},
       {id:'debtor_stmt', label:'Debtors Statement', ico:'↗'},
       {id:'vendor_stmt', label:'Vendor Statement', ico:'↙'},
@@ -1910,11 +2189,17 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
       {id:'tds_sections', label:'TDS Sections', ico:'§'},
       {id:'tds_report', label:'TDS Deducted Report', ico:'⊞'},
     ]}] : []),
+    {section:'Income Tax', items:[
+      {id:'adv_tax', label:'Advance Tax Estimator', ico:'₹'},
+    ]},
     {section:'Data & Sync', items:[
       {id:'datamanage', label:'Export / Import', ico:'⇋'},
       {id:'gdrive', label:'Google Drive Sync', ico:'☁'},
+      {id:'audit_log', label:'Audit Trail', ico:'🔍'},
+      {id:'year_end', label:'Year-End Closing', ico:'🔒'},
     ]},
     {section:'Support', items:[
+      {id:'upgrade', label: isPrem ? '✦ Premium Active' : '🚀 Upgrade to Premium', ico: isPrem ? '✦' : '⚡'},
       {id:'help', label:'Help & Guide', ico:'?'},
     ]},
   ];
@@ -1944,6 +2229,14 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
               </span>
             )}
             {isViewer && <span style={{fontSize:10,fontWeight:700,padding:'2px 8px',borderRadius:20,background:'#f5f5f5',color:'#757575'}}>👁 Read-Only</span>}
+          {isPrem
+            ? <span style={{fontSize:10,fontWeight:700,padding:'2px 10px',borderRadius:20,background:'linear-gradient(90deg,#c9a227,#e6be4e)',color:'#5a3e00',cursor:'pointer',whiteSpace:'nowrap'}}
+                onClick={()=>triggerUpgrade('manage')} title="Premium active — click to view plan">✦ Premium</span>
+            : <span style={{fontSize:10,fontWeight:700,padding:'2px 10px',borderRadius:20,background:'#fff3e0',color:'#e65100',cursor:'pointer',border:'1px solid #ffcc80',whiteSpace:'nowrap'}}
+                onClick={()=>triggerUpgrade('topbar')} title={`Free plan · ${activeVoucherCount}/${FREE_VOUCHER_LIMIT} entries used`}>
+                ⚡ Free {activeVoucherCount}/{FREE_VOUCHER_LIMIT}
+              </span>
+          }
             <span style={{fontSize:11,color:'var(--ink-3)',maxWidth:140,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}} title={user.email}>
               {user.displayName || user.email}
             </span>
@@ -1971,9 +2264,32 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
               ))}
             </div>
           ))}
+          {/* Premium status card at sidebar bottom */}
+          <div style={{padding:'10px 12px 14px',marginTop:'auto'}}>
+            {isPrem ? (
+              <div onClick={()=>triggerUpgrade('manage')} style={{background:'linear-gradient(135deg,#c9a227,#e6be4e)',borderRadius:10,padding:'11px 14px',cursor:'pointer',boxShadow:'0 2px 8px #c9a22730'}}>
+                <div style={{fontWeight:800,fontSize:12,color:'#3d2c00',letterSpacing:'.3px'}}>✦ PREMIUM ACTIVE</div>
+                <div style={{fontSize:10,color:'#5a3e00',marginTop:2}}>Unlimited entries · All modules</div>
+                <div style={{fontSize:9,color:'#7a5e00',marginTop:1}}>Since: {data.company.premiumSince||'—'}</div>
+              </div>
+            ) : (
+              <div onClick={()=>triggerUpgrade('sidebar')} style={{background:'linear-gradient(135deg,#0b6b4f,#1a9a72)',borderRadius:10,padding:'11px 14px',cursor:'pointer',boxShadow:'0 2px 8px #0b6b4f30'}}>
+                <div style={{fontWeight:800,fontSize:11,color:'#fff',letterSpacing:'.4px'}}>⚡ UPGRADE TO PREMIUM</div>
+                <div style={{fontSize:10,color:'rgba(255,255,255,.8)',marginTop:3}}>
+                  <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:4}}>
+                    <div style={{flex:1,height:4,background:'rgba(255,255,255,.25)',borderRadius:4}}>
+                      <div style={{height:'100%',background:'#fff',borderRadius:4,width:`${Math.min(100,(activeVoucherCount/FREE_VOUCHER_LIMIT)*100)}%`}}></div>
+                    </div>
+                    <span style={{fontSize:9,fontWeight:700,whiteSpace:'nowrap'}}>{activeVoucherCount}/{FREE_VOUCHER_LIMIT}</span>
+                  </div>
+                  ₹1,500/month · Unlimited entries
+                </div>
+              </div>
+            )}
+          </div>
         </aside>
         <main className="main">
-          {page==='dashboard' && <Dashboard data={data} balances={ledgerBalances} setPage={setPage} />}
+          {page==='dashboard' && <Dashboard data={data} balances={ledgerBalances} setPage={setPage} setData={canWrite?setData:()=>{}} showToast={showToast} />}
           {page==='coa' && <ChartOfAccounts data={data} setData={canWrite?setData:()=>{}} balances={ledgerBalances} showToast={showToast} readOnly={isViewer} />}
           {page==='parties' && <Parties data={data} setData={canWrite?setData:()=>{}} showToast={showToast} readOnly={isViewer} />}
           {page==='company' && <CompanySettings data={data} setData={canWrite?setData:()=>{}} showToast={showToast} readOnly={isViewer} />}
@@ -2003,6 +2319,11 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
           {page==='tds_sections' && <TDSSections data={data} setData={canWrite?setData:()=>{}} showToast={showToast} readOnly={isViewer} />}
           {page==='tds_report' && <TDSReport data={data} />}
           {page==='bank_recon' && <BankReconciliation data={data} setData={canWrite?setData:()=>{}} showToast={showToast} />}
+          {page==='pnl_trend' && <PnLTrend data={data} />}
+          {page==='billwise' && <BillwiseAgeing data={data} />}
+          {page==='adv_tax' && <AdvanceTax data={data} />}
+          {page==='audit_log' && <AuditLog data={data} />}
+          {page==='year_end' && <YearEndClose data={data} setData={canWrite?setData:()=>{}} showToast={showToast} />}
           {page==='ledger_stmt' && <LedgerStatement data={data} balances={ledgerBalances} />}
           {page==='debtor_stmt' && <DebtorStatement data={data} />}
           {page==='vendor_stmt' && <VendorStatement data={data} />}
@@ -2012,6 +2333,19 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
           {page==='inv_production' && <ProductionOrders data={data} setData={setData} showToast={showToast} />}
           {page==='inv_movement' && <InventoryMovements data={data} />}
           {page==='help' && <HelpGuide setPage={setPage} />}
+          {page==='upgrade' && (
+            <div style={{maxWidth:720,margin:'0 auto'}}>
+              <div className="page-head">
+                <div>
+                  <h1 className="page-title">🚀 MiyeeBooks Premium</h1>
+                  <div className="page-sub">Upgrade for unlimited entries, all modules, and priority support</div>
+                </div>
+              </div>
+              <UpgradeModal data={data} setData={setData} showToast={showToast}
+                companyId={companyId} userUid={user?.uid}
+                onClose={()=>setPage('dashboard')} triggerReason="settings" />
+            </div>
+          )}
           <div className="credit">
             <div><b>Miyee<span style={{color:'var(--accent)'}}>·</span>Books</b> &nbsp;·&nbsp; MSME Accounting Suite &nbsp;·&nbsp; Built by <b>Vipin Nair</b> &nbsp;·&nbsp; MYeeCFO Series</div>
             <div className="contact-row">
@@ -2025,6 +2359,11 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
         </main>
       </div>
       {toast && <div className={'toast ' + (toast.type==='error'?'error':'success')}>{toast.msg}</div>}
+      {showUpgrade && (
+        <UpgradeModal data={data} setData={setData} showToast={showToast}
+          companyId={companyId} userUid={user?.uid}
+          onClose={()=>setShowUpgrade(false)} triggerReason={upgradeReason} />
+      )}
     </>
   );
 }
@@ -2890,7 +3229,39 @@ function LedgerDrillModal({accountIds, title, data, from, to, onClose}){
 // ============================================================================
 // DASHBOARD
 // ============================================================================
-function Dashboard({data, balances, setPage}){
+function Dashboard({data, balances, setPage, setData=()=>{}, showToast=()=>{}}){
+  // ── Recurring entries due this month ───────────────────────────────────────
+  const thisMonth = today().slice(0,7);
+  const recurringDue = useMemo(() => {
+    const templates = (data.vouchers||[]).filter(v => v.recurringMonthly && v.status !== 'Cancelled');
+    // Latest template per (type + narration/party) chain; due if no copy exists this month
+    const latestByChain = {};
+    templates.forEach(v => {
+      const chain = v.recurringSourceId || v.id;
+      if(!latestByChain[chain] || v.date > latestByChain[chain].date) latestByChain[chain] = v;
+    });
+    return Object.values(latestByChain).filter(v => !v.date.startsWith(thisMonth));
+  }, [data.vouchers, thisMonth]);
+
+  const postRecurring = (tmpl) => {
+    if(!isPremiumActive(data.company) && (data.vouchers||[]).filter(v=>v.status!=='Cancelled').length >= FREE_VOUCHER_LIMIT){
+      showToast(`Free limit (${FREE_VOUCHER_LIMIT} entries) reached — upgrade to Premium`,'error'); return;
+    }
+    const newDate = thisMonth + '-' + tmpl.date.slice(8,10);  // same day-of-month
+    if(isDateLocked(data.company, newDate)){ showToast('Period is locked','error'); return; }
+    setData(prev => {
+      const typeCount = prev.vouchers.filter(x => x.type === tmpl.type).length;
+      const num = tmpl.type + '/' + String(typeCount+1).padStart(4,'0');
+      const copy = {...tmpl, id:uid(), number:num, date:newDate,
+        lines:(tmpl.lines||[]).map(l=>({...l, id:uid()})),
+        recurringSourceId: tmpl.recurringSourceId || tmpl.id,
+        createdAt: new Date().toISOString()};
+      return {...prev, vouchers:[...prev.vouchers, copy],
+        auditLog:[...(prev.auditLog||[]), auditEntry('RECURRING', `${num} (${tmpl.type}) ₹${fmt(tmpl.amount||0)} auto-posted for ${thisMonth}`)]};
+    });
+    showToast(`🔁 Posted recurring ${tmpl.type} for ${thisMonth}`);
+  };
+
   const stats = useMemo(() => {
     let income = 0, expense = 0, assets = 0, liab = 0;
     let cash = 0, bank = 0, debtors = 0, creditors = 0;
@@ -2925,6 +3296,28 @@ function Dashboard({data, balances, setPage}){
           <button className="btn btn-primary" onClick={() => setPage('vouchers')}>+ New Entry</button>
         </div>
       </div>
+
+      {/* Recurring entries due this month */}
+      {recurringDue.length > 0 && (
+        <div className="card" style={{marginBottom:16,border:'1px solid var(--accent)',background:'#fffdf5'}}>
+          <div className="card-body" style={{padding:'14px 18px'}}>
+            <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:10,flexWrap:'wrap',gap:8}}>
+              <div style={{fontWeight:700,fontSize:13}}>🔁 Recurring Entries Due — {thisMonth}</div>
+              <button className="btn btn-sm btn-primary" onClick={()=>recurringDue.forEach(postRecurring)}>
+                ✓ Post All ({recurringDue.length})
+              </button>
+            </div>
+            {recurringDue.map(t => (
+              <div key={t.id} style={{display:'flex',alignItems:'center',gap:12,padding:'7px 0',borderTop:'1px solid var(--line-2)',fontSize:12}}>
+                <span className="badge badge-info" style={{fontSize:10}}>{t.type}</span>
+                <span style={{flex:1}}>{t.narration || t.partyName || t.number} <span style={{color:'var(--ink-3)'}}>· last posted {t.date}</span></span>
+                <span style={{fontFamily:'var(--mono)',fontWeight:600}}>₹{fmt(t.amount||0)}</span>
+                <button className="btn btn-sm" style={{fontSize:11}} onClick={()=>postRecurring(t)}>Post</button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div className="stat-grid">
         <div className="stat">
@@ -4158,6 +4551,12 @@ function Vouchers({data, setData, showToast, readOnly=false}){
   const [editing, setEditing] = useState(null);
   const [showModal, setShowModal] = useState(false);
   const [showImport, setShowImport] = useState(false);
+  const [showUpgradeGate, setShowUpgradeGate] = useState(false);
+
+  // Free tier check
+  const prem = isPremiumActive(data.company);
+  const activeCount = useMemo(() => (data.vouchers||[]).filter(v=>v.status!=='Cancelled').length, [data.vouchers]);
+  const isAtLimit = !prem && activeCount >= FREE_VOUCHER_LIMIT;
   const [vtype, setVtype] = useState('JV');
   const [filter, setFilter] = useState('All');
 
@@ -4176,6 +4575,7 @@ function Vouchers({data, setData, showToast, readOnly=false}){
   ];
 
   const handleImportVouchers = (rows) => {
+    if(isAtLimit){ setShowUpgradeGate(true); return; }
     const validTypes = VOUCHER_TYPES.map(v => v.code);
     const imported = [];
     const errors   = [];
@@ -4196,6 +4596,10 @@ function Vouchers({data, setData, showToast, readOnly=false}){
     });
 
     Object.values(groups).forEach(grp => {
+      if(isDateLocked(data.company, grp.date)){
+        errors.push(`Group ${grp.reference} (${grp.date}): period is locked (books closed up to ${data.company.booksLockedUpto})`);
+        return;
+      }
       const lines = [];
       let vNarration = '', vPartyName = '', vPartyId = '';
       let totalDr = 0, totalCr = 0;
@@ -4270,7 +4674,8 @@ function Vouchers({data, setData, showToast, readOnly=false}){
         const typeCount = [...prev.vouchers, ...imported.filter(x=>x!==v)].filter(x=>x.type===v.type).length;
         return {...v, number: v.type+'/'+String(typeCount+1).padStart(4,'0')};
       });
-      return {...prev, vouchers:[...prev.vouchers,...numbered], parties:updatedParties};
+      return {...prev, vouchers:[...prev.vouchers,...numbered], parties:updatedParties,
+        auditLog:[...(prev.auditLog||[]), auditEntry('IMPORT', `${numbered.length} vouchers via CSV import`)]};
     });
     const partiesMsg = newParties.length ? ` · ${newParties.length} new ${newParties.length===1?'party':'parties'} created` : '';
     showToast(`Imported ${imported.length} voucher${imported.length!==1?'s':''}${partiesMsg}${errors.length?` (${errors.length} issue${errors.length!==1?'s':''} skipped)`:''}`);
@@ -4281,20 +4686,36 @@ function Vouchers({data, setData, showToast, readOnly=false}){
     .sort((a,b) => b.date.localeCompare(a.date));
 
   const openNew = (type) => {
+    if(isAtLimit){ setShowUpgradeGate(true); return; }
     setVtype(type);
     setEditing(null);
     setShowModal(true);
   };
 
   const handleSave = (v) => {
+    // Period lock: no posting/editing into a closed FY
+    if(isDateLocked(data.company, v.date)){
+      showToast(`Books are locked up to ${data.company.booksLockedUpto} — cannot post on ${v.date}`,'error');
+      return;
+    }
+    if(editing && isDateLocked(data.company, editing.date)){
+      showToast(`Voucher ${editing.number} is in a locked period and cannot be edited`,'error');
+      return;
+    }
     if(editing){
-      setData(prev => ({...prev, vouchers: prev.vouchers.map(x => x.id === editing.id ? {...v, id:editing.id} : x)}));
+      setData(prev => ({...prev,
+        vouchers: prev.vouchers.map(x => x.id === editing.id ? {...v, id:editing.id} : x),
+        auditLog: [...(prev.auditLog||[]), auditEntry('EDIT', `${editing.number} (${v.type}) ₹${fmt(v.amount||0)} dt ${v.date}`)],
+      }));
       showToast('Voucher updated: ' + v.number);
     } else {
       setData(prev => {
         const typeVouchers = prev.vouchers.filter(x => x.type === v.type);
         const num = v.type + '/' + (typeVouchers.length + 1).toString().padStart(4,'0');
-        return {...prev, vouchers: [...prev.vouchers, {...v, id:uid(), number:v.number||num, createdAt:new Date().toISOString()}]};
+        return {...prev,
+          vouchers: [...prev.vouchers, {...v, id:uid(), number:v.number||num, createdAt:new Date().toISOString()}],
+          auditLog: [...(prev.auditLog||[]), auditEntry('CREATE', `${v.number||num} (${v.type}) ₹${fmt(v.amount||0)} dt ${v.date}`)],
+        };
       });
       showToast('Voucher posted: ' + (v.number || v.type));
     }
@@ -4303,8 +4724,15 @@ function Vouchers({data, setData, showToast, readOnly=false}){
   };
 
   const handleDelete = (v) => {
+    if(isDateLocked(data.company, v.date)){
+      showToast(`Voucher ${v.number} is in a locked period and cannot be cancelled`,'error');
+      return;
+    }
     if(!confirm('Cancel voucher ' + v.number + '?')) return;
-    setData({...data, vouchers: data.vouchers.map(x => x.id === v.id ? {...x, status:'Cancelled'} : x)});
+    setData({...data,
+      vouchers: data.vouchers.map(x => x.id === v.id ? {...x, status:'Cancelled'} : x),
+      auditLog: [...(data.auditLog||[]), auditEntry('CANCEL', `${v.number} (${v.type}) ₹${fmt(v.amount||0)} dt ${v.date}`)],
+    });
     showToast('Voucher cancelled');
   };
 
@@ -4323,6 +4751,40 @@ function Vouchers({data, setData, showToast, readOnly=false}){
       {readOnly && <div style={{background:'#fff8e1',border:'1px solid #ffe082',borderRadius:8,padding:'10px 16px',marginBottom:16,fontSize:12,color:'#5d4037'}}>
         👁 <b>Viewer / Auditor mode</b> — you can view all entries but cannot create, edit or cancel vouchers.
       </div>}
+
+      {/* Free tier usage banner */}
+      {!prem && !readOnly && (
+        <div style={{
+          background: isAtLimit ? 'linear-gradient(90deg,#c62828,#e53935)' : activeCount >= FREE_VOUCHER_LIMIT - 2 ? 'linear-gradient(90deg,#e65100,#f57c00)' : 'linear-gradient(90deg,#0b6b4f,#1a9a72)',
+          color:'#fff', borderRadius:10, padding:'12px 18px', marginBottom:16,
+          display:'flex', alignItems:'center', justifyContent:'space-between', gap:12, flexWrap:'wrap',
+        }}>
+          <div style={{display:'flex',alignItems:'center',gap:12}}>
+            <span style={{fontSize:20}}>{isAtLimit ? '🚫' : activeCount >= FREE_VOUCHER_LIMIT - 2 ? '⚠️' : '⚡'}</span>
+            <div>
+              <div style={{fontWeight:700,fontSize:13}}>
+                {isAtLimit
+                  ? `Free limit reached — ${activeCount}/${FREE_VOUCHER_LIMIT} entries used`
+                  : `Free Plan · ${activeCount} of ${FREE_VOUCHER_LIMIT} free entries used`}
+              </div>
+              <div style={{fontSize:11,opacity:.88,marginTop:1}}>
+                {isAtLimit
+                  ? 'Upgrade to Premium (₹1,500/month) to post unlimited vouchers'
+                  : `${FREE_VOUCHER_LIMIT - activeCount} entries remaining · Upgrade anytime for unlimited access`}
+              </div>
+            </div>
+          </div>
+          <div style={{display:'flex',alignItems:'center',gap:10}}>
+            <div style={{background:'rgba(255,255,255,.2)',borderRadius:20,width:100,height:6,overflow:'hidden',flexShrink:0}}>
+              <div style={{background:'#fff',height:'100%',borderRadius:20,width:`${Math.min(100,(activeCount/FREE_VOUCHER_LIMIT)*100)}%`,transition:'width .4s'}}></div>
+            </div>
+            <button onClick={()=>setShowUpgradeGate(true)}
+              style={{background:'#fff',color:'var(--primary)',border:'none',borderRadius:20,padding:'6px 18px',fontWeight:700,fontSize:12,cursor:'pointer',whiteSpace:'nowrap',boxShadow:'0 1px 4px #0002'}}>
+              🚀 Upgrade Now
+            </button>
+          </div>
+        </div>
+      )}
 
       {!readOnly && <div className="voucher-types">
         {VOUCHER_TYPES.map(vt => (
@@ -4373,6 +4835,10 @@ function Vouchers({data, setData, showToast, readOnly=false}){
 
       {showModal && <VoucherModal vtype={vtype} voucher={editing} data={data} onSave={handleSave} onClose={() => { setShowModal(false); setEditing(null); }} showToast={showToast} />}
       {showImport && <CsvImportModal title="Bulk Import Vouchers" sampleHeaders={VCHR_SAMPLE_HEADERS} sampleRows={VCHR_SAMPLE_ROWS} sampleFilename="vouchers_import_template.csv" onImport={handleImportVouchers} onClose={() => setShowImport(false)} />}
+      {showUpgradeGate && (
+        <UpgradeModal data={data} setData={setData} showToast={showToast}
+          onClose={()=>setShowUpgradeGate(false)} triggerReason="limit" />
+      )}
     </>
   );
 }
@@ -5135,10 +5601,33 @@ function VoucherModal({vtype, voucher, data, onSave, onClose, showToast}){
             </div>
           )}
 
+          {/* E-Invoice details (IRN) — Sales only */}
+          {vtype==='SAL' && (
+            <div style={{marginTop:14, padding:'12px 14px', background:'var(--surface-2)', borderRadius:8, border:'1px solid var(--line)'}}>
+              <div style={{fontWeight:600,fontSize:12,marginBottom:8,color:'var(--ink-2)'}}>🧾 E-Invoice Details <span style={{fontWeight:400,color:'var(--ink-3)'}}>(if applicable — turnover above e-invoice threshold)</span></div>
+              <div style={{display:'grid',gridTemplateColumns:'2fr 1fr 1fr',gap:10}}>
+                <div className="field"><label style={{fontSize:10}}>IRN (64-char hash)</label>
+                  <input value={f.irn||''} onChange={e=>setF({...f, irn:e.target.value})} placeholder="Invoice Reference Number" style={{fontFamily:'var(--mono)',fontSize:11}} /></div>
+                <div className="field"><label style={{fontSize:10}}>Ack No.</label>
+                  <input value={f.ackNo||''} onChange={e=>setF({...f, ackNo:e.target.value})} placeholder="Acknowledgement No." /></div>
+                <div className="field"><label style={{fontSize:10}}>Ack Date</label>
+                  <input type="date" value={f.ackDate||''} onChange={e=>setF({...f, ackDate:e.target.value})} /></div>
+              </div>
+            </div>
+          )}
+
           <div className="field" style={{marginTop:14}}>
             <label>Narration</label>
             <textarea rows="2" value={f.narration} onChange={e => setF({...f, narration:e.target.value})} placeholder="Being..." style={{padding:8, border:'1px solid var(--line-2)', borderRadius:6, resize:'vertical'}} />
           </div>
+
+          {/* Recurring flag — dashboard prompts to re-post each month */}
+          <label style={{display:'flex',alignItems:'center',gap:8,marginTop:10,fontSize:12,cursor:'pointer',color:'var(--ink-2)',
+            background:f.recurringMonthly?'var(--primary-soft)':'transparent',padding:'8px 12px',borderRadius:6,
+            border:f.recurringMonthly?'1px solid var(--primary)':'1px solid var(--line-2)',width:'fit-content'}}>
+            <input type="checkbox" checked={!!f.recurringMonthly} onChange={e=>setF({...f, recurringMonthly:e.target.checked})} />
+            <span>🔁 <b>Recurring monthly</b> — Dashboard will remind you to post this entry every month (rent, salary, EMI, subscriptions)</span>
+          </label>
 
           {/* ── Bill Tagging for PAY / REC ─────────────────────────────── */}
           {isBillType && (
@@ -5228,6 +5717,444 @@ function VoucherModal({vtype, voucher, data, onSave, onClose, showToast}){
 }
 
 // ============================================================================
+// P&L MONTHLY TREND (12-column FY view)
+// ============================================================================
+function PnLTrend({data}){
+  const fyStart = data.company.fyStart || (new Date().getFullYear()+'-04-01');
+  const fyYear  = parseInt(fyStart.slice(0,4));
+  const months  = Array.from({length:12},(_,i)=>{
+    const m = ((3+i)%12)+1, y = m>=4 ? fyYear : fyYear+1;
+    return `${y}-${String(m).padStart(2,'0')}`;
+  });
+  const MLBL = ['Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec','Jan','Feb','Mar'];
+
+  const monthly = useMemo(() => months.map(m => {
+    const lastDay = new Date(parseInt(m.slice(0,4)), parseInt(m.slice(5,7)), 0).getDate();
+    return computePeriodBals(data, m+'-01', m+'-'+String(lastDay).padStart(2,'0'));
+  }), [data, fyStart]);
+
+  const grp = (pb, filter) => data.coa.filter(filter).reduce((s,a)=>{
+    const b = pb.period[a.id]||0; return s + (a.type==='Income' ? -b : b);
+  }, 0);
+
+  const ROWS = [
+    {label:'Revenue from Operations', f:a=>a.type==='Income'&&a.group==='Revenue from Operations', inc:true},
+    {label:'Other Income',            f:a=>a.type==='Income'&&a.group==='Other Income', inc:true},
+    {label:'Cost of Materials / Purchases', f:a=>a.group==='Cost of Materials'||a.group==='Purchase of Stock-in-Trade'},
+    {label:'Employee Benefits',       f:a=>a.group==='Employee Benefit Expenses'},
+    {label:'Finance Costs',           f:a=>a.group==='Finance Costs'},
+    {label:'Depreciation',            f:a=>a.group==='Depreciation'},
+    {label:'Other Expenses',          f:a=>a.group==='Other Expenses'},
+  ];
+  const matrix = ROWS.map(r => ({...r, vals: monthly.map(pb => grp(pb, r.f))}));
+  const pbtRow = monthly.map((_,i) =>
+    matrix.filter(r=>r.inc).reduce((s,r)=>s+r.vals[i],0) -
+    matrix.filter(r=>!r.inc).reduce((s,r)=>s+r.vals[i],0));
+  const rowTotal = r => r.vals.reduce((s,v)=>s+v,0);
+
+  const handleExcel = () => {
+    exportXLSX(`PnL_Trend_FY${fyYear}.xlsx`, [{name:'P&L Trend', rows:[
+      [`P&L Monthly Trend — ${data.company.name} — FY ${fyYear}-${String(fyYear+1).slice(2)}`],[],
+      ['Particulars', ...MLBL, 'Total'],
+      ...matrix.map(r => [r.label, ...r.vals, rowTotal(r)]),
+      ['Profit Before Tax', ...pbtRow, pbtRow.reduce((s,v)=>s+v,0)],
+    ]}]);
+  };
+
+  return (<>
+    <div className="page-head">
+      <div>
+        <h1 className="page-title">P&L Monthly Trend</h1>
+        <div className="page-sub">FY {fyYear}–{String(fyYear+1).slice(2)} · Month-by-month income & expense view</div>
+      </div>
+      <div className="page-actions">
+        <button className="btn btn-sm" onClick={handleExcel}>⬇ Excel</button>
+        <button className="btn btn-sm btn-primary" onClick={()=>window.print()}>⎙ Print</button>
+      </div>
+    </div>
+    <div className="table-wrap" style={{overflowX:'auto'}}>
+      <table style={{fontSize:12,minWidth:1100}}>
+        <thead><tr>
+          <th style={{minWidth:190,position:'sticky',left:0,background:'var(--surface-2)',zIndex:1}}>Particulars</th>
+          {MLBL.map(m=><th key={m} className="num" style={{minWidth:78}}>{m}</th>)}
+          <th className="num" style={{minWidth:95,background:'var(--primary-soft)'}}>Total</th>
+        </tr></thead>
+        <tbody>
+          {matrix.map(r=>(
+            <tr key={r.label} style={r.inc?{color:'var(--primary)'}:{}}>
+              <td style={{position:'sticky',left:0,background:'var(--surface)',fontWeight:500}}>{r.label}</td>
+              {r.vals.map((v,i)=><td key={i} className="num">{v?fmt(v):'·'}</td>)}
+              <td className="num" style={{fontWeight:700,background:'var(--primary-soft)'}}>{fmt(rowTotal(r))}</td>
+            </tr>
+          ))}
+          <tr className="total">
+            <td style={{position:'sticky',left:0,background:'var(--surface-2)'}}>Profit Before Tax</td>
+            {pbtRow.map((v,i)=><td key={i} className="num" style={{color:v>=0?'var(--primary)':'var(--danger)'}}>{fmt(v)}</td>)}
+            <td className="num" style={{background:'var(--primary-soft)'}}>{fmt(pbtRow.reduce((s,v)=>s+v,0))}</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </>);
+}
+
+// ============================================================================
+// BILL-WISE OUTSTANDING & AGEING (uses billTags allocations)
+// ============================================================================
+function BillwiseAgeing({data}){
+  const [tab, setTab] = useState('rec');   // rec = receivables (SAL), pay = payables (PUR)
+  const asOf = today();
+
+  const allocMap = useMemo(() => {
+    const m = {};
+    data.vouchers.forEach(v => {
+      if(v.status==='Cancelled') return;
+      (v.billTags||[]).forEach(bt => { m[bt.voucherId] = (m[bt.voucherId]||0) + (bt.allocated||0); });
+    });
+    return m;
+  }, [data.vouchers]);
+
+  const rows = useMemo(() => {
+    const type = tab==='rec' ? 'SAL' : 'PUR';
+    return data.vouchers
+      .filter(v => v.type===type && v.status!=='Cancelled')
+      .map(inv => {
+        const total = inv.total || inv.amount ||
+          (inv.lines||[]).reduce((s,l)=>s+(type==='SAL'?(l.credit||0):(l.debit||0)),0);
+        const paid = allocMap[inv.id] || 0;
+        const out  = Math.max(0, total - paid);
+        const days = Math.floor((new Date(asOf) - new Date(inv.date)) / 86400000);
+        const bucket = days<=30 ? '0–30' : days<=60 ? '31–60' : days<=90 ? '61–90' : '90+';
+        return {id:inv.id, date:inv.date, number:inv.number, party:inv.partyName||'—',
+          reference:inv.reference||'', total, paid, out, days, bucket};
+      })
+      .filter(r => r.out > 0.01)
+      .sort((a,b) => a.party.localeCompare(b.party) || a.date.localeCompare(b.date));
+  }, [data.vouchers, tab, allocMap]);
+
+  const buckets = ['0–30','31–60','61–90','90+'];
+  const bucketTotals = buckets.map(b => rows.filter(r=>r.bucket===b).reduce((s,r)=>s+r.out,0));
+  const grandOut = rows.reduce((s,r)=>s+r.out,0);
+
+  const handleExcel = () => {
+    exportXLSX(`Billwise_${tab==='rec'?'Receivables':'Payables'}_${asOf}.xlsx`, [{
+      name: tab==='rec'?'Receivables':'Payables',
+      rows: [
+        [`Bill-wise ${tab==='rec'?'Receivables':'Payables'} — ${data.company.name} — as on ${asOf}`],[],
+        ['Party','Inv Date','Inv No','Reference','Invoice (₹)','Received/Paid (₹)','Outstanding (₹)','Days','Bucket'],
+        ...rows.map(r=>[r.party,r.date,r.number,r.reference,r.total,r.paid,r.out,r.days,r.bucket]),
+        [],['','','','TOTAL','','',grandOut,'',''],
+      ],
+    }]);
+  };
+
+  return (<>
+    <div className="page-head">
+      <div>
+        <h1 className="page-title">Bill-wise Outstanding</h1>
+        <div className="page-sub">Invoice-level ageing from bill tagging · as on {asOf}</div>
+      </div>
+      <div className="page-actions">
+        <button className="btn btn-sm" onClick={handleExcel}>⬇ Excel</button>
+        <button className="btn btn-sm btn-primary" onClick={()=>window.print()}>⎙ Print</button>
+      </div>
+    </div>
+
+    <div style={{display:'flex',gap:8,marginBottom:14}}>
+      <button className={'btn'+(tab==='rec'?' btn-primary':'')} onClick={()=>setTab('rec')}>↗ Receivables (Sales)</button>
+      <button className={'btn'+(tab==='pay'?' btn-primary':'')} onClick={()=>setTab('pay')}>↘ Payables (Purchases)</button>
+    </div>
+
+    <div className="stat-grid" style={{marginBottom:14}}>
+      {buckets.map((b,i)=>(
+        <div key={b} className={'stat'+(i>=2?' stat-danger':i===1?' stat-gold':'')}>
+          <div className="stat-label">{b} days</div>
+          <div className="stat-value rupee">₹{fmt(bucketTotals[i])}</div>
+        </div>
+      ))}
+      <div className="stat stat-info">
+        <div className="stat-label">Total Outstanding</div>
+        <div className="stat-value rupee">₹{fmt(grandOut)}</div>
+      </div>
+    </div>
+
+    <div className="table-wrap">
+      <table>
+        <thead><tr>
+          <th>Party</th><th style={{width:92}}>Inv Date</th><th style={{width:100}}>Inv No</th>
+          <th className="num" style={{width:110}}>Invoice (₹)</th>
+          <th className="num" style={{width:110}}>{tab==='rec'?'Received':'Paid'} (₹)</th>
+          <th className="num" style={{width:120}}>Outstanding (₹)</th>
+          <th className="num" style={{width:60}}>Days</th><th style={{width:70}}>Bucket</th>
+        </tr></thead>
+        <tbody>
+          {rows.length===0 ? (
+            <tr><td colSpan="8"><div className="empty"><div className="empty-ico">✓</div>
+              <div>No outstanding {tab==='rec'?'receivables':'payables'} — all invoices settled or none tagged yet.</div>
+              <div style={{fontSize:11,marginTop:6,color:'var(--ink-3)'}}>Tip: tag bills when posting Payments/Receipts so this report can track them.</div>
+            </div></td></tr>
+          ) : rows.map(r=>(
+            <tr key={r.id}>
+              <td style={{fontWeight:500}}>{r.party}</td>
+              <td style={{fontSize:12}}>{r.date}</td>
+              <td style={{fontFamily:'var(--mono)',fontSize:12}}>{r.number}</td>
+              <td className="num">{fmt(r.total)}</td>
+              <td className="num" style={{color:'var(--ink-3)'}}>{r.paid?fmt(r.paid):''}</td>
+              <td className="num" style={{fontWeight:700,color:r.bucket==='90+'?'var(--danger)':'var(--ink)'}}>{fmt(r.out)}</td>
+              <td className="num" style={{fontSize:12}}>{r.days}</td>
+              <td><span className={'badge '+(r.bucket==='0–30'?'badge-success':r.bucket==='31–60'?'badge-info':'badge-danger')} style={{fontSize:10}}>{r.bucket}</span></td>
+            </tr>
+          ))}
+          {rows.length>0 && (
+            <tr className="total"><td colSpan="5" style={{textAlign:'right'}}>TOTAL OUTSTANDING</td>
+              <td className="num">₹{fmt(grandOut)}</td><td colSpan="2"></td></tr>
+          )}
+        </tbody>
+      </table>
+    </div>
+  </>);
+}
+
+// ============================================================================
+// ADVANCE TAX ESTIMATOR (Sec 208/211 instalments)
+// ============================================================================
+function AdvanceTax({data}){
+  const fyStart = data.company.fyStart || '';
+  const fyYear  = parseInt((fyStart||'2025-04-01').slice(0,4));
+  const t = today();
+  const pb = useMemo(() => computePeriodBals(data, fyStart, t), [data, fyStart]);
+
+  const income  = data.coa.filter(a=>a.type==='Income').reduce((s,a)=>s+(-(pb.period[a.id]||0)),0);
+  const expense = data.coa.filter(a=>a.type==='Expense').reduce((s,a)=>s+(pb.period[a.id]||0),0);
+  const ytdPbt  = income - expense;
+
+  // Months elapsed in FY (Apr=1 … Mar=12)
+  const m = parseInt(t.slice(5,7));
+  const monthsElapsed = m >= 4 ? m-3 : m+9;
+  const annualPbt = monthsElapsed>0 ? (ytdPbt/monthsElapsed)*12 : 0;
+  const estTax    = annualPbt>0 ? annualPbt*0.25 : 0;
+  const tdsCredit = pb.asOn['2700'] || 0;   // TDS Receivable ledger
+  const netTax    = Math.max(0, estTax - tdsCredit);
+
+  const inst = [
+    {due:`${fyYear}-06-15`,   pct:15,  label:'1st — by 15 Jun'},
+    {due:`${fyYear}-09-15`,   pct:45,  label:'2nd — by 15 Sep'},
+    {due:`${fyYear}-12-15`,   pct:75,  label:'3rd — by 15 Dec'},
+    {due:`${fyYear+1}-03-15`, pct:100, label:'4th — by 15 Mar'},
+  ].map((i,idx,arr)=>({...i,
+    cumAmt: netTax*i.pct/100,
+    instAmt: netTax*i.pct/100 - (idx>0 ? netTax*arr[idx-1].pct/100 : 0),
+    status: t > i.due ? 'past' : 'upcoming',
+  }));
+
+  return (<>
+    <div className="page-head">
+      <div>
+        <h1 className="page-title">Advance Tax Estimator</h1>
+        <div className="page-sub">FY {fyYear}–{String(fyYear+1).slice(2)} · Based on YTD profit annualised · 25% MSME rate</div>
+      </div>
+    </div>
+
+    <div className="stat-grid" style={{marginBottom:16}}>
+      <div className="stat"><div className="stat-label">YTD PBT ({monthsElapsed} months)</div><div className="stat-value rupee">₹{fmt(ytdPbt)}</div></div>
+      <div className="stat stat-info"><div className="stat-label">Annualised PBT</div><div className="stat-value rupee">₹{fmt(annualPbt)}</div></div>
+      <div className="stat stat-gold"><div className="stat-label">Estimated Tax @25%</div><div className="stat-value rupee">₹{fmt(estTax)}</div></div>
+      <div className="stat"><div className="stat-label">Less: TDS Credit</div><div className="stat-value rupee">₹{fmt(tdsCredit)}</div></div>
+      <div className="stat stat-danger"><div className="stat-label">Net Advance Tax</div><div className="stat-value rupee">₹{fmt(netTax)}</div></div>
+    </div>
+
+    <div className="card">
+      <div className="card-body" style={{padding:0}}>
+        <table style={{width:'100%',borderCollapse:'collapse',fontSize:13}}>
+          <thead><tr style={{background:'var(--surface-2)',borderBottom:'1px solid var(--line)'}}>
+            <th style={{padding:'10px 16px',textAlign:'left'}}>Instalment</th>
+            <th style={{padding:'10px 16px',textAlign:'left',width:110}}>Due Date</th>
+            <th style={{padding:'10px 16px',textAlign:'right',width:90}}>Cumulative %</th>
+            <th style={{padding:'10px 16px',textAlign:'right',width:140}}>Cumulative (₹)</th>
+            <th style={{padding:'10px 16px',textAlign:'right',width:140}}>This Instalment (₹)</th>
+            <th style={{padding:'10px 16px',textAlign:'center',width:100}}>Status</th>
+          </tr></thead>
+          <tbody>
+            {inst.map(i=>(
+              <tr key={i.due} style={{borderBottom:'1px solid var(--line-2)'}}>
+                <td style={{padding:'10px 16px',fontWeight:500}}>{i.label}</td>
+                <td style={{padding:'10px 16px',fontSize:12}}>{i.due}</td>
+                <td style={{padding:'10px 16px',textAlign:'right'}}>{i.pct}%</td>
+                <td style={{padding:'10px 16px',textAlign:'right',fontFamily:'var(--mono)'}}>{fmt(i.cumAmt)}</td>
+                <td style={{padding:'10px 16px',textAlign:'right',fontFamily:'var(--mono)',fontWeight:700}}>{fmt(i.instAmt)}</td>
+                <td style={{padding:'10px 16px',textAlign:'center'}}>
+                  <span className={'badge '+(i.status==='past'?'badge-danger':'badge-info')} style={{fontSize:10}}>
+                    {i.status==='past'?'Due passed':'Upcoming'}
+                  </span>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+    <div style={{marginTop:12,fontSize:11,color:'var(--ink-3)'}}>
+      ⚠ Estimate only — assumes uniform profit through the year and 25% rate. Interest u/s 234B/234C applies on shortfall. Consult your CA before payment.
+    </div>
+  </>);
+}
+
+// ============================================================================
+// AUDIT TRAIL
+// ============================================================================
+function AuditLog({data}){
+  const [search, setSearch] = useState('');
+  const log = useMemo(() => [...(data.auditLog||[])].reverse()
+    .filter(e => !search || (e.detail||'').toLowerCase().includes(search.toLowerCase()) ||
+      (e.user||'').toLowerCase().includes(search.toLowerCase()) ||
+      (e.action||'').toLowerCase().includes(search.toLowerCase())),
+    [data.auditLog, search]);
+
+  const ACT_CLR = {CREATE:'badge-success', EDIT:'badge-info', CANCEL:'badge-danger',
+    IMPORT:'badge-info', RECURRING:'badge-success', YEAR_END:'badge-danger', BANK_ENTRY:'badge-info', GSTR2B:'badge-info'};
+
+  const handleExcel = () => {
+    exportXLSX(`AuditTrail_${today()}.xlsx`, [{name:'Audit Trail', rows:[
+      [`Audit Trail — ${data.company.name}`],[],
+      ['Timestamp','User','Action','Detail'],
+      ...log.map(e=>[e.ts, e.user, e.action, e.detail]),
+    ]}]);
+  };
+
+  return (<>
+    <div className="page-head">
+      <div>
+        <h1 className="page-title">Audit Trail</h1>
+        <div className="page-sub">Edit log of all voucher activity · {log.length} entries · MCA-compliant record</div>
+      </div>
+      <div className="page-actions">
+        <button className="btn btn-sm" onClick={handleExcel}>⬇ Excel</button>
+      </div>
+    </div>
+    <div className="filter-bar">
+      <div className="field"><label>Search</label>
+        <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Voucher, user, action…" style={{minWidth:240}} />
+      </div>
+    </div>
+    <div className="table-wrap">
+      <table>
+        <thead><tr>
+          <th style={{width:170}}>When</th><th style={{width:180}}>User</th>
+          <th style={{width:100}}>Action</th><th>Detail</th>
+        </tr></thead>
+        <tbody>
+          {log.length===0 ? (
+            <tr><td colSpan="4"><div className="empty"><div className="empty-ico">∅</div>
+              <div>No audit entries yet — voucher activity will appear here automatically.</div></div></td></tr>
+          ) : log.map((e,i)=>(
+            <tr key={i}>
+              <td style={{fontSize:11,fontFamily:'var(--mono)',whiteSpace:'nowrap'}}>{(e.ts||'').replace('T',' ').slice(0,19)}</td>
+              <td style={{fontSize:12,overflow:'hidden',textOverflow:'ellipsis',maxWidth:180}}>{e.user}</td>
+              <td><span className={'badge '+(ACT_CLR[e.action]||'badge-info')} style={{fontSize:10}}>{e.action}</span></td>
+              <td style={{fontSize:12}}>{e.detail}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  </>);
+}
+
+// ============================================================================
+// YEAR-END CLOSING
+// ============================================================================
+function YearEndClose({data, setData, showToast}){
+  const fyStart = data.company.fyStart || '';
+  const fyEnd   = data.company.fyEnd   || '';
+  const fyYear  = parseInt((fyStart||'2025-04-01').slice(0,4));
+  const locked  = data.company.booksLockedUpto || '';
+
+  const pb = useMemo(() => computePeriodBals(data, fyStart, fyEnd), [data, fyStart, fyEnd]);
+  const income  = data.coa.filter(a=>a.type==='Income').reduce((s,a)=>s+(-(pb.period[a.id]||0)),0);
+  const expense = data.coa.filter(a=>a.type==='Expense').reduce((s,a)=>s+(pb.period[a.id]||0),0);
+  const profit  = income - expense;
+  const fyVouchers = data.vouchers.filter(v=>v.status!=='Cancelled'&&v.date>=fyStart&&v.date<=fyEnd).length;
+
+  const downloadBackup = () => {
+    const blob = new Blob([JSON.stringify(data,null,2)],{type:'application/json'});
+    const url  = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = `MiyeeBooks_PreClose_FY${fyYear}_${today()}.json`; a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const closeFY = () => {
+    if(!confirm(`Close FY ${fyYear}-${String(fyYear+1).slice(2)}?\n\n• Books will be LOCKED up to ${fyEnd} — no entries can be added, edited or cancelled before this date\n• Company FY rolls to ${fyYear+1}-04-01 → ${fyYear+2}-03-31\n• A backup will download automatically\n\nProceed?`)) return;
+    downloadBackup();
+    setData(prev => ({...prev,
+      company: {...prev.company,
+        fyStart: `${fyYear+1}-04-01`,
+        fyEnd:   `${fyYear+2}-03-31`,
+        booksLockedUpto: fyEnd,
+      },
+      auditLog: [...(prev.auditLog||[]), auditEntry('YEAR_END', `FY ${fyYear}-${String(fyYear+1).slice(2)} closed · books locked up to ${fyEnd} · profit ₹${fmt(profit)}`)],
+    }));
+    showToast(`✓ FY ${fyYear}-${String(fyYear+1).slice(2)} closed — books locked, FY rolled forward`);
+  };
+
+  const unlockBooks = () => {
+    if(!confirm('Unlock the books? Prior-period vouchers will become editable again.\nThis is recorded in the audit trail.')) return;
+    setData(prev => ({...prev,
+      company: {...prev.company, booksLockedUpto: ''},
+      auditLog: [...(prev.auditLog||[]), auditEntry('YEAR_END', `Books UNLOCKED (was locked up to ${locked})`)],
+    }));
+    showToast('Books unlocked');
+  };
+
+  return (<>
+    <div className="page-head">
+      <div>
+        <h1 className="page-title">Year-End Closing</h1>
+        <div className="page-sub">Lock the financial year & roll forward · FY {fyYear}–{String(fyYear+1).slice(2)}</div>
+      </div>
+    </div>
+
+    {locked && (
+      <div style={{background:'#e8f5e9',border:'1px solid #a5d6a7',borderRadius:8,padding:'12px 16px',marginBottom:16,fontSize:12,color:'#1b5e20',display:'flex',justifyContent:'space-between',alignItems:'center',flexWrap:'wrap',gap:8}}>
+        <span>🔒 <b>Books are locked up to {locked}</b> — entries on or before this date cannot be modified.</span>
+        <button className="btn btn-sm" onClick={unlockBooks} style={{fontSize:11}}>🔓 Unlock</button>
+      </div>
+    )}
+
+    <div className="stat-grid" style={{marginBottom:16}}>
+      <div className="stat"><div className="stat-label">FY Income</div><div className="stat-value rupee">₹{fmt(income)}</div></div>
+      <div className="stat"><div className="stat-label">FY Expenses</div><div className="stat-value rupee">₹{fmt(expense)}</div></div>
+      <div className={'stat '+(profit>=0?'stat-gold':'stat-danger')}><div className="stat-label">FY Profit / (Loss)</div><div className="stat-value rupee">₹{fmt(profit)}</div></div>
+      <div className="stat stat-info"><div className="stat-label">Vouchers in FY</div><div className="stat-value">{fyVouchers}</div></div>
+    </div>
+
+    <div className="card">
+      <div className="card-body" style={{padding:'20px 24px'}}>
+        <div style={{fontWeight:700,fontSize:14,marginBottom:12}}>📋 Closing Checklist</div>
+        <ol style={{fontSize:12,color:'var(--ink-2)',paddingLeft:20,lineHeight:2}}>
+          <li>All bank accounts reconciled (Bank Reconciliation page)</li>
+          <li>Outstanding receivables / payables reviewed (Bill-wise Outstanding)</li>
+          <li>Depreciation entry posted for the full year</li>
+          <li>GST returns (GSTR-1, 3B) filed for all periods</li>
+          <li>TDS deducted, deposited and reported</li>
+          <li>Balance Sheet tallied (difference = ₹0)</li>
+        </ol>
+        <div style={{display:'flex',gap:10,marginTop:18,flexWrap:'wrap'}}>
+          <button className="btn" onClick={downloadBackup}>📦 Download Backup First</button>
+          <button className="btn btn-primary" onClick={closeFY} style={{fontWeight:700}}>
+            🔒 Close FY {fyYear}–{String(fyYear+1).slice(2)} & Roll Forward
+          </button>
+        </div>
+        <div style={{marginTop:12,fontSize:11,color:'var(--ink-3)'}}>
+          Closing locks all entries up to {fyEnd} and changes the company FY to {fyYear+1}-04-01 → {fyYear+2}-03-31.
+          All history is retained — reports for the old year keep working. You can unlock later if needed (audit-logged).
+        </div>
+      </div>
+    </div>
+  </>);
+}
+
+// ============================================================================
 // BANK RECONCILIATION
 // ============================================================================
 function BankReconciliation({data, setData, showToast}){
@@ -5237,6 +6164,76 @@ function BankReconciliation({data, setData, showToast}){
   const [matchMap, setMatchMap]   = useState({}); // rowIdx -> voucherId
   const [search, setSearch]       = useState('');
   const [tab, setTab]             = useState('upload');
+
+  // ── Auto Entry from bank rows ───────────────────────────────────────────
+  const bankAccounts = data.coa.filter(a => a.isBank);
+  const [bankLedger, setBankLedger] = useState(bankAccounts[0]?.id || '2510');
+  const [entryRow, setEntryRow]     = useState(null);   // row.idx currently being converted
+  const [entryAcc, setEntryAcc]     = useState('');
+  const [ruleKeyword, setRuleKeyword] = useState('');
+  const [saveRule, setSaveRule]     = useState(true);
+
+  // Match a bank narration against learned rules → suggested contra account
+  const ruleFor = (desc='') => (data.bankRules||[]).find(r =>
+    r.keyword && desc.toLowerCase().includes(r.keyword.toLowerCase()));
+
+  // Bank CSV dates arrive as DD-MM-YYYY / DD/MM/YYYY / YYYY-MM-DD — normalise to ISO
+  const toISO = (raw='') => {
+    const s = raw.trim();
+    if(/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0,10);
+    const m = s.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{2,4})/);
+    if(m){ const y = m[3].length===2 ? '20'+m[3] : m[3];
+      return `${y}-${m[2].padStart(2,'0')}-${m[1].padStart(2,'0')}`; }
+    return today();
+  };
+
+  const openEntry = (row) => {
+    const rule = ruleFor(row.desc);
+    setEntryRow(row.idx);
+    setEntryAcc(rule?.accountId || '');
+    // Default keyword: first 2 significant words of the narration
+    setRuleKeyword(rule?.keyword || row.desc.split(/\s+/).slice(0,2).join(' ').slice(0,30));
+  };
+
+  const createEntry = (row) => {
+    if(!entryAcc){ showToast('Select an account for the entry','error'); return; }
+    if(!isPremiumActive(data.company) && (data.vouchers||[]).filter(v=>v.status!=='Cancelled').length >= FREE_VOUCHER_LIMIT){
+      showToast(`Free limit (${FREE_VOUCHER_LIMIT} entries) reached — upgrade to Premium`,'error'); return;
+    }
+    const vDate = toISO(row.date);
+    if(isDateLocked(data.company, vDate)){ showToast('Period is locked — cannot post on '+vDate,'error'); return; }
+    const isPay = row.debit > 0;                       // money out of bank
+    const amt   = isPay ? row.debit : row.credit;
+    const type  = isPay ? 'PAY' : 'REC';
+    const lines = isPay
+      ? [{id:uid(), accountId:entryAcc,   debit:amt, credit:0,   narration:row.desc},
+         {id:uid(), accountId:bankLedger, debit:0,   credit:amt, narration:row.desc}]
+      : [{id:uid(), accountId:bankLedger, debit:amt, credit:0,   narration:row.desc},
+         {id:uid(), accountId:entryAcc,   debit:0,   credit:amt, narration:row.desc}];
+    const bankRef = `${row.date}|${row.ref||row.desc}|${(row.debit||row.credit).toFixed(2)}`;
+    setData(prev => {
+      const typeCount = prev.vouchers.filter(x => x.type === type).length;
+      const num = type + '/' + String(typeCount+1).padStart(4,'0');
+      const newVoucher = {id:uid(), type, date:vDate, number:num, partyId:'', partyName:'',
+        narration:row.desc, reference:row.ref||'', lines, amount:amt, status:'Posted',
+        createdAt:new Date().toISOString()};
+      // Learn the rule for next time
+      let rules = prev.bankRules || [];
+      if(saveRule && ruleKeyword.trim()){
+        rules = rules.filter(r => r.keyword.toLowerCase() !== ruleKeyword.trim().toLowerCase());
+        rules = [...rules, {id:uid(), keyword:ruleKeyword.trim(), accountId:entryAcc}];
+      }
+      return {...prev,
+        vouchers:  [...prev.vouchers, newVoucher],
+        bankRules: rules,
+        bankRecon: [...(prev.bankRecon||[]), {bankRef, date:row.date, desc:row.desc, ref:row.ref,
+          debit:row.debit, credit:row.credit, voucherId:newVoucher.id, reconDate:today()}],
+        auditLog:  [...(prev.auditLog||[]), auditEntry('BANK_ENTRY', `${num} (${type}) ₹${fmt(amt)} from bank stmt "${row.desc.slice(0,40)}"`)],
+      };
+    });
+    setEntryRow(null);
+    showToast(`✓ ${type} entry posted ₹${fmt(amt)} — reconciled${saveRule&&ruleKeyword?` · rule saved: "${ruleKeyword}"`:''}`);
+  };
 
   const bookVouchers = useMemo(() => {
     return data.vouchers
@@ -5367,6 +6364,12 @@ function BankReconciliation({data, setData, showToast}){
             <div className="field"><label>Search</label>
               <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Description or reference…" style={{minWidth:240}} />
             </div>
+            <div className="field"><label>Bank Ledger (this statement)</label>
+              <select value={bankLedger} onChange={e=>setBankLedger(e.target.value)}>
+                {bankAccounts.length===0 && <option value="2510">2510 · Bank</option>}
+                {bankAccounts.map(a=><option key={a.id} value={a.id}>{a.id} · {a.name}</option>)}
+              </select>
+            </div>
             <div style={{marginLeft:'auto',display:'flex',gap:8,alignItems:'center'}}>
               <span style={{fontSize:12,color:'var(--ink-3)'}}>{reconCount}/{filtered.length} reconciled</span>
               <label className="btn btn-sm" style={{cursor:'pointer'}}>
@@ -5414,8 +6417,10 @@ function BankReconciliation({data, setData, showToast}){
                       Math.abs(v.total - amt) < 1 ||
                       (row.ref && v.number && v.number.toLowerCase().includes(row.ref.toLowerCase().slice(0,8)))
                     ).slice(0,10);
+                    const rule = !isRecon && ruleFor(row.desc);
                     return (
-                      <tr key={row.idx} style={{
+                      <React.Fragment key={row.idx}>
+                      <tr style={{
                         background: isRecon?'#f0fdf4': isSel?'var(--primary-soft)':'',
                         opacity: isRecon?.75:1,
                       }}>
@@ -5424,7 +6429,9 @@ function BankReconciliation({data, setData, showToast}){
                             onChange={e=>{const s=new Set(selected); e.target.checked?s.add(row.idx):s.delete(row.idx); setSelected(s);}} />
                         </td>
                         <td style={{fontSize:12,whiteSpace:'nowrap'}}>{row.date}</td>
-                        <td style={{fontSize:12}}>{row.desc}</td>
+                        <td style={{fontSize:12}}>{row.desc}
+                          {rule && <div style={{fontSize:10,color:'var(--primary)'}}>⚡ rule: {data.coa.find(a=>a.id===rule.accountId)?.name||rule.accountId}</div>}
+                        </td>
                         <td style={{fontFamily:'var(--mono)',fontSize:11,color:'var(--ink-3)'}}>{row.ref}</td>
                         <td className="num" style={{color:row.debit?'var(--danger)':'',fontWeight:row.debit?600:400}}>{row.debit?fmt(row.debit):''}</td>
                         <td className="num" style={{color:row.credit?'var(--primary)':'',fontWeight:row.credit?600:400}}>{row.credit?fmt(row.credit):''}</td>
@@ -5452,9 +6459,45 @@ function BankReconciliation({data, setData, showToast}){
                         <td style={{textAlign:'center'}}>
                           {isRecon
                             ? <span className="badge badge-success" style={{fontSize:10}}>✓ Done</span>
-                            : <span className="badge badge-info" style={{fontSize:10}}>Pending</span>}
+                            : entryRow===row.idx
+                              ? <button className="btn btn-sm btn-ghost" style={{fontSize:10}} onClick={()=>setEntryRow(null)}>✕ Close</button>
+                              : <button className="btn btn-sm" style={{fontSize:10,whiteSpace:'nowrap'}} title="Create a voucher from this bank line"
+                                  onClick={()=>openEntry(row)}>➕ Entry</button>}
                         </td>
                       </tr>
+                      {entryRow===row.idx && !isRecon && (
+                        <tr style={{background:'var(--primary-soft)'}}>
+                          <td colSpan="8" style={{padding:'10px 16px'}}>
+                            <div style={{display:'flex',gap:12,alignItems:'flex-end',flexWrap:'wrap'}}>
+                              <div style={{fontSize:12,fontWeight:700,color:'var(--primary)',paddingBottom:6}}>
+                                {row.debit>0 ? '↘ Payment' : '↗ Receipt'} ₹{fmt(row.debit||row.credit)}:
+                              </div>
+                              <div className="field" style={{minWidth:260}}>
+                                <label style={{fontSize:10}}>{row.debit>0?'Debit account (expense / party paid)':'Credit account (income / party received from)'}</label>
+                                <select value={entryAcc} onChange={e=>setEntryAcc(e.target.value)}
+                                  style={{fontSize:12,padding:'5px 8px',width:'100%'}}>
+                                  <option value="">— Select account —</option>
+                                  {data.coa.filter(a=>a.id!==bankLedger).map(a=>(
+                                    <option key={a.id} value={a.id}>{a.id} · {a.name} ({a.type})</option>
+                                  ))}
+                                </select>
+                              </div>
+                              <div className="field" style={{minWidth:180}}>
+                                <label style={{fontSize:10}}>Learn rule — keyword in narration</label>
+                                <input value={ruleKeyword} onChange={e=>setRuleKeyword(e.target.value)}
+                                  style={{fontSize:12,padding:'5px 8px',width:'100%'}} placeholder="e.g. GOOGLE ADS" />
+                              </div>
+                              <label style={{display:'flex',alignItems:'center',gap:5,fontSize:11,paddingBottom:8,cursor:'pointer'}}>
+                                <input type="checkbox" checked={saveRule} onChange={e=>setSaveRule(e.target.checked)} /> Save rule
+                              </label>
+                              <button className="btn btn-sm btn-primary" style={{marginBottom:2}} onClick={()=>createEntry(row)}>
+                                ✓ Post & Reconcile
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                      </React.Fragment>
                     );
                   })}
                   {filtered.length > 0 && (
@@ -5788,27 +6831,48 @@ function ProfitLoss({data, balances}){
   const [from, setFrom] = useState(fyStart);
   const [to,   setTo]   = useState(today());
   const [drill, setDrill] = useState(null);
+  const [compare, setCompare] = useState(false);
 
   // Period movements only (income/expense for selected period)
   const pb = useMemo(() => computePeriodBals(data, from, to), [data, from, to]);
+
+  // Previous year, same dates (for comparison column)
+  const shiftYr = d => d && d.length===10 ? (parseInt(d.slice(0,4))-1) + d.slice(4) : d;
+  const pbPrev = useMemo(() => compare ? computePeriodBals(data, shiftYr(from), shiftYr(to)) : null, [data, from, to, compare]);
 
   const getGroup = (groupFilter) => data.coa.filter(groupFilter).reduce((s,a) => {
     const b = pb.period[a.id] || 0;
     return s + (a.type==='Income' ? -b : b);
   }, 0);
+  const getGroupPrev = (groupFilter) => !pbPrev ? 0 : data.coa.filter(groupFilter).reduce((s,a) => {
+    const b = pbPrev.period[a.id] || 0;
+    return s + (a.type==='Income' ? -b : b);
+  }, 0);
 
   const getGroupAccIds = (groupFilter) => data.coa.filter(groupFilter).map(a=>a.id);
 
-  const revenue    = getGroup(a => a.type==='Income' && a.group==='Revenue from Operations');
-  const otherInc   = getGroup(a => a.type==='Income' && a.group==='Other Income');
-  const costMat    = getGroup(a => a.group==='Cost of Materials' || a.group==='Purchase of Stock-in-Trade');
-  const empBenefit = getGroup(a => a.group==='Employee Benefit Expenses');
-  const finCost    = getGroup(a => a.group==='Finance Costs');
-  const depr       = getGroup(a => a.group==='Depreciation');
-  const otherExp   = getGroup(a => a.group==='Other Expenses');
+  const F = {
+    revenue:    a => a.type==='Income' && a.group==='Revenue from Operations',
+    otherInc:   a => a.type==='Income' && a.group==='Other Income',
+    costMat:    a => a.group==='Cost of Materials' || a.group==='Purchase of Stock-in-Trade',
+    empBenefit: a => a.group==='Employee Benefit Expenses',
+    finCost:    a => a.group==='Finance Costs',
+    depr:       a => a.group==='Depreciation',
+    otherExp:   a => a.group==='Other Expenses',
+  };
+  const revenue    = getGroup(F.revenue),    revenueP    = getGroupPrev(F.revenue);
+  const otherInc   = getGroup(F.otherInc),   otherIncP   = getGroupPrev(F.otherInc);
+  const costMat    = getGroup(F.costMat),    costMatP    = getGroupPrev(F.costMat);
+  const empBenefit = getGroup(F.empBenefit), empBenefitP = getGroupPrev(F.empBenefit);
+  const finCost    = getGroup(F.finCost),    finCostP    = getGroupPrev(F.finCost);
+  const depr       = getGroup(F.depr),       deprP       = getGroupPrev(F.depr);
+  const otherExp   = getGroup(F.otherExp),   otherExpP   = getGroupPrev(F.otherExp);
   const totalRev   = revenue + otherInc;
   const totalExp   = costMat + empBenefit + finCost + depr + otherExp;
+  const totalRevP  = revenueP + otherIncP;
+  const totalExpP  = costMatP + empBenefitP + finCostP + deprP + otherExpP;
   const pbt        = totalRev - totalExp;
+  const pbtP       = totalRevP - totalExpP;
   const tax        = pbt > 0 ? Math.round(pbt * 0.25 * 100)/100 : 0;
   const pat        = pbt - tax;
 
@@ -5816,13 +6880,22 @@ function ProfitLoss({data, balances}){
   const incomeAccounts  = data.coa.filter(a=>a.type==='Income');
   const expenseAccounts = data.coa.filter(a=>a.type==='Expense');
 
-  const drillRow = (label, val, ids, bold=false, isGroup=false) => (
+  const variance = (cur, prev) => {
+    if(!prev) return cur ? '—' : '';
+    const pct = ((cur - prev) / Math.abs(prev)) * 100;
+    return (pct>=0?'+':'') + pct.toFixed(1) + '%';
+  };
+  const drillRow = (label, val, ids, bold=false, isGroup=false, prevVal=null) => (
     <tr style={bold?{fontWeight:700,background:'var(--surface-2)'}:{}} onClick={ids?.length?()=>setDrill({accountIds:ids,title:label}):undefined}
       className={ids?.length?'drill-row':''}>
       <td style={{paddingLeft: isGroup?0:14, cursor: ids?.length?'pointer':'default'}}>
         {ids?.length ? <span style={{color:'var(--primary)',textDecoration:'underline dotted'}}>{label}</span> : label}
       </td>
       <td className="num">₹{fmt(val)}</td>
+      {compare && <>
+        <td className="num" style={{color:'var(--ink-3)'}}>₹{fmt(prevVal||0)}</td>
+        <td className="num" style={{fontSize:11,color:(val-(prevVal||0))>=0?'var(--primary)':'var(--danger)'}}>{variance(val, prevVal||0)}</td>
+      </>}
     </tr>
   );
 
@@ -5860,6 +6933,8 @@ function ProfitLoss({data, balances}){
           <div className="page-sub">Schedule III · Period: {from} → {to} · Click any line to view ledger details</div>
         </div>
         <div className="page-actions">
+          <button className={'btn btn-sm'+(compare?' btn-primary':'')} onClick={()=>setCompare(!compare)}
+            title="Show previous year same period alongside">⇄ Compare PY</button>
           <button className="btn btn-sm" onClick={handleExcel}>⬇ Excel</button>
           <button className="btn btn-sm btn-primary" onClick={() => window.print()}>⎙ Print</button>
         </div>
@@ -5879,26 +6954,42 @@ function ProfitLoss({data, balances}){
         </div>
 
         <table>
-          <thead><tr><th>Particulars</th><th className="num" style={{width:200}}>Amount (₹)</th></tr></thead>
+          <thead><tr>
+            <th>Particulars</th>
+            <th className="num" style={{width:compare?150:200}}>Current Period (₹)</th>
+            {compare && <>
+              <th className="num" style={{width:150}}>Previous Year (₹)</th>
+              <th className="num" style={{width:80}}>Δ %</th>
+            </>}
+          </tr></thead>
           <tbody>
-            <tr className="group"><td colSpan="2">I. INCOME</td></tr>
-            {drillRow('Revenue from Operations', revenue, getGroupAccIds(a=>a.type==='Income'&&a.group==='Revenue from Operations'))}
-            {drillRow('Other Income', otherInc, getGroupAccIds(a=>a.type==='Income'&&a.group==='Other Income'))}
-            {drillRow('Total Income (I)', totalRev, null, true)}
+            <tr className="group"><td colSpan={compare?4:2}>I. INCOME</td></tr>
+            {drillRow('Revenue from Operations', revenue, getGroupAccIds(F.revenue), false, false, revenueP)}
+            {drillRow('Other Income', otherInc, getGroupAccIds(F.otherInc), false, false, otherIncP)}
+            {drillRow('Total Income (I)', totalRev, null, true, false, totalRevP)}
 
-            <tr className="group"><td colSpan="2">II. EXPENSES</td></tr>
-            {drillRow('Cost of Materials Consumed / Purchases', costMat, getGroupAccIds(a=>a.group==='Cost of Materials'||a.group==='Purchase of Stock-in-Trade'))}
-            {drillRow('Employee Benefit Expenses', empBenefit, getGroupAccIds(a=>a.group==='Employee Benefit Expenses'))}
-            {drillRow('Finance Costs', finCost, getGroupAccIds(a=>a.group==='Finance Costs'))}
-            {drillRow('Depreciation & Amortization', depr, getGroupAccIds(a=>a.group==='Depreciation'))}
-            {drillRow('Other Expenses', otherExp, getGroupAccIds(a=>a.group==='Other Expenses'))}
-            {drillRow('Total Expenses (II)', totalExp, null, true)}
+            <tr className="group"><td colSpan={compare?4:2}>II. EXPENSES</td></tr>
+            {drillRow('Cost of Materials Consumed / Purchases', costMat, getGroupAccIds(F.costMat), false, false, costMatP)}
+            {drillRow('Employee Benefit Expenses', empBenefit, getGroupAccIds(F.empBenefit), false, false, empBenefitP)}
+            {drillRow('Finance Costs', finCost, getGroupAccIds(F.finCost), false, false, finCostP)}
+            {drillRow('Depreciation & Amortization', depr, getGroupAccIds(F.depr), false, false, deprP)}
+            {drillRow('Other Expenses', otherExp, getGroupAccIds(F.otherExp), false, false, otherExpP)}
+            {drillRow('Total Expenses (II)', totalExp, null, true, false, totalExpP)}
 
-            <tr className="total"><td>III. Profit Before Tax (I − II)</td><td className="num" style={{color:pbt>=0?'var(--primary)':'var(--danger)'}}>₹{fmt(pbt)}</td></tr>
-            <tr className="group"><td colSpan="2">IV. TAX EXPENSE</td></tr>
+            <tr className="total"><td>III. Profit Before Tax (I − II)</td>
+              <td className="num" style={{color:pbt>=0?'var(--primary)':'var(--danger)'}}>₹{fmt(pbt)}</td>
+              {compare && <>
+                <td className="num" style={{color:'var(--ink-3)'}}>₹{fmt(pbtP)}</td>
+                <td className="num" style={{fontSize:11,color:(pbt-pbtP)>=0?'var(--primary)':'var(--danger)'}}>{variance(pbt, pbtP)}</td>
+              </>}
+            </tr>
+            <tr className="group"><td colSpan={compare?4:2}>IV. TAX EXPENSE</td></tr>
             {drillRow(`Current Tax (estimated @ 25%)`, tax, [])}
             {drillRow('Deferred Tax', 0, [])}
-            <tr className="total"><td>V. Profit After Tax (PAT)</td><td className="num" style={{color:pat>=0?'var(--primary)':'var(--danger)'}}>₹{fmt(pat)}</td></tr>
+            <tr className="total"><td>V. Profit After Tax (PAT)</td>
+              <td className="num" style={{color:pat>=0?'var(--primary)':'var(--danger)'}}>₹{fmt(pat)}</td>
+              {compare && <td className="num" colSpan="2"></td>}
+            </tr>
             <tr><td style={{paddingTop:14,fontSize:11,color:'var(--ink-3)'}}>Earnings Per Share (Basic &amp; Diluted)</td>
               <td className="num" style={{fontSize:11,color:'var(--ink-3)'}}>₹{((pat/Math.max(1,(balances['1100']||1000000)/10))||0).toFixed(2)}</td></tr>
           </tbody>
@@ -6717,6 +7808,22 @@ function GSTR3B({data, balances}){
   const totalCash=cashIgst+cashCgst+cashSgst;
   const itcUsedIgst=igstFromIgst, itcUsedCgst=cgstFromIgst+cgstFromCgst, itcUsedSgst=sgstFromIgst+sgstFromSgst;
 
+  // ── Return vs Books reconciliation (ledger movements for the same period) ──
+  const periodStart = activePeriods[0] + '-01';
+  const lastP = activePeriods[activePeriods.length-1];
+  const periodEnd = lastP + '-' + String(new Date(parseInt(lastP.slice(0,4)), parseInt(lastP.slice(5,7)), 0).getDate()).padStart(2,'0');
+  const pbLedger = useMemo(() => computePeriodBals(data, periodStart, periodEnd), [data, periodStart, periodEnd]);
+  const ledgerMv = (id, isOutput) => isOutput ? -(pbLedger.period[id]||0) : (pbLedger.period[id]||0);
+  const reconRows = [
+    {label:'Output CGST', books:ledgerMv('1310',true), ret:Math.max(0,outCgst)},
+    {label:'Output SGST', books:ledgerMv('1311',true), ret:Math.max(0,outSgst)},
+    {label:'Output IGST', books:ledgerMv('1312',true), ret:Math.max(0,outIgst)},
+    {label:'ITC — CGST Input', books:ledgerMv('2600',false), ret:itcCgst},
+    {label:'ITC — SGST Input', books:ledgerMv('2601',false), ret:itcSgst},
+    {label:'ITC — IGST Input', books:ledgerMv('2602',false), ret:itcIgst},
+  ].map(r => ({...r, diff:r.ret - r.books}));
+  const reconOk = reconRows.every(r => Math.abs(r.diff) < 1);
+
   const row3=(label,taxable,igst,cgst,sgst,cess=0)=>(
     <tr><td>{label}</td><td className="num">{fmt(taxable)}</td><td className="num">{fmt(igst)}</td><td className="num">{fmt(cgst)}</td><td className="num">{fmt(sgst)}</td><td className="num">{fmt(cess)}</td></tr>
   );
@@ -6748,6 +7855,45 @@ function GSTR3B({data, balances}){
         <div className="stat stat-gold"><div className="stat-label">ITC Available</div><div className="stat-value rupee">₹{fmt(itcIgst+itcCgst+itcSgst)}</div></div>
         <div className="stat"><div className="stat-label">ITC Utilised</div><div className="stat-value rupee">₹{fmt(itcUsedIgst+itcUsedCgst+itcUsedSgst)}</div></div>
         <div className="stat stat-danger"><div className="stat-label">Net Cash to Pay</div><div className="stat-value rupee">₹{fmt(totalCash)}</div></div>
+      </div>
+
+      {/* Return vs Books reconciliation */}
+      <div className="card" style={{marginBottom:16}}>
+        <div className="card-head" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+          <h3 className="card-title">⚖ Return vs Books Reconciliation — {periodLabel}</h3>
+          {reconOk
+            ? <span className="badge badge-success">✓ Tallied</span>
+            : <span className="badge badge-danger">⚠ Mismatch found</span>}
+        </div>
+        <div className="card-body" style={{padding:0,overflowX:'auto'}}>
+          <table style={{width:'100%',borderCollapse:'collapse',fontSize:12.5}}>
+            <thead><tr style={{background:'var(--surface-2)',borderBottom:'1px solid var(--line)'}}>
+              <th style={{padding:'9px 16px',textAlign:'left'}}>Particulars</th>
+              <th style={{padding:'9px 16px',textAlign:'right',width:140}}>Per Return (₹)</th>
+              <th style={{padding:'9px 16px',textAlign:'right',width:140}}>Per Ledger (₹)</th>
+              <th style={{padding:'9px 16px',textAlign:'right',width:130}}>Difference (₹)</th>
+            </tr></thead>
+            <tbody>
+              {reconRows.map(r=>(
+                <tr key={r.label} style={{borderBottom:'1px solid var(--line-2)',
+                  background:Math.abs(r.diff)>=1?'#fff8e1':'transparent'}}>
+                  <td style={{padding:'8px 16px'}}>{r.label}</td>
+                  <td style={{padding:'8px 16px',textAlign:'right',fontFamily:'var(--mono)'}}>{fmt(r.ret)}</td>
+                  <td style={{padding:'8px 16px',textAlign:'right',fontFamily:'var(--mono)'}}>{fmt(r.books)}</td>
+                  <td style={{padding:'8px 16px',textAlign:'right',fontFamily:'var(--mono)',fontWeight:600,
+                    color:Math.abs(r.diff)<1?'var(--primary)':'var(--danger)'}}>
+                    {Math.abs(r.diff)<1 ? '✓ 0.00' : fmt(r.diff)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        {!reconOk && (
+          <div style={{padding:'8px 16px',fontSize:11,color:'var(--ink-3)',borderTop:'1px solid var(--line-2)'}}>
+            Differences usually mean a sales/purchase voucher was posted as a Journal (bypassing GST ledgers), or GST was posted manually without an invoice. Check the period's JV entries.
+          </div>
+        )}
       </div>
 
       <div className="report">
@@ -7000,9 +8146,39 @@ function GSTR2B({data, setData, showToast}){
     a.href=url; a.download=`GSTR2B_Recon_${month}.csv`; a.click(); URL.revokeObjectURL(url);
   };
 
+  // Auto-draft a purchase voucher straight from the GSTR-2B record
   const bookEntry = (r) => {
-    const p=r.portal;
-    alert(`Book this purchase entry:\n\nVendor: ${p.partyName}\nGSTIN: ${p.gstin}\nInvoice No.: ${p.invNum}\nDate: ${p.invDate}\nType: ${p.docType||'B2B'}\n\nTaxable: ₹${fmt(p.taxable)}\nIGST: ₹${fmt(p.igst)}  CGST: ₹${fmt(p.cgst)}  SGST: ₹${fmt(p.sgst)}\nTotal: ₹${fmt(p.total)}\n\n→ Go to Vouchers → New Purchase to enter this invoice.`);
+    const p = r.portal;
+    if(!isPremiumActive(data.company) && (data.vouchers||[]).filter(v=>v.status!=='Cancelled').length >= FREE_VOUCHER_LIMIT){
+      showToast(`Free limit (${FREE_VOUCHER_LIMIT} entries) reached — upgrade to Premium`,'error'); return;
+    }
+    if(isDateLocked(data.company, p.invDate)){ showToast('Period is locked — cannot post on '+p.invDate,'error'); return; }
+    if(!confirm(`Auto-create purchase entry?\n\nVendor: ${p.partyName}\nInvoice: ${p.invNum} dt ${p.invDate}\nTaxable ₹${fmt(p.taxable)} + GST ₹${fmt(p.igst+p.cgst+p.sgst)} = ₹${fmt(p.total)}\n\nDr Purchases + ITC ledgers · Cr Sundry Creditors`)) return;
+    setData(prev => {
+      // Resolve / auto-create vendor by GSTIN
+      let party = prev.parties.find(x => x.gstin === p.gstin);
+      let parties = prev.parties;
+      if(!party){
+        party = {id:uid(), name:p.partyName||('Vendor '+p.gstin), type:'Vendor', gstin:p.gstin,
+          state:'', stateCode:p.gstin?.slice(0,2)||'', address:'', email:'', phone:'',
+          currency:'INR', balance:0, unregistered:false};
+        parties = [...parties, party];
+      }
+      const lines = [{id:uid(), accountId:'4100', debit:p.taxable, credit:0, narration:'Purchases — '+p.invNum}];
+      if(p.igst>0) lines.push({id:uid(), accountId:'2602', debit:p.igst, credit:0, narration:'IGST Input'});
+      if(p.cgst>0) lines.push({id:uid(), accountId:'2600', debit:p.cgst, credit:0, narration:'CGST Input'});
+      if(p.sgst>0) lines.push({id:uid(), accountId:'2601', debit:p.sgst, credit:0, narration:'SGST Input'});
+      lines.push({id:uid(), accountId:'1300', debit:0, credit:p.total, narration:'To '+party.name});
+      const typeCount = prev.vouchers.filter(x=>x.type==='PUR').length;
+      const num = 'PUR/' + String(typeCount+1).padStart(4,'0');
+      const v = {id:uid(), type:'PUR', date:p.invDate, number:num, partyId:party.id, partyName:party.name,
+        narration:`Purchase as per GSTR-2B — Inv ${p.invNum}`, reference:p.invNum,
+        taxable:p.taxable, igst:p.igst, cgst:p.cgst, sgst:p.sgst, total:p.total, amount:p.total,
+        isInterState:p.igst>0, lines, items:[], status:'Posted', createdAt:new Date().toISOString()};
+      return {...prev, vouchers:[...prev.vouchers, v], parties,
+        auditLog:[...(prev.auditLog||[]), auditEntry('GSTR2B', `${num} auto-booked from 2B — ${party.name} ₹${fmt(p.total)}`)]};
+    });
+    showToast(`✓ Purchase entry booked from GSTR-2B — ${p.invNum}`);
   };
 
   const itcMatched   = recon.matched.reduce((s,r)=>s+r.portal.igst+r.portal.cgst+r.portal.sgst,0);
@@ -9208,6 +10384,33 @@ function TDSReport({data}){
   // Unique sections for filter
   const sections = [...new Set((data.tdsSections||[]).map(s => s.section))];
 
+  // ── Form 26Q: quarterly deductee-wise (non-salary TDS only) ──────────────
+  const [q26, setQ26] = useState('Q1');
+  const fy26 = parseInt((data.company.fyStart||'2025-04-01').slice(0,4));
+  const q26Ranges = {
+    Q1:[`${fy26}-04-01`,`${fy26}-06-30`],   Q2:[`${fy26}-07-01`,`${fy26}-09-30`],
+    Q3:[`${fy26}-10-01`,`${fy26}-12-31`],   Q4:[`${fy26+1}-01-01`,`${fy26+1}-03-31`],
+  };
+  const deductees26 = useMemo(() => {
+    const [qs,qe] = q26Ranges[q26];
+    const map = {};
+    (data.vouchers||[]).filter(v =>
+      (v.status==='Posted'||v.status==='Draft') && v.tdsApplicable && (v.tdsAmount||0)>0 &&
+      v.date>=qs && v.date<=qe && !(v.tdsSection||'').startsWith('192')
+    ).forEach(v => {
+      const party = data.parties.find(p => p.id === v.partyId);
+      // PAN: explicit on party, else derive from GSTIN (chars 3–12)
+      const pan = party?.pan || (party?.gstin ? party.gstin.slice(2,12) : '—');
+      const sec = (v.tdsSection||'—').split('—')[0].trim();
+      const key = (v.partyName||'—') + '|' + sec;
+      if(!map[key]) map[key] = {party:v.partyName||'—', pan, section:sec, count:0, base:0, tds:0};
+      map[key].count++;
+      map[key].base += v.tdsBaseAmount || v.amount || v.total || v.taxable || 0;
+      map[key].tds  += v.tdsAmount || 0;
+    });
+    return Object.values(map).sort((a,b)=>a.party.localeCompare(b.party));
+  }, [data.vouchers, data.parties, q26]);
+
   return (
     <>
       <div className="page-head">
@@ -9260,6 +10463,62 @@ function TDSReport({data}){
               </tr>
             </tbody>
           </table>
+        </div>
+      </div>
+
+      {/* Form 26Q — Quarterly deductee-wise summary */}
+      <div className="card" style={{marginBottom:14}}>
+        <div className="card-head" style={{display:'flex',justifyContent:'space-between',alignItems:'center',flexWrap:'wrap',gap:8}}>
+          <h3 className="card-title">Form 26Q — Quarterly Deductee Summary</h3>
+          <div style={{display:'flex',gap:8,alignItems:'center'}}>
+            <select value={q26} onChange={e=>setQ26(e.target.value)} className="btn" style={{padding:'5px 10px',fontSize:12}}>
+              <option value="Q1">Q1 (Apr–Jun)</option><option value="Q2">Q2 (Jul–Sep)</option>
+              <option value="Q3">Q3 (Oct–Dec)</option><option value="Q4">Q4 (Jan–Mar)</option>
+            </select>
+            <button className="btn btn-sm" onClick={()=>{
+              exportXLSX(`Form26Q_${q26}_FY${fy26}.xlsx`, [{name:`26Q ${q26}`, rows:[
+                [`Form 26Q Working — ${data.company.name} — ${q26} FY ${fy26}-${String(fy26+1).slice(2)}`],
+                [`Deductor TAN: ____________ · PAN: ${data.company.pan||''}`],[],
+                ['Deductee','PAN','Section','No. of Payments','Amount Paid (₹)','TDS Deducted (₹)'],
+                ...deductees26.map(d=>[d.party, d.pan, d.section, d.count, d.base, d.tds]),
+                [],['','','TOTAL', deductees26.reduce((s,d)=>s+d.count,0),
+                  deductees26.reduce((s,d)=>s+d.base,0), deductees26.reduce((s,d)=>s+d.tds,0)],
+              ]}]);
+            }}>⬇ Excel (26Q)</button>
+          </div>
+        </div>
+        <div style={{overflow:'auto'}}>
+          <table>
+            <thead><tr>
+              <th>Deductee</th><th style={{width:120}}>PAN</th><th style={{width:110}}>Section</th>
+              <th className="num" style={{width:90}}>Payments</th>
+              <th className="num" style={{width:130}}>Amount Paid (₹)</th>
+              <th className="num" style={{width:130}}>TDS Deducted (₹)</th>
+            </tr></thead>
+            <tbody>
+              {deductees26.length===0 ? (
+                <tr><td colSpan="6"><div className="empty" style={{padding:24}}>No non-salary TDS deductions in {q26}. (Salary TDS goes to Form 24Q.)</div></td></tr>
+              ) : deductees26.map((d,i)=>(
+                <tr key={i}>
+                  <td style={{fontWeight:600}}>{d.party}</td>
+                  <td style={{fontFamily:'var(--mono)',fontSize:11,color:d.pan==='—'?'var(--danger)':'var(--ink)'}}>{d.pan}</td>
+                  <td style={{fontFamily:'var(--mono)',fontSize:11}}>{d.section}</td>
+                  <td className="num">{d.count}</td>
+                  <td className="num">{fmt(d.base)}</td>
+                  <td className="num bold">₹{fmt(d.tds)}</td>
+                </tr>
+              ))}
+              {deductees26.length>0 && (
+                <tr className="total"><td colSpan="3">TOTAL</td>
+                  <td className="num">{deductees26.reduce((s,d)=>s+d.count,0)}</td>
+                  <td className="num">₹{fmt(deductees26.reduce((s,d)=>s+d.base,0))}</td>
+                  <td className="num">₹{fmt(deductees26.reduce((s,d)=>s+d.tds,0))}</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+        <div style={{padding:'8px 16px',fontSize:11,color:'var(--ink-3)'}}>
+          PAN auto-derived from GSTIN where the party PAN is blank. Red PAN = missing — collect before filing (20% TDS applies without PAN u/s 206AA).
         </div>
       </div>
 
