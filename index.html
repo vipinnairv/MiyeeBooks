@@ -5109,7 +5109,13 @@ function VoucherModal({vtype, voucher, data, onSave, onClose, showToast}){
       });
     });
     return invoices.map(inv => {
-      const invTotal = (inv.lines||[]).reduce((s,l) => s+(invType==='SAL'?l.credit:l.debit||0),0) || inv.amount || 0;
+      // Amount actually owed = the party CONTROL-ACCOUNT line, NOT gross of all lines.
+      // PUR: Cr on 1300 (Sundry Creditors) — already net of TDS deducted.
+      // SAL: Dr on 2400 (Trade Receivables) — invoice value incl. GST.
+      const ctrl = invType==='SAL' ? '2400' : '1300';
+      const ctrlAmt = (inv.lines||[]).reduce((s,l) =>
+        s + (l.accountId===ctrl ? (invType==='SAL' ? (l.debit||0) : (l.credit||0)) : 0), 0);
+      const invTotal = ctrlAmt || inv.total || inv.amount || 0;
       const alreadyPaid = allocMap[inv.id] || 0;
       const outstanding = Math.max(0, invTotal - alreadyPaid);
       return {...inv, invTotal, alreadyPaid, outstanding};
@@ -5885,6 +5891,7 @@ function PnLTrend({data}){
 // ============================================================================
 function BillwiseAgeing({data}){
   const [tab, setTab] = useState('rec');   // rec = receivables (SAL), pay = payables (PUR)
+  const [statusFilter, setStatusFilter] = useState('open');  // open | all | settled
   const asOf = today();
 
   const allocMap = useMemo(() => {
@@ -5896,27 +5903,40 @@ function BillwiseAgeing({data}){
     return m;
   }, [data.vouchers]);
 
-  const rows = useMemo(() => {
-    const type = tab==='rec' ? 'SAL' : 'PUR';
-    return data.vouchers
-      .filter(v => v.type===type && v.status!=='Cancelled')
-      .map(inv => {
-        const total = inv.total || inv.amount ||
-          (inv.lines||[]).reduce((s,l)=>s+(type==='SAL'?(l.credit||0):(l.debit||0)),0);
-        const paid = allocMap[inv.id] || 0;
-        const out  = Math.max(0, total - paid);
-        const days = Math.floor((new Date(asOf) - new Date(inv.date)) / 86400000);
-        const bucket = days<=30 ? '0–30' : days<=60 ? '31–60' : days<=90 ? '61–90' : '90+';
-        return {id:inv.id, date:inv.date, number:inv.number, party:inv.partyName||'—',
-          reference:inv.reference||'', total, paid, out, days, bucket};
-      })
-      .filter(r => r.out > 0.01)
-      .sort((a,b) => a.party.localeCompare(b.party) || a.date.localeCompare(b.date));
-  }, [data.vouchers, tab, allocMap]);
+  // Build the full bill list for a voucher type (settled AND outstanding)
+  const buildBills = (type) => data.vouchers
+    .filter(v => v.type===type && v.status!=='Cancelled')
+    .map(inv => {
+      // Amount owed = party control-account line (1300 Cr for PUR — net of TDS;
+      // 2400 Dr for SAL), NOT the gross invoice total.
+      const ctrl = type==='SAL' ? '2400' : '1300';
+      const ctrlAmt = (inv.lines||[]).reduce((s,l) =>
+        s + (l.accountId===ctrl ? (type==='SAL' ? (l.debit||0) : (l.credit||0)) : 0), 0);
+      const total = ctrlAmt || inv.total || inv.amount || 0;
+      const paid = allocMap[inv.id] || 0;
+      const out  = Math.max(0, total - paid);
+      const days = Math.floor((new Date(asOf) - new Date(inv.date)) / 86400000);
+      const bucket = days<=30 ? '0–30' : days<=60 ? '31–60' : days<=90 ? '61–90' : '90+';
+      return {id:inv.id, date:inv.date, number:inv.number, party:inv.partyName||'—',
+        reference:inv.reference||'', total, paid, out, days, bucket, settled: out<=0.01};
+    })
+    .sort((a,b) => a.party.localeCompare(b.party) || a.date.localeCompare(b.date));
+
+  const allRec = useMemo(() => buildBills('SAL'), [data.vouchers, allocMap]);
+  const allPay = useMemo(() => buildBills('PUR'), [data.vouchers, allocMap]);
+  const allBills = tab==='rec' ? allRec : allPay;
+
+  const rows = useMemo(() =>
+    allBills.filter(r =>
+      statusFilter==='all' ? true :
+      statusFilter==='settled' ? r.settled : !r.settled),
+    [allBills, statusFilter]);
 
   const buckets = ['0–30','31–60','61–90','90+'];
-  const bucketTotals = buckets.map(b => rows.filter(r=>r.bucket===b).reduce((s,r)=>s+r.out,0));
-  const grandOut = rows.reduce((s,r)=>s+r.out,0);
+  // Bucket cards always reflect OPEN bills, regardless of the status filter
+  const openBills = allBills.filter(r=>!r.settled);
+  const bucketTotals = buckets.map(b => openBills.filter(r=>r.bucket===b).reduce((s,r)=>s+r.out,0));
+  const grandOut = openBills.reduce((s,r)=>s+r.out,0);
 
   const handleExcel = () => {
     exportXLSX(`Billwise_${tab==='rec'?'Receivables':'Payables'}_${asOf}.xlsx`, [{
@@ -5942,9 +5962,20 @@ function BillwiseAgeing({data}){
       </div>
     </div>
 
-    <div style={{display:'flex',gap:8,marginBottom:14}}>
-      <button className={'btn'+(tab==='rec'?' btn-primary':'')} onClick={()=>setTab('rec')}>↗ Receivables (Sales)</button>
-      <button className={'btn'+(tab==='pay'?' btn-primary':'')} onClick={()=>setTab('pay')}>↘ Payables (Purchases)</button>
+    <div style={{display:'flex',gap:8,marginBottom:14,flexWrap:'wrap',alignItems:'center'}}>
+      <button className={'btn'+(tab==='rec'?' btn-primary':'')} onClick={()=>setTab('rec')}>
+        ↗ Receivables ({allRec.filter(r=>!r.settled).length} open / {allRec.length} bills)
+      </button>
+      <button className={'btn'+(tab==='pay'?' btn-primary':'')} onClick={()=>setTab('pay')}>
+        ↘ Payables ({allPay.filter(r=>!r.settled).length} open / {allPay.length} bills)
+      </button>
+      <span style={{marginLeft:'auto',display:'flex',gap:6,alignItems:'center',fontSize:12}}>
+        <span style={{color:'var(--ink-3)'}}>Show:</span>
+        {[['open','Outstanding'],['settled','✓ Settled'],['all','All Bills']].map(([k,l])=>(
+          <button key={k} className={'btn btn-sm'+(statusFilter===k?' btn-primary':'')}
+            style={{fontSize:11}} onClick={()=>setStatusFilter(k)}>{l}</button>
+        ))}
+      </span>
     </div>
 
     <div className="stat-grid" style={{marginBottom:14}}>
@@ -5971,24 +6002,39 @@ function BillwiseAgeing({data}){
         </tr></thead>
         <tbody>
           {rows.length===0 ? (
-            <tr><td colSpan="8"><div className="empty"><div className="empty-ico">✓</div>
-              <div>No outstanding {tab==='rec'?'receivables':'payables'} — all invoices settled or none tagged yet.</div>
-              <div style={{fontSize:11,marginTop:6,color:'var(--ink-3)'}}>Tip: tag bills when posting Payments/Receipts so this report can track them.</div>
+            <tr><td colSpan="8"><div className="empty"><div className="empty-ico">{allBills.length===0?'∅':'✓'}</div>
+              {allBills.length===0 ? (<>
+                <div>No {tab==='rec'?'sales invoices':'purchase bills'} found.</div>
+                <div style={{fontSize:11,marginTop:6,color:'var(--ink-3)'}}>
+                  Post {tab==='rec'?'Sales (SAL)':'Purchase (PUR)'} vouchers and they will appear here automatically.
+                  {tab==='rec' && allPay.length>0 && ' You have purchase bills — switch to the Payables tab above.'}
+                </div>
+              </>) : statusFilter==='open' ? (<>
+                <div>All {allBills.length} {tab==='rec'?'sales invoices':'purchase bills'} are fully settled — nothing outstanding. 🎉</div>
+                <div style={{fontSize:11,marginTop:6,color:'var(--ink-3)'}}>Click "All Bills" above to see them with payment details.</div>
+              </>) : (
+                <div>No {statusFilter==='settled'?'settled':''} bills match this filter.</div>
+              )}
             </div></td></tr>
           ) : rows.map(r=>(
-            <tr key={r.id}>
+            <tr key={r.id} style={r.settled?{opacity:.6,background:'#f0fdf4'}:{}}>
               <td style={{fontWeight:500}}>{r.party}</td>
               <td style={{fontSize:12}}>{r.date}</td>
               <td style={{fontFamily:'var(--mono)',fontSize:12}}>{r.number}</td>
               <td className="num">{fmt(r.total)}</td>
               <td className="num" style={{color:'var(--ink-3)'}}>{r.paid?fmt(r.paid):''}</td>
-              <td className="num" style={{fontWeight:700,color:r.bucket==='90+'?'var(--danger)':'var(--ink)'}}>{fmt(r.out)}</td>
-              <td className="num" style={{fontSize:12}}>{r.days}</td>
-              <td><span className={'badge '+(r.bucket==='0–30'?'badge-success':r.bucket==='31–60'?'badge-info':'badge-danger')} style={{fontSize:10}}>{r.bucket}</span></td>
+              <td className="num" style={{fontWeight:700,color:r.settled?'var(--primary)':r.bucket==='90+'?'var(--danger)':'var(--ink)'}}>
+                {r.settled?'0.00':fmt(r.out)}
+              </td>
+              <td className="num" style={{fontSize:12}}>{r.settled?'':r.days}</td>
+              <td>{r.settled
+                ? <span className="badge badge-success" style={{fontSize:10}}>✓ Settled</span>
+                : <span className={'badge '+(r.bucket==='0–30'?'badge-success':r.bucket==='31–60'?'badge-info':'badge-danger')} style={{fontSize:10}}>{r.bucket}</span>}
+              </td>
             </tr>
           ))}
           {rows.length>0 && (
-            <tr className="total"><td colSpan="5" style={{textAlign:'right'}}>TOTAL OUTSTANDING</td>
+            <tr className="total"><td colSpan="5" style={{textAlign:'right'}}>TOTAL OUTSTANDING (open bills)</td>
               <td className="num">₹{fmt(grandOut)}</td><td colSpan="2"></td></tr>
           )}
         </tbody>
@@ -9018,15 +9064,28 @@ function AgingAnalysis({data, balances}){
     (view === 'receivable' ? v.type === 'SAL' : v.type === 'PUR')
   );
 
-  // Group by party, compute aging based on voucher date vs today
+  // Group by party, compute aging on OUTSTANDING amounts (control-account line
+  // net of payments/receipts allocated via bill tagging), not gross invoice value
   const partyAging = useMemo(() => {
+    // Allocations against each invoice from PAY/REC billTags
+    const allocMap = {};
+    data.vouchers.forEach(v => {
+      if(v.status==='Cancelled') return;
+      (v.billTags||[]).forEach(bt => { allocMap[bt.voucherId] = (allocMap[bt.voucherId]||0) + (bt.allocated||0); });
+    });
+    const ctrl = view === 'receivable' ? '2400' : '1300';
     const map = {};
     vouchers.forEach(v => {
+      // Owed = control-account line (PUR net of TDS) less allocated payments
+      const ctrlAmt = (v.lines||[]).reduce((s,l) =>
+        s + (l.accountId===ctrl ? (view==='receivable' ? (l.debit||0) : (l.credit||0)) : 0), 0);
+      const owed = ctrlAmt || v.total || v.amount || 0;
+      const amt = Math.max(0, owed - (allocMap[v.id]||0));
+      if(amt <= 0.01) return;   // fully settled — out of ageing
       const party = data.parties.find(p => p.id === v.partyId);
       const name = party?.name || v.partyName || 'Unknown';
       if(!map[name]) map[name] = {name, gstin: party?.gstin||'', buckets:[0,0,0,0,0], total:0};
       const diffDays = Math.floor((todayDate - new Date(v.date)) / (1000*60*60*24));
-      const amt = v.total || v.amount || 0;
       let idx = 0;
       if(diffDays <= 30) idx = 0;
       else if(diffDays <= 60) idx = 1;
@@ -9037,7 +9096,7 @@ function AgingAnalysis({data, balances}){
       map[name].total += amt;
     });
     return Object.values(map).sort((a,b) => b.total - a.total);
-  }, [vouchers, data.parties]);
+  }, [vouchers, data.parties, data.vouchers, view]);
 
   const totals = agingBuckets.map((_, i) => partyAging.reduce((s, p) => s + p.buckets[i], 0));
   const grandTotal = partyAging.reduce((s, p) => s + p.total, 0);
