@@ -1121,6 +1121,58 @@ const auditEntry = (action, detail) => ({
 const isDateLocked = (company, date) =>
   !!(company?.booksLockedUpto && date && date <= company.booksLockedUpto);
 
+// ── Party sub-ledger builder ─────────────────────────────────────────────────
+// Extracts every movement for a party against its control account
+// (2400 Trade Receivables for customers, 1300 Trade Payables for vendors).
+// Party is matched at LINE level first (CSV imports tag lines), voucher level second.
+// Falls back to voucher amount when a party voucher has no control-account line.
+const partyLedgerMoves = (data, partyId, ctrlAcc) => {
+  const moves = [];
+  (data.vouchers||[]).forEach(v => {
+    if(v.status === 'Cancelled') return;
+    let found = false;
+    (v.lines||[]).forEach(l => {
+      const lParty = l.partyId || v.partyId;
+      if(lParty !== partyId) return;
+      if(l.accountId !== ctrlAcc) return;
+      found = true;
+      moves.push({date:v.date, vno:v.number||v.id.slice(0,8), type:v.type,
+        narration:l.narration||v.narration||'', dr:l.debit||0, cr:l.credit||0});
+    });
+    // Fallback for vouchers tied to the party but posted without a control line
+    if(!found && v.partyId === partyId){
+      const amt = v.total || v.amount || 0;
+      if(amt <= 0) return;
+      const isDebtor = ctrlAcc === '2400';
+      let dr=0, cr=0;
+      if(isDebtor){
+        if(['SAL','DBN'].includes(v.type)) dr = amt;
+        else if(['REC','CRN'].includes(v.type)) cr = amt;
+        else return;
+      } else {
+        if(['PUR','CRN'].includes(v.type)) cr = amt;
+        else if(['PAY','DBN'].includes(v.type)) dr = amt;
+        else return;
+      }
+      moves.push({date:v.date, vno:v.number||v.id.slice(0,8), type:v.type,
+        narration:v.narration||'', dr, cr});
+    }
+  });
+  moves.sort((a,b) => a.date.localeCompare(b.date) || a.vno.localeCompare(b.vno));
+  return moves;
+};
+
+// Closing balance for a party as on a date (receivable: Dr+ve · payable: Cr+ve)
+const partyClosingBal = (data, party, ctrlAcc, uptoDate) => {
+  const isDebtor = ctrlAcc === '2400';
+  let bal = (party.balance||0) * (isDebtor ? 1 : 1); // master opening (signed as entered)
+  partyLedgerMoves(data, party.id, ctrlAcc).forEach(m => {
+    if(uptoDate && m.date > uptoDate) return;
+    bal += isDebtor ? (m.dr - m.cr) : (m.cr - m.dr);
+  });
+  return bal;
+};
+
 const VOUCHER_TYPES = [
   {code:'JV', name:'Journal Entry', icon:'≡', desc:'General journal entry', double:true},
   {code:'PUR', name:'Purchase', icon:'⇣', desc:'Purchase invoice with GST', double:true},
@@ -1133,7 +1185,7 @@ const VOUCHER_TYPES = [
 ];
 
 // ── PREMIUM / FREEMIUM ───────────────────────────────────────────────────────
-const FREE_VOUCHER_LIMIT  = 10;          // max active vouchers in free tier
+const FREE_VOUCHER_LIMIT  = 100;         // max active vouchers in free tier
 const PREMIUM_PRICE_INR   = 1500;        // ₹1500 / month
 const PREMIUM_CONTACT     = 'audit.vipin@gmail.com';
 const PREMIUM_PHONE       = '+91 81602 03197';
@@ -2134,71 +2186,66 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
     ...(mod.trader||mod.factory ? [{id:'inv_movement', label:'Inventory Movements', ico:'⇌'}] : []),
   ];
 
+  // Role-based navigation: sections grouped the way a finance team divides work
   const nav = [
     {section:'Overview', items:[
       {id:'dashboard', label:'Dashboard', ico:'◈'},
     ]},
-    {section:'Masters', items:[
-      {id:'coa', label:'Chart of Accounts', ico:'☰'},
-      {id:'parties', label:'Customers & Vendors', ico:'◉'},
-      {id:'cost_centres', label:'Cost Centres', ico:'🎯'},
-      {id:'departments', label:'Departments', ico:'🏢'},
-      {id:'company', label:'Company Settings', ico:'⚙'},
-      ...(FB_CONFIGURED && user ? [{id:'team', label:'Team Members', ico:'👥'}] : []),
-    ]},
-    {section:'Transactions', items:[
+    {section:'👨‍💻 Accountant', items:[
       {id:'vouchers', label:'Vouchers / Entry', ico:'✎'},
       {id:'daybook', label:'Day Book', ico:'☷'},
+      {id:'bank_recon', label:'Bank Reconciliation', ico:'🏦'},
+      {id:'billwise', label:'Bill-wise Outstanding', ico:'📋'},
+      {id:'parties', label:'Customers & Vendors', ico:'◉'},
+      {id:'forex', label:'Forex / Multi-Currency', ico:'$'},
     ]},
-    {section:'Reports', items:[
+    {section:'📊 Account Manager', items:[
       {id:'trial', label:'Trial Balance', ico:'⊟'},
       {id:'pnl', label:'Profit & Loss', ico:'⊞'},
       {id:'pnl_trend', label:'P&L Monthly Trend', ico:'📈'},
       {id:'bs', label:'Balance Sheet', ico:'⊠'},
       {id:'cashflow', label:'Cash Flow (AS-3)', ico:'⊜'},
-      {id:'cc_report', label:'Cost Centre P&L', ico:'🎯'},
-      {id:'dept_report', label:'Department Expenses', ico:'🏢'},
-    ]},
-    {section:'Registers', items:[
-      {id:'bank_recon', label:'Bank Reconciliation', ico:'🏦'},
-      {id:'billwise', label:'Bill-wise Outstanding', ico:'📋'},
       {id:'ledger_stmt', label:'Ledger Statement', ico:'≡'},
       {id:'debtor_stmt', label:'Debtors Statement', ico:'↗'},
       {id:'vendor_stmt', label:'Vendor Statement', ico:'↙'},
-    ]},
-    ...(hasInventory ? [{section:'Inventory', items: invItems}] : []),
-    ...(mod.gst===true ? [{section:'GST', items:[
-      {id:'gstr1', label:'GSTR-1', ico:'◐'},
-      {id:'gstr3b', label:'GSTR-3B', ico:'◑'},
-      {id:'gstr2b', label:'GSTR-2B Recon.', ico:'◓'},
-    ]}] : []),
-    {section:'Forex', items:[
-      {id:'forex', label:'Forex / Multi-Currency', ico:'$'},
-    ]},
-    {section:'MIS & Analytics', items:[
       {id:'mis', label:'CFO Dashboard', ico:'◇'},
       {id:'mis_ratios', label:'Financial Ratios', ico:'▦'},
       {id:'mis_aging', label:'Aging Analysis', ico:'◫'},
     ]},
-    ...(mod.payroll===true ? [{section:'HR & Payroll', items:[
+    {section:'🎯 Cost Accountant', items:[
+      {id:'cost_centres', label:'Cost Centres', ico:'🎯'},
+      {id:'departments', label:'Departments', ico:'🏢'},
+      {id:'cc_report', label:'Cost / Profit Centre P&L', ico:'⊞'},
+      {id:'dept_report', label:'Department Expenses', ico:'▤'},
+      ...invItems,
+    ]},
+    {section:'🧾 Taxation', items:[
+      ...(mod.gst===true ? [
+        {id:'gstr1', label:'GSTR-1', ico:'◐'},
+        {id:'gstr3b', label:'GSTR-3B', ico:'◑'},
+        {id:'gstr2b', label:'GSTR-2B Recon.', ico:'◓'},
+      ] : []),
+      ...(mod.tds===true ? [
+        {id:'tds_sections', label:'TDS Sections', ico:'§'},
+        {id:'tds_report', label:'TDS Deducted Report', ico:'⊞'},
+      ] : []),
+      {id:'adv_tax', label:'Advance Tax Estimator', ico:'₹'},
+    ]},
+    ...(mod.payroll===true ? [{section:'👥 HR & Payroll', items:[
       {id:'hr_employees', label:'Employee Master', ico:'☺'},
       {id:'hr_payroll', label:'Run Payroll', ico:'⊕'},
       {id:'hr_payslips', label:'Payslips', ico:'⊡'},
     ]}] : []),
-    ...(mod.tds===true ? [{section:'TDS', items:[
-      {id:'tds_sections', label:'TDS Sections', ico:'§'},
-      {id:'tds_report', label:'TDS Deducted Report', ico:'⊞'},
-    ]}] : []),
-    {section:'Income Tax', items:[
-      {id:'adv_tax', label:'Advance Tax Estimator', ico:'₹'},
-    ]},
-    {section:'Data & Sync', items:[
-      {id:'datamanage', label:'Export / Import', ico:'⇋'},
-      {id:'gdrive', label:'Google Drive Sync', ico:'☁'},
+    {section:'🔍 Auditor', items:[
       {id:'audit_log', label:'Audit Trail', ico:'🔍'},
       {id:'year_end', label:'Year-End Closing', ico:'🔒'},
+      {id:'datamanage', label:'Export / Import', ico:'⇋'},
     ]},
-    {section:'Support', items:[
+    {section:'⚙ Admin', items:[
+      {id:'coa', label:'Chart of Accounts', ico:'☰'},
+      {id:'company', label:'Company Settings', ico:'⚙'},
+      ...(FB_CONFIGURED && user ? [{id:'team', label:'Team Members', ico:'👥'}] : []),
+      {id:'gdrive', label:'Google Drive Sync', ico:'☁'},
       {id:'upgrade', label: isPrem ? '✦ Premium Active' : '🚀 Upgrade to Premium', ico: isPrem ? '✦' : '⚡'},
       {id:'help', label:'Help & Guide', ico:'?'},
     ]},
@@ -2789,8 +2836,8 @@ function CostCentreReport({data}){
     <>
       <div className="page-head">
         <div>
-          <h1 className="page-title">Cost Centre Report</h1>
-          <div className="page-sub">P&amp;L and expense tracking by Cost Centre</div>
+          <h1 className="page-title">Cost / Profit Centre Report</h1>
+          <div className="page-sub">Income &amp; expense by centre — tag Sales with a Profit Centre and Purchases/Expenses with a Cost Centre</div>
         </div>
         <div className="page-actions">
           <button className="btn btn-sm" onClick={handleCSV}>⬇ CSV</button>
@@ -4960,9 +5007,24 @@ function VoucherModal({vtype, voucher, data, onSave, onClose, showToast}){
           lines.push({id:uid(), accountId:'1300', debit:0, credit:total, narration:'To ' + (party?.name||'')});
         }
       }
-      setF(prev => ({...prev, lines, taxable, cgst, sgst, igst, total, amount: total, isInterState, isExport}));
+      // Stamp voucher-level Cost Centre / Department onto generated lines.
+      // Reports only read CC from Income/Expense accounts, so stamping all
+      // lines is safe — and survives line regeneration on item edits.
+      const stamped = lines.map(l => ({...l,
+        costCentreId: f.costCentreId || l.costCentreId || '',
+        departmentId: f.departmentId || l.departmentId || ''}));
+      setF(prev => ({...prev, lines: stamped, taxable, cgst, sgst, igst, total, amount: total, isInterState, isExport}));
     }
   }, [f.items, f.partyId]);
+
+  // Re-stamp CC/Dept when changed on a GST voucher (lines table is hidden there,
+  // so the voucher-level selection is the single source of truth)
+  useEffect(() => {
+    if(!isGstVoucher) return;
+    setF(prev => ({...prev, lines: (prev.lines||[]).map(l => ({...l,
+      costCentreId: prev.costCentreId || '',
+      departmentId: prev.departmentId || ''}))}));
+  }, [f.costCentreId, f.departmentId]);
 
   // Track last-used cost centre and department for auto-propagation
   const lastCC   = useRef('');
@@ -5231,6 +5293,26 @@ function VoucherModal({vtype, voucher, data, onSave, onClose, showToast}){
             )}
             {isGstVoucher && (
               <div className="field"><label>Place of Supply</label><input value={f.placeOfSupply} onChange={e => setF({...f, placeOfSupply:e.target.value})} maxLength="2" /></div>
+            )}
+            {isGstVoucher && (data.costCentres||[]).length > 0 && (
+              <div className="field"><label>{['SAL','CRN'].includes(vtype)?'Profit Centre':'Cost Centre'}</label>
+                <select value={f.costCentreId||''} onChange={e => setF({...f, costCentreId:e.target.value})}>
+                  <option value="">— None —</option>
+                  {(data.costCentres||[]).filter(c=>c.active!==false).map(c=>(
+                    <option key={c.id} value={c.id}>[{c.code}] {c.name}</option>
+                  ))}
+                </select>
+              </div>
+            )}
+            {isGstVoucher && (data.departments||[]).length > 0 && (
+              <div className="field"><label>Department</label>
+                <select value={f.departmentId||''} onChange={e => setF({...f, departmentId:e.target.value})}>
+                  <option value="">— None —</option>
+                  {(data.departments||[]).filter(d=>d.active!==false).map(d=>(
+                    <option key={d.id} value={d.id}>[{d.code}] {d.name}</option>
+                  ))}
+                </select>
+              </div>
             )}
             {f.currency && f.currency !== 'INR' && (
               <div className="field"><label>FX Rate (1 {f.currency} = ₹)</label><input type="number" step="0.0001" value={f.fxRate} onChange={e => setF({...f, fxRate:parseFloat(e.target.value)||1})} /></div>
@@ -7828,6 +7910,34 @@ function GSTR3B({data, balances}){
     <tr><td>{label}</td><td className="num">{fmt(taxable)}</td><td className="num">{fmt(igst)}</td><td className="num">{fmt(cgst)}</td><td className="num">{fmt(sgst)}</td><td className="num">{fmt(cess)}</td></tr>
   );
 
+  // GSTN portal offline-utility JSON for GSTR-3B
+  const exportJSON3B = () => {
+    const lastM = activePeriods[activePeriods.length-1];           // YYYY-MM
+    const r2 = n => Math.round(n*100)/100;
+    const payload = {
+      gstin: data.company.gstin,
+      ret_period: lastM.slice(5,7) + lastM.slice(0,4),             // MMYYYY
+      sup_details: {
+        osup_det:      { txval:r2(taxableOther), iamt:r2(Math.max(0,outIgst)), camt:r2(Math.max(0,outCgst)), samt:r2(Math.max(0,outSgst)), csamt:0 },
+        osup_zero:     { txval:r2(zeroRated), iamt:0, csamt:0 },
+        osup_nil_exmp: { txval:0 },
+        isup_rev:      { txval:0, iamt:0, camt:0, samt:0, csamt:0 },
+        osup_nongst:   { txval:0 },
+      },
+      inter_sup: {
+        unreg_details: interStateUnreg.map(v=>({pos:v.placeOfSupply||'', txval:r2(v.taxable||0), iamt:r2(v.igst||0)})),
+        comp_details: [], uin_details: [],
+      },
+      itc_elg: {
+        itc_avl: [{ ty:'OTH', iamt:r2(itcIgst), camt:r2(itcCgst), samt:r2(itcSgst), csamt:0 }],
+        itc_rev: [], itc_net:{ iamt:r2(itcIgst), camt:r2(itcCgst), samt:r2(itcSgst), csamt:0 }, itc_inelg: [],
+      },
+    };
+    const blob=new Blob([JSON.stringify(payload,null,2)],{type:'application/json'});
+    const url=URL.createObjectURL(blob), a=document.createElement('a');
+    a.href=url; a.download=`GSTR3B_${data.company.gstin}_${payload.ret_period}.json`; a.click(); URL.revokeObjectURL(url);
+  };
+
   return (
     <>
       <div className="page-head">
@@ -7847,6 +7957,7 @@ function GSTR3B({data, balances}){
                 <option value="Q3">Q3 Oct–Dec</option><option value="Q4">Q4 Jan–Mar</option>
               </select>}
           <button className="btn" onClick={()=>window.print()}>⎙ Print</button>
+          <button className="btn btn-primary" onClick={exportJSON3B}>⬇ Export JSON</button>
         </div>
       </div>
 
@@ -11497,39 +11608,27 @@ function DebtorStatement({data}){
   const debtors = data.parties.filter(p => p.type==='Customer' || p.type==='Both');
   const party = data.parties.find(p => p.id === partyId);
 
-  // Determine the AR account for this party by scanning vouchers
-  const rows = useMemo(() => {
-    if(!partyId) return [];
-    const lines = [];
-    data.vouchers.forEach(v => {
-      if(v.status === 'Cancelled') return;
-      if(v.date < from || v.date > to) return;
-      if(v.partyId !== partyId) return;
-      if(!['SAL','REC','CRN'].includes(v.type)) return;
-      let dr=0, cr=0;
-      // For party statement: SAL/DBN = debit (amount owed), REC/CRN = credit (payment/note)
-      if(v.type==='SAL') dr = v.total || 0;
-      else if(v.type==='REC') cr = v.total || 0;
-      else if(v.type==='CRN') cr = v.total || 0;
-      lines.push({date:v.date, vno:v.number||v.id.slice(0,8), type:v.type, narration:v.narration||'', dr, cr});
-    });
-    lines.sort((a,b) => a.date.localeCompare(b.date));
-    return lines;
-  }, [partyId, from, to, data.vouchers]);
+  // All movements for this party against Trade Receivables (line-level, all voucher types)
+  const allMoves = useMemo(() =>
+    partyId ? partyLedgerMoves(data, partyId, '2400') : [],
+    [partyId, data.vouchers]);
+
+  const rows = useMemo(() =>
+    allMoves.filter(m => m.date >= from && m.date <= to),
+    [allMoves, from, to]);
 
   const openingBal = useMemo(() => {
     if(!partyId) return 0;
-    let bal = 0;
-    data.vouchers.forEach(v => {
-      if(v.status === 'Cancelled') return;
-      if(v.date >= from) return;
-      if(v.partyId !== partyId) return;
-      if(!['SAL','REC','CRN'].includes(v.type)) return;
-      if(v.type==='SAL') bal += v.total||0;
-      else bal -= v.total||0;
-    });
+    let bal = party?.balance || 0;   // opening from party master
+    allMoves.forEach(m => { if(m.date < from) bal += m.dr - m.cr; });
     return bal;
-  }, [partyId, from, data.vouchers]);
+  }, [partyId, allMoves, from, party]);
+
+  // Summary of ALL debtors with balances (shown when no party selected)
+  const allDebtorBals = useMemo(() =>
+    debtors.map(p => ({...p, closing: partyClosingBal(data, p, '2400', to)}))
+      .sort((a,b) => b.closing - a.closing),
+    [debtors, data.vouchers, to]);
 
   let runBal = openingBal;
   const tableRows = rows.map(r => {
@@ -11668,10 +11767,45 @@ function DebtorStatement({data}){
         </div>
       )}
       {!partyId && (
-        <div className="card"><div className="card-body" style={{textAlign:'center',padding:40,color:'var(--ink-3)'}}>
-          <div style={{fontSize:32,marginBottom:10}}>↗</div>
-          <div>Select a customer above to view their statement</div>
-        </div></div>
+        <div className="card">
+          <div className="card-head"><h3 className="card-title">All Customers — Balances as on {to}</h3></div>
+          <div className="card-body" style={{padding:0}}>
+            {allDebtorBals.length===0 ? (
+              <div style={{textAlign:'center',padding:40,color:'var(--ink-3)'}}>
+                No customers found. Add them under Masters → Customers &amp; Vendors.
+              </div>
+            ) : (
+              <table style={{width:'100%',borderCollapse:'collapse',fontSize:13}}>
+                <thead><tr style={{background:'var(--surface-2)',borderBottom:'1px solid var(--line)'}}>
+                  <th style={{padding:'9px 16px',textAlign:'left',width:40}}>Sr</th>
+                  <th style={{padding:'9px 16px',textAlign:'left'}}>Customer</th>
+                  <th style={{padding:'9px 16px',textAlign:'left',width:160}}>GSTIN</th>
+                  <th style={{padding:'9px 16px',textAlign:'right',width:150}}>Receivable (₹)</th>
+                  <th style={{padding:'9px 16px',width:90}}></th>
+                </tr></thead>
+                <tbody>
+                  {allDebtorBals.map((p,i)=>(
+                    <tr key={p.id} className="hover-row" style={{borderBottom:'1px solid var(--line-2)',cursor:'pointer'}}
+                      onClick={()=>setPartyId(p.id)}>
+                      <td style={{padding:'8px 16px',color:'var(--ink-3)',fontSize:12}}>{i+1}</td>
+                      <td style={{padding:'8px 16px',fontWeight:600,color:'var(--primary)'}}>{p.name}</td>
+                      <td style={{padding:'8px 16px',fontFamily:'var(--mono)',fontSize:11,color:'var(--ink-3)'}}>{p.gstin||'—'}</td>
+                      <td style={{padding:'8px 16px',textAlign:'right',fontFamily:'var(--mono)',fontWeight:600,
+                        color:p.closing>0?'var(--primary)':p.closing<0?'var(--danger)':'var(--ink-3)'}}>
+                        {fmt(Math.abs(p.closing))}{p.closing<0?' Cr':p.closing>0?' Dr':''}
+                      </td>
+                      <td style={{padding:'8px 16px',textAlign:'center'}}>
+                        <span style={{fontSize:11,color:'var(--primary)'}}>View →</span>
+                      </td>
+                    </tr>
+                  ))}
+                  <tr className="total"><td colSpan="3" style={{padding:'9px 16px',textAlign:'right'}}>TOTAL RECEIVABLE</td>
+                    <td style={{padding:'9px 16px',textAlign:'right',fontFamily:'var(--mono)'}}>₹{fmt(allDebtorBals.reduce((s,p)=>s+p.closing,0))}</td><td></td></tr>
+                </tbody>
+              </table>
+            )}
+          </div>
+        </div>
       )}
     </>
   );
@@ -11689,46 +11823,37 @@ function VendorStatement({data}){
   const vendors = data.parties.filter(p => p.type==='Vendor' || p.type==='Both');
   const party = data.parties.find(p => p.id === partyId);
 
-  const rows = useMemo(() => {
-    if(!partyId) return [];
-    const lines = [];
-    data.vouchers.forEach(v => {
-      if(v.status === 'Cancelled') return;
-      if(v.date < from || v.date > to) return;
-      if(v.partyId !== partyId) return;
-      if(!['PUR','PAY','DBN'].includes(v.type)) return;
-      let dr=0, cr=0;
-      if(v.type==='PUR') cr = v.total || 0;
-      else if(v.type==='PAY') dr = v.total || 0;
-      else if(v.type==='DBN') dr = v.total || 0;
-      lines.push({date:v.date, vno:v.number||v.id.slice(0,8), type:v.type, narration:v.narration||'', dr, cr});
-    });
-    lines.sort((a,b) => a.date.localeCompare(b.date));
-    return lines;
-  }, [partyId, from, to, data.vouchers]);
+  // All movements for this party against Trade Payables (line-level, all voucher types)
+  const allMoves = useMemo(() =>
+    partyId ? partyLedgerMoves(data, partyId, '1300') : [],
+    [partyId, data.vouchers]);
+
+  const rows = useMemo(() =>
+    allMoves.filter(m => m.date >= from && m.date <= to),
+    [allMoves, from, to]);
 
   const openingBal = useMemo(() => {
     if(!partyId) return 0;
-    let bal = 0;
-    data.vouchers.forEach(v => {
-      if(v.status === 'Cancelled') return;
-      if(v.date >= from) return;
-      if(v.partyId !== partyId) return;
-      if(!['PUR','PAY','DBN'].includes(v.type)) return;
-      if(v.type==='PUR') bal += v.total||0;
-      else bal -= v.total||0;
-    });
+    let bal = party?.balance || 0;   // opening from party master
+    // Payable convention: credit increases what we owe
+    allMoves.forEach(m => { if(m.date < from) bal += m.cr - m.dr; });
     return bal;
-  }, [partyId, from, data.vouchers]);
+  }, [partyId, allMoves, from, party]);
+
+  // Summary of ALL vendors with balances (shown when no party selected)
+  const allVendorBals = useMemo(() =>
+    vendors.map(p => ({...p, closing: partyClosingBal(data, p, '1300', to)}))
+      .sort((a,b) => b.closing - a.closing),
+    [vendors, data.vouchers, to]);
 
   let runBal = openingBal;
   const tableRows = rows.map(r => {
-    runBal += r.dr - r.cr;
+    runBal += r.cr - r.dr;     // payable grows with credits (purchases), shrinks with debits (payments)
     return {...r, bal: runBal};
   });
   const totalDr = rows.reduce((s,r)=>s+r.dr,0);
   const totalCr = rows.reduce((s,r)=>s+r.cr,0);
-  const closingBal = openingBal + totalDr - totalCr;
+  const closingBal = openingBal + totalCr - totalDr;   // payable: Cr-positive
 
   const companyName = data.company.name;
   const today = new Date().toLocaleDateString('en-IN',{day:'2-digit',month:'long',year:'numeric'});
@@ -11858,10 +11983,45 @@ function VendorStatement({data}){
         </div>
       )}
       {!partyId && (
-        <div className="card"><div className="card-body" style={{textAlign:'center',padding:40,color:'var(--ink-3)'}}>
-          <div style={{fontSize:32,marginBottom:10}}>↙</div>
-          <div>Select a vendor above to view their statement</div>
-        </div></div>
+        <div className="card">
+          <div className="card-head"><h3 className="card-title">All Vendors — Balances as on {to}</h3></div>
+          <div className="card-body" style={{padding:0}}>
+            {allVendorBals.length===0 ? (
+              <div style={{textAlign:'center',padding:40,color:'var(--ink-3)'}}>
+                No vendors found. Add them under Masters → Customers &amp; Vendors.
+              </div>
+            ) : (
+              <table style={{width:'100%',borderCollapse:'collapse',fontSize:13}}>
+                <thead><tr style={{background:'var(--surface-2)',borderBottom:'1px solid var(--line)'}}>
+                  <th style={{padding:'9px 16px',textAlign:'left',width:40}}>Sr</th>
+                  <th style={{padding:'9px 16px',textAlign:'left'}}>Vendor</th>
+                  <th style={{padding:'9px 16px',textAlign:'left',width:160}}>GSTIN</th>
+                  <th style={{padding:'9px 16px',textAlign:'right',width:150}}>Payable (₹)</th>
+                  <th style={{padding:'9px 16px',width:90}}></th>
+                </tr></thead>
+                <tbody>
+                  {allVendorBals.map((p,i)=>(
+                    <tr key={p.id} className="hover-row" style={{borderBottom:'1px solid var(--line-2)',cursor:'pointer'}}
+                      onClick={()=>setPartyId(p.id)}>
+                      <td style={{padding:'8px 16px',color:'var(--ink-3)',fontSize:12}}>{i+1}</td>
+                      <td style={{padding:'8px 16px',fontWeight:600,color:'var(--primary)'}}>{p.name}</td>
+                      <td style={{padding:'8px 16px',fontFamily:'var(--mono)',fontSize:11,color:'var(--ink-3)'}}>{p.gstin||'—'}</td>
+                      <td style={{padding:'8px 16px',textAlign:'right',fontFamily:'var(--mono)',fontWeight:600,
+                        color:p.closing>0?'var(--danger)':p.closing<0?'var(--primary)':'var(--ink-3)'}}>
+                        {fmt(Math.abs(p.closing))}{p.closing>0?' Cr':p.closing<0?' Dr':''}
+                      </td>
+                      <td style={{padding:'8px 16px',textAlign:'center'}}>
+                        <span style={{fontSize:11,color:'var(--primary)'}}>View →</span>
+                      </td>
+                    </tr>
+                  ))}
+                  <tr className="total"><td colSpan="3" style={{padding:'9px 16px',textAlign:'right'}}>TOTAL PAYABLE</td>
+                    <td style={{padding:'9px 16px',textAlign:'right',fontFamily:'var(--mono)'}}>₹{fmt(allVendorBals.reduce((s,p)=>s+p.closing,0))}</td><td></td></tr>
+                </tbody>
+              </table>
+            )}
+          </div>
+        </div>
       )}
     </>
   );
