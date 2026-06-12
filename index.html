@@ -5100,9 +5100,12 @@ function VoucherModal({vtype, voucher, data, onSave, onClose, showToast}){
     const invoices = data.vouchers.filter(v =>
       v.type === invType && v.status !== 'Cancelled' && v.partyId === f.partyId
     );
-    // Sum all existing allocations from OTHER vouchers
+    // Sum all existing allocations from OTHER vouchers.
+    // Cancelled payments/receipts release their allocations — the bill
+    // becomes outstanding again.
     const allocMap = {};
     data.vouchers.forEach(v => {
+      if(v.status === 'Cancelled') return;
       if(voucher && v.id === voucher.id) return;
       (v.billTags||[]).forEach(bt => {
         allocMap[bt.voucherId] = (allocMap[bt.voucherId]||0) + (bt.allocated||0);
@@ -5749,9 +5752,8 @@ function VoucherModal({vtype, voucher, data, onSave, onClose, showToast}){
                       <thead><tr style={{background:'var(--surface)',borderBottom:'1px solid var(--line)'}}>
                         <th style={{padding:'6px 8px',textAlign:'left'}}>Date</th>
                         <th style={{padding:'6px 8px',textAlign:'left'}}>Ref / Voucher No.</th>
-                        <th style={{padding:'6px 8px',textAlign:'right'}}>Invoice Amt</th>
-                        <th style={{padding:'6px 8px',textAlign:'right'}}>Already Paid</th>
-                        <th style={{padding:'6px 8px',textAlign:'right',color:'var(--danger)'}}>Outstanding</th>
+                        <th style={{padding:'6px 8px',textAlign:'right'}}>{vtype==='PAY'?'Paid':'Received'} Till Date</th>
+                        <th style={{padding:'6px 8px',textAlign:'right',color:'var(--danger)'}}>{vtype==='PAY'?'Balance Payable (₹)':'Balance Receivable (₹)'}</th>
                         <th style={{padding:'6px 8px',textAlign:'right',width:130,color:'var(--primary)'}}>Allocate Now (₹)</th>
                       </tr></thead>
                       <tbody>
@@ -5761,7 +5763,6 @@ function VoucherModal({vtype, voucher, data, onSave, onClose, showToast}){
                             <tr key={inv.id} style={{borderBottom:'1px solid var(--line-2)',background:tagged?'var(--primary-soft)':''}}>
                               <td style={{padding:'6px 8px'}}>{inv.date}</td>
                               <td style={{padding:'6px 8px',fontFamily:'var(--mono)',color:'var(--primary)'}}>{inv.number}{inv.reference?` · ${inv.reference}`:''}</td>
-                              <td style={{padding:'6px 8px',textAlign:'right',fontFamily:'var(--mono)'}}>{fmt(inv.invTotal)}</td>
                               <td style={{padding:'6px 8px',textAlign:'right',color:'var(--ink-3)',fontFamily:'var(--mono)'}}>{inv.alreadyPaid>0?fmt(inv.alreadyPaid):''}</td>
                               <td style={{padding:'6px 8px',textAlign:'right',fontWeight:600,color:'var(--danger)',fontFamily:'var(--mono)'}}>{fmt(inv.outstanding)}</td>
                               <td style={{padding:'4px 8px'}}>
