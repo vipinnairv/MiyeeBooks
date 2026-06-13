@@ -1028,6 +1028,11 @@ const SEED_COA = [
   {id:'1319', name:'TDS Payable — 194A Interest', group:'Current Liabilities', type:'Liability', schedule:'Other Current Liab.', opening:0},
   {id:'1320B', name:'TDS Payable — 194Q Purchase', group:'Current Liabilities', type:'Liability', schedule:'Other Current Liab.', opening:0},
   {id:'1321', name:'TDS Payable — 192 Salary', group:'Current Liabilities', type:'Liability', schedule:'Other Current Liab.', opening:0},
+  {id:'1325', name:'TDS Payable — 194O E-commerce', group:'Current Liabilities', type:'Liability', schedule:'Other Current Liab.', opening:0},
+  {id:'1326', name:'TDS Payable — 194T Partner Remuneration', group:'Current Liabilities', type:'Liability', schedule:'Other Current Liab.', opening:0},
+  {id:'1327', name:'TDS Payable — 194R Perquisites', group:'Current Liabilities', type:'Liability', schedule:'Other Current Liab.', opening:0},
+  {id:'1328', name:'TDS Payable — 194 Dividend', group:'Current Liabilities', type:'Liability', schedule:'Other Current Liab.', opening:0},
+  {id:'1329', name:'TDS Payable — Other Sections', group:'Current Liabilities', type:'Liability', schedule:'Other Current Liab.', opening:0},
   {id:'1322', name:'PF Payable (Employee + Employer)', group:'Current Liabilities', type:'Liability', schedule:'Other Current Liab.', opening:0},
   {id:'1323', name:'ESIC Payable (Employee + Employer)', group:'Current Liabilities', type:'Liability', schedule:'Other Current Liab.', opening:0},
   {id:'1324', name:'Professional Tax Payable', group:'Current Liabilities', type:'Liability', schedule:'Other Current Liab.', opening:0},
@@ -1202,18 +1207,276 @@ const FOREX_RATES = {
   USD: 83.50, EUR: 89.20, GBP: 105.75, AED: 22.75, SGD: 61.40, JPY: 0.56,
 };
 
-// TDS Sections seed data
+// ── HSN / SAC GST RATE MASTER (GST 2.0 · Notif. 9/2025-CT(Rate) · w.e.f. 22-Sep-2025) ──
+// Tuple: [code, kind('HSN'|'SAC'), description, igstRate(-1 = outside GST), cess%, schedule]
+const HSN_SAC_RAW = [
+  // ── GOODS ──
+  ['0101','HSN','Live horses, asses, mules',5,0,'I'],
+  ['0102','HSN','Live bovine animals (cattle, buffalo)',0,0,'NIL'],
+  ['0103','HSN','Live swine',0,0,'NIL'],
+  ['0105','HSN','Live poultry',0,0,'NIL'],
+  ['0201','HSN','Meat of bovine — fresh/chilled',0,0,'NIL'],
+  ['0201','HSN','Meat of bovine — frozen, packed & labelled',5,0,'I'],
+  ['0207','HSN','Poultry meat — fresh/chilled',0,0,'NIL'],
+  ['0207','HSN','Poultry meat — frozen, packed & labelled',5,0,'I'],
+  ['0302','HSN','Fish — fresh/chilled',0,0,'NIL'],
+  ['0303','HSN','Fish — frozen, packed & labelled',5,0,'I'],
+  ['0306','HSN','Crustaceans (shrimps, prawns) — fresh/chilled',0,0,'NIL'],
+  ['0306','HSN','Crustaceans — frozen, packed & labelled',5,0,'I'],
+  ['0401','HSN','Milk and cream (unconcentrated, no sugar)',0,0,'NIL'],
+  ['0402','HSN','Milk and cream — concentrated or sweetened',5,0,'I'],
+  ['0403','HSN','Yoghurt / curd — pre-packed & labelled',5,0,'I'],
+  ['0403','HSN','Yoghurt / curd — loose / unbranded',0,0,'NIL'],
+  ['0406','HSN','Cheese',12,0,'II'],
+  ['0407','HSN','Eggs (in shell, fresh)',0,0,'NIL'],
+  ['0408','HSN','Egg yolks, dried / processed',5,0,'I'],
+  ['0409','HSN','Natural honey — pre-packed & labelled',5,0,'I'],
+  ['0409','HSN','Natural honey — unpacked',0,0,'NIL'],
+  ['0501','HSN','Human hair (unworked)',0,0,'NIL'],
+  ['0601','HSN','Bulbs, tubers, roots (planting)',0,0,'NIL'],
+  ['0602','HSN','Live plants, cuttings, slips',0,0,'NIL'],
+  ['0701','HSN','Potatoes — fresh / chilled',0,0,'NIL'],
+  ['0702','HSN','Tomatoes — fresh / chilled',0,0,'NIL'],
+  ['0703','HSN','Onions, garlic — fresh / chilled',0,0,'NIL'],
+  ['0714','HSN','Manioc, sweet potato (fresh/dried)',0,0,'NIL'],
+  ['0801','HSN','Coconuts, cashew, brazil nuts — fresh',0,0,'NIL'],
+  ['0801','HSN','Cashew (processed / roasted)',5,0,'I'],
+  ['0802','HSN','Almonds, walnuts — in shell',5,0,'I'],
+  ['0803','HSN','Bananas — fresh / dried',0,0,'NIL'],
+  ['0901','HSN','Coffee — not roasted',0,0,'NIL'],
+  ['0901','HSN','Coffee — roasted (not decaffeinated)',5,0,'I'],
+  ['0902','HSN','Tea (black, green) — pre-packed & labelled',5,0,'I'],
+  ['0902','HSN','Tea — loose / unbranded',0,0,'NIL'],
+  ['0910','HSN','Ginger, saffron, turmeric (fresh/dried)',0,0,'NIL'],
+  ['1001','HSN','Wheat and meslin',0,0,'NIL'],
+  ['1006','HSN','Rice — unbranded loose',0,0,'NIL'],
+  ['1006','HSN','Rice — pre-packed & labelled',5,0,'I'],
+  ['1101','HSN','Wheat flour (atta) — unbranded',0,0,'NIL'],
+  ['1101','HSN','Wheat flour (atta) — branded / packed',5,0,'I'],
+  ['1701','HSN','Cane / beet sugar (refined)',5,0,'I'],
+  ['1702','HSN','Jaggery (gur) — all types',5,0,'I'],
+  ['1901','HSN','Malt extract, food preps of flour/meal',12,0,'II'],
+  ['1905','HSN','Bread (unpackaged)',0,0,'NIL'],
+  ['1905','HSN','Bread (branded/packaged), rusks, toasted',5,0,'I'],
+  ['2001','HSN','Vegetables & fruit — prepared / preserved',12,0,'II'],
+  ['2009','HSN','Fruit juices (unfermented)',12,0,'II'],
+  ['2101','HSN','Extracts / essences of coffee',18,0,'III'],
+  ['2101','HSN','Extracts / essences of tea',18,0,'III'],
+  ['2103','HSN','Sauces, condiments, mixed seasonings',12,0,'II'],
+  ['2106','HSN','Food preparations NEC (protein concentrates)',18,0,'III'],
+  ['2202','HSN','Waters — flavoured/sweetened (mineral water)',12,0,'II'],
+  ['2202','HSN','Aerated drinks / carbonated beverages',28,12,'IV'],
+  ['2203','HSN','Beer made from malt',28,0,'IV'],
+  ['2208','HSN','Spirits, liqueurs & spirituous beverages',28,0,'IV'],
+  ['2401','HSN','Unmanufactured tobacco',28,0,'IV'],
+  ['2402','HSN','Cigars, cheroots, cigarillos, cigarettes',28,0,'IV'],
+  ['2501','HSN','Salt (for human consumption)',0,0,'NIL'],
+  ['2516','HSN','Granite, sandstone, porphyry (worked)',12,0,'II'],
+  ['2517','HSN','Sand (natural)',5,0,'I'],
+  ['2523','HSN','Portland cement, aluminous cement',18,0,'III'],
+  ['2601','HSN','Iron ore',0,0,'NIL'],
+  ['2709','HSN','Crude petroleum oils',-1,0,'Outside GST'],
+  ['2710','HSN','Motor spirit (petrol)',-1,0,'Outside GST'],
+  ['2710','HSN','High speed diesel (HSD)',-1,0,'Outside GST'],
+  ['2711','HSN','LPG — for domestic use',0,0,'NIL'],
+  ['2711','HSN','LPG — for commercial use',12,0,'II'],
+  ['2801','HSN','Fluorine, chlorine, bromine, iodine',5,0,'I'],
+  ['2835','HSN','Phosphinates, phosphonates',12,0,'II'],
+  ['2933','HSN','Medicaments — pharma bulk APIs',12,0,'II'],
+  ['3001','HSN','Life saving drugs (notified)',0,0,'NIL'],
+  ['3004','HSN','Medicines / medicaments (general)',12,0,'II'],
+  ['3401','HSN','Soap (household)',5,0,'I'],
+  ['3402','HSN','Detergents, washing preparations',18,0,'III'],
+  ['3507','HSN','Enzymes, prepared enzymes',18,0,'III'],
+  ['3601','HSN','Propellant powders, prepared explosives',18,0,'III'],
+  ['3808','HSN','Insecticides, fungicides, herbicides',18,0,'III'],
+  ['3901','HSN','Polymers of ethylene (primary form)',18,0,'III'],
+  ['3926','HSN','Plastic articles NEC',18,0,'III'],
+  ['4002','HSN','Synthetic rubber',5,0,'I'],
+  ['4011','HSN','New pneumatic tyres (rubber)',28,0,'IV'],
+  ['4107','HSN','Leather — prepared (full grain)',5,0,'I'],
+  ['4202','HSN','Trunks, suitcases, handbags — of leather',18,0,'III'],
+  ['5007','HSN','Woven fabrics of silk',5,0,'I'],
+  ['5208','HSN','Woven fabrics of cotton (≤ ₹1000/piece)',5,0,'I'],
+  ['5208','HSN','Woven fabrics of cotton (> ₹1000/piece)',12,0,'II'],
+  ['5402','HSN','Synthetic filament yarn',12,0,'II'],
+  ['6101','HSN',"Men's overcoats, jackets (≤ ₹1000)",5,0,'I'],
+  ['6101','HSN',"Men's overcoats, jackets (> ₹1000)",12,0,'II'],
+  ['6104','HSN',"Women's suits, jackets (> ₹1000)",12,0,'II'],
+  ['6204','HSN',"Women's suits, jackets (woven, > ₹1000)",12,0,'II'],
+  ['6401','HSN','Waterproof footwear',18,0,'III'],
+  ['6403','HSN','Footwear, rubber/plastic soles (≤ ₹1000)',5,0,'I'],
+  ['6403','HSN','Footwear (> ₹1000)',18,0,'III'],
+  ['6810','HSN','Articles of cement, concrete (bricks, blocks)',12,0,'II'],
+  ['6901','HSN','Bricks (fly ash / soil)',5,0,'I'],
+  ['7101','HSN','Natural pearls (graded, not strung)',0,0,'NIL'],
+  ['7102','HSN','Natural diamonds (rough/unworked)',0.25,0,'Special'],
+  ['7103','HSN','Semi-precious stones (worked)',3,0,'Precious'],
+  ['7108','HSN','Gold (unwrought / semi-manufactured)',3,0,'Precious'],
+  ['7113','HSN','Jewellery — gold / silver / platinum',3,0,'Precious'],
+  ['7201','HSN','Pig iron',5,0,'I'],
+  ['7206','HSN','Iron / steel billets, ingots',18,0,'III'],
+  ['7213','HSN','Bars / rods (iron / steel) — hot rolled',18,0,'III'],
+  ['7308','HSN','Structures of iron / steel (bridges, towers)',18,0,'III'],
+  ['7401','HSN','Copper mattes / cement copper',5,0,'I'],
+  ['7601','HSN','Aluminium — unwrought',5,0,'I'],
+  ['7608','HSN','Aluminium tubes / pipes',18,0,'III'],
+  ['8414','HSN','Air pumps, vacuum pumps, air compressors',12,0,'II'],
+  ['8415','HSN','Air-conditioning machines (split / window)',28,0,'IV'],
+  ['8418','HSN','Refrigerators, freezers, heat pumps',18,0,'III'],
+  ['8419','HSN','Water heaters, boilers (industrial)',18,0,'III'],
+  ['8443','HSN','Printing machinery',12,0,'II'],
+  ['8450','HSN','Washing machines (household ≤ 10 kg)',28,0,'IV'],
+  ['8471','HSN','Computers / laptops / tablets',18,0,'III'],
+  ['8504','HSN','Transformers, static converters (≤ 1 kVA)',18,0,'III'],
+  ['8507','HSN','Electric accumulators / li-ion batteries',18,0,'III'],
+  ['8517','HSN','Telephones, smartphones, feature phones',18,0,'III'],
+  ['8524','HSN','Flat panel display modules',18,0,'III'],
+  ['8525','HSN','Transmission apparatus (radio, TV)',18,0,'III'],
+  ['8528','HSN','TV monitors and projectors (≤ 32 in)',18,0,'III'],
+  ['8528','HSN','TV monitors and projectors (> 32 in)',28,0,'IV'],
+  ['8544','HSN','Insulated wires, cables, conductors',18,0,'III'],
+  ['8701','HSN','Tractors (≤ 1800 cc engine)',12,0,'II'],
+  ['8702','HSN','Motor vehicles — public transport (bus)',12,0,'II'],
+  ['8703','HSN','Cars — petrol ≤ 1200 cc',28,1,'IV'],
+  ['8703','HSN','Cars — diesel ≤ 1500 cc',28,3,'IV'],
+  ['8703','HSN','Cars — above 1500 cc / SUV',28,20,'IV'],
+  ['8711','HSN','Motorcycles — engine > 350 cc',28,0,'IV'],
+  ['8711','HSN','Motorcycles — engine ≤ 350 cc',28,0,'IV'],
+  ['8714','HSN','Parts for motorcycles / cycles',28,0,'IV'],
+  ['8716','HSN','Non-motorised vehicles (carts, cycles)',12,0,'II'],
+  ['8802','HSN','Aircraft, spacecraft (civilian use)',5,0,'I'],
+  ['8903','HSN','Yachts, recreational boats',28,0,'IV'],
+  ['9006','HSN','Photographic cameras',18,0,'III'],
+  ['9018','HSN','Medical / surgical instruments',12,0,'II'],
+  ['9021','HSN','Orthopaedic appliances, hearing aids',5,0,'I'],
+  ['9021','HSN','Cochlear implants',0,0,'NIL'],
+  ['9026','HSN','Instruments — flow, level, pressure',18,0,'III'],
+  ['9030','HSN','Oscilloscopes, spectrum analysers',18,0,'III'],
+  ['9301','HSN','Military weapons (tanks, combat vehicles)',0,0,'NIL'],
+  ['9401','HSN','Seats (chairs, sofas — household)',18,0,'III'],
+  ['9403','HSN','Furniture — wooden, metal, plastic',18,0,'III'],
+  ['9503','HSN','Toys — tricycles, scooters, toy cars',18,0,'III'],
+  ['9504','HSN','Video game consoles / machines',28,0,'IV'],
+  ['9601','HSN','Worked ivory, bone, tortoise-shell, coral',5,0,'I'],
+  ['9619','HSN','Sanitary towels, tampons, diapers',12,0,'II'],
+  // ── SERVICES (SAC) ──
+  ['995411','SAC','Construction — residential (affordable ≤ 45L)',0,0,'NIL'],
+  ['995411','SAC','Construction — other residential buildings',5,0,'I'],
+  ['995412','SAC','Construction — commercial / industrial',18,0,'III'],
+  ['995421','SAC','Road and highway construction',12,0,'II'],
+  ['995425','SAC','Construction — mines and industrial plants',18,0,'III'],
+  ['995431','SAC','Electrical installation services',18,0,'III'],
+  ['995432','SAC','Plumbing, heating, AC — installation',18,0,'III'],
+  ['995450','SAC','Building completion & finishing services',18,0,'III'],
+  ['997212','SAC','Rental — residential property (tenant unregistered)',0,0,'NIL'],
+  ['997212','SAC','Rental — residential to GST registrant (RCM)',18,0,'III'],
+  ['997221','SAC','Rental / leasing of commercial property',18,0,'III'],
+  ['997111','SAC','Interest income from loans / advances',0,0,'NIL'],
+  ['997120','SAC','Life insurance — risk cover premium',5,0,'I'],
+  ['997120','SAC','General insurance — motor, health, property',18,0,'III'],
+  ['997130','SAC','Pension fund management services',0,0,'NIL'],
+  ['997140','SAC','Stock / commodity brokers',18,0,'III'],
+  ['997150','SAC','Portfolio management / investment advisory',18,0,'III'],
+  ['997159','SAC','Foreign exchange dealing / money changing',18,0,'III'],
+  ['998211','SAC','Legal advisory / consultation services',18,0,'III'],
+  ['998213','SAC','Legal documentation — patents, copyrights',18,0,'III'],
+  ['998221','SAC','Accounting / bookkeeping services',18,0,'III'],
+  ['998222','SAC','Tax consulting and return filing services',18,0,'III'],
+  ['998223','SAC','Statutory audit services',18,0,'III'],
+  ['998231','SAC','Management consulting services',18,0,'III'],
+  ['998232','SAC','Business process outsourcing (BPO)',18,0,'III'],
+  ['998241','SAC','Architectural services',18,0,'III'],
+  ['998242','SAC','Engineering design and advisory',18,0,'III'],
+  ['998251','SAC','Advertising / market research services',18,0,'III'],
+  ['998313','SAC','IT software design and development',18,0,'III'],
+  ['998314','SAC','IT infrastructure / support services',18,0,'III'],
+  ['999210','SAC','Pre-primary education',0,0,'NIL'],
+  ['999220','SAC','Primary education services',0,0,'NIL'],
+  ['999230','SAC','Secondary education services',0,0,'NIL'],
+  ['999240','SAC','Higher education (university / college)',0,0,'NIL'],
+  ['999241','SAC','Vocational training services',0,0,'NIL'],
+  ['999290','SAC','Other education / coaching (private)',18,0,'III'],
+  ['999300','SAC','Human health services — govt. hospitals',0,0,'NIL'],
+  ['999311','SAC','In-patient health services — private hospitals',0,0,'NIL'],
+  ['999312','SAC','Medical consultation — private practitioners',0,0,'NIL'],
+  ['999315','SAC','Ambulance services',0,0,'NIL'],
+  ['999321','SAC','Residential care — nursing homes (elderly)',0,0,'NIL'],
+  ['999411','SAC','Sewerage / sanitation services',0,0,'NIL'],
+  ['999510','SAC','Postal services — basic (India Post)',0,0,'NIL'],
+  ['999511','SAC','Courier / express delivery services',18,0,'III'],
+  ['996411','SAC','Rail transport — passengers (AC)',5,0,'I'],
+  ['996411','SAC','Rail transport — passengers (non-AC)',0,0,'NIL'],
+  ['996421','SAC','Road transport — metered taxi / auto',0,0,'NIL'],
+  ['996421','SAC','Road transport — rent-a-cab / aggregator',5,0,'I'],
+  ['996431','SAC','Water transport — coastal shipping (goods)',5,0,'I'],
+  ['996441','SAC','Air transport — economy class',5,0,'I'],
+  ['996441','SAC','Air transport — business class',12,0,'II'],
+  ['996511','SAC','Goods transport by road — GTA (RCM)',5,0,'I'],
+  ['996531','SAC','Goods transport by air',18,0,'III'],
+  ['996311','SAC','Restaurant services (standalone, AC)',5,0,'I'],
+  ['996311','SAC','Restaurant in hotel (tariff < ₹7500)',5,0,'I'],
+  ['996311','SAC','Restaurant in hotel (tariff ≥ ₹7500)',18,0,'III'],
+  ['996321','SAC','Hotel accommodation (room < ₹1000/night)',0,0,'NIL'],
+  ['996321','SAC','Hotel accommodation (₹1001–7500/night)',12,0,'II'],
+  ['996321','SAC','Hotel accommodation (> ₹7500/night)',18,0,'III'],
+  ['999190','SAC','Telecom — voice / data / internet',18,0,'III'],
+  ['999191','SAC','DTH / cable TV services',18,0,'III'],
+  ['999192','SAC','Internet access services (ISP)',18,0,'III'],
+  ['999193','SAC','IPTV / OTT streaming services',18,0,'III'],
+  ['999614','SAC','Online information services (SaaS, cloud)',18,0,'III'],
+  ['999631','SAC','Amusement parks & theme parks',18,0,'III'],
+  ['999633','SAC','Event management services',18,0,'III'],
+  ['999634','SAC','Cultural, sports, live events (ticket ≤ ₹250)',0,0,'NIL'],
+  ['999634','SAC','Cultural, sports, live events (ticket > ₹250)',18,0,'III'],
+  ['999641','SAC','Film distribution services',18,0,'III'],
+  ['997911','SAC','R&D services (scientific — Govt.)',0,0,'NIL'],
+  ['997911','SAC','R&D services (commercial / private)',18,0,'III'],
+  ['998511','SAC','Employment services / placement agencies',18,0,'III'],
+  ['998531','SAC','Investigation / security guard services',18,0,'III'],
+  ['998561','SAC','Cleaning services — commercial premises',18,0,'III'],
+  ['998591','SAC','Packaging services',18,0,'III'],
+  ['999713','SAC','RWA monthly contribution (> ₹7500)',18,0,'III'],
+  ['999713','SAC','RWA monthly contribution (≤ ₹7500)',0,0,'NIL'],
+  ['999717','SAC','Charitable / religious trust services',0,0,'NIL'],
+  ['997151','SAC','Fund management (SEBI-registered MF)',18,0,'III'],
+];
+const HSN_SAC_MASTER = HSN_SAC_RAW.map(([code,kind,desc,rate,cess,sch]) => ({code,kind,desc,rate,cess:cess||0,sch}));
+// Resolve a typed HSN/SAC code → best matching master entry (exact code; first match)
+const hsnLookup = (code) => {
+  if(!code) return null;
+  const c = String(code).trim();
+  return HSN_SAC_MASTER.find(h => h.code === c)
+      || HSN_SAC_MASTER.find(h => h.code.startsWith(c) && c.length >= 4)
+      || null;
+};
+
+// TDS Sections seed — Income Tax Act 2025 (Sections 392 / 393), w.e.f. 01-Apr-2026.
+// `section` = new ITA-2025 reference · `oldSection` = familiar ITA-1961 (194x).
 const SEED_TDS_SECTIONS = [
-  {id:uid(), section:'393(1)', oldSection:'194C', name:'Contractor (Individual/HUF)', rate:1, threshold:30000, annualThreshold:100000, ledgerId:'1314', nature:'Contractor Payments'},
-  {id:uid(), section:'393(2)', oldSection:'194C', name:'Contractor (Others)', rate:2, threshold:30000, annualThreshold:100000, ledgerId:'1315', nature:'Contractor Payments'},
-  {id:uid(), section:'394(6)', oldSection:'194J(a)', name:'Professional Fees — Technical Services', rate:2, threshold:30000, annualThreshold:0, ledgerId:'1316', nature:'Professional/Technical Fees'},
-  {id:uid(), section:'394(6)', oldSection:'194J(b)', name:'Professional Fees — Others', rate:10, threshold:30000, annualThreshold:0, ledgerId:'1316', nature:'Professional/Technical Fees'},
-  {id:uid(), section:'394(2)', oldSection:'194I(a)', name:'Rent — Plant & Machinery', rate:2, threshold:240000, annualThreshold:0, ledgerId:'1317', nature:'Rent'},
-  {id:uid(), section:'394(2)', oldSection:'194I(b)', name:'Rent — Land/Building/Furniture', rate:10, threshold:240000, annualThreshold:0, ledgerId:'1317', nature:'Rent'},
-  {id:uid(), section:'394(1)', oldSection:'194H', name:'Commission / Brokerage', rate:5, threshold:15000, annualThreshold:0, ledgerId:'1318', nature:'Commission'},
-  {id:uid(), section:'393(4)', oldSection:'194A', name:'Interest other than on Securities', rate:10, threshold:40000, annualThreshold:0, ledgerId:'1319', nature:'Interest'},
-  {id:uid(), section:'393(5)', oldSection:'194Q', name:'Purchase of Goods (>50L)', rate:0.1, threshold:5000000, annualThreshold:0, ledgerId:'1320B', nature:'Purchase of Goods'},
   {id:uid(), section:'392', oldSection:'192', name:'Salary (TDS on Salary)', rate:0, threshold:0, annualThreshold:0, ledgerId:'1321', nature:'Salary', isSalary:true},
+  {id:uid(), section:'393(1)·6(i)D(a)', oldSection:'194C', name:'Contractor / Sub-contractor (Individual/HUF)', rate:1, threshold:30000, annualThreshold:100000, ledgerId:'1314', nature:'Contractor Payments'},
+  {id:uid(), section:'393(1)·6(i)D(b)', oldSection:'194C', name:'Contractor / Sub-contractor (Others)', rate:2, threshold:30000, annualThreshold:100000, ledgerId:'1315', nature:'Contractor Payments'},
+  {id:uid(), section:'393(1)·6(iii)D(a)', oldSection:'194J(a)', name:'Fees for Technical Services / Call Centre', rate:2, threshold:50000, annualThreshold:0, ledgerId:'1316', nature:'Technical Services'},
+  {id:uid(), section:'393(1)·6(iii)D(b)', oldSection:'194J(b)', name:'Fees for Professional Services', rate:10, threshold:50000, annualThreshold:0, ledgerId:'1316', nature:'Professional Fees'},
+  {id:uid(), section:'393(1)·6(iii)D(b)', oldSection:'194J', name:'Director Remuneration / Sitting Fees', rate:10, threshold:0, annualThreshold:0, ledgerId:'1316', nature:'Director Remuneration'},
+  {id:uid(), section:'393(1)·2(ii)D(a)', oldSection:'194I(a)', name:'Rent — Plant, Machinery or Equipment', rate:2, threshold:50000, annualThreshold:0, ledgerId:'1317', nature:'Rent'},
+  {id:uid(), section:'393(1)·2(ii)D(b)', oldSection:'194I(b)', name:'Rent — Land / Building / Furniture', rate:10, threshold:50000, annualThreshold:0, ledgerId:'1317', nature:'Rent'},
+  {id:uid(), section:'393(1)·1(ii)', oldSection:'194H', name:'Commission / Brokerage (non-insurance)', rate:2, threshold:20000, annualThreshold:0, ledgerId:'1318', nature:'Commission'},
+  {id:uid(), section:'393(1)·1(i)', oldSection:'194D', name:'Insurance Commission (Others)', rate:10, threshold:20000, annualThreshold:0, ledgerId:'1318', nature:'Insurance Commission'},
+  {id:uid(), section:'393(1)·5(ii)D(b)', oldSection:'194A', name:'Interest other than on Securities', rate:10, threshold:50000, annualThreshold:0, ledgerId:'1319', nature:'Interest'},
+  {id:uid(), section:'393(1)·5(i)', oldSection:'193', name:'Interest on Securities', rate:10, threshold:10000, annualThreshold:0, ledgerId:'1319', nature:'Interest on Securities'},
+  {id:uid(), section:'393(1)·8(ii)', oldSection:'194Q', name:'Purchase of Goods (turnover > 50L)', rate:0.1, threshold:5000000, annualThreshold:0, ledgerId:'1320B', nature:'Purchase of Goods'},
+  {id:uid(), section:'393(1)·8(v)', oldSection:'194O', name:'E-commerce — Sale of Goods/Services', rate:0.1, threshold:500000, annualThreshold:0, ledgerId:'1325', nature:'E-commerce'},
+  {id:uid(), section:'393(1)·8(iv)', oldSection:'194R', name:'Benefit / Perquisite from Business', rate:10, threshold:20000, annualThreshold:0, ledgerId:'1327', nature:'Business Perquisite'},
+  {id:uid(), section:'393(3)·7', oldSection:'194T', name:'Partner — Salary / Remuneration / Interest (NEW)', rate:10, threshold:20000, annualThreshold:0, ledgerId:'1326', nature:'Partner Remuneration'},
+  {id:uid(), section:'393(1)·7', oldSection:'194', name:'Dividend', rate:10, threshold:10000, annualThreshold:0, ledgerId:'1328', nature:'Dividend'},
+  {id:uid(), section:'393(1)·4(i)', oldSection:'194K', name:'Income from Mutual Fund Units', rate:10, threshold:10000, annualThreshold:0, ledgerId:'1329', nature:'Mutual Fund Income'},
+  {id:uid(), section:'393(1)·8(vi)', oldSection:'194S', name:'Transfer of Virtual Digital Asset (Crypto)', rate:1, threshold:10000, annualThreshold:0, ledgerId:'1329', nature:'VDA / Crypto'},
+  {id:uid(), section:'393(1)·8(i)', oldSection:'194DA', name:'Life Insurance Policy Payout', rate:2, threshold:100000, annualThreshold:0, ledgerId:'1329', nature:'LI Payout'},
+  {id:uid(), section:'393(3)·5D(b)', oldSection:'194N', name:'Cash Withdrawal (> ₹1 Cr)', rate:2, threshold:10000000, annualThreshold:0, ledgerId:'1329', nature:'Cash Withdrawal'},
+  {id:uid(), section:'393(3)·1', oldSection:'194B', name:'Winnings — Lottery / Gambling / Betting', rate:30, threshold:10000, annualThreshold:0, ledgerId:'1329', nature:'Winnings'},
+  {id:uid(), section:'393(3)·2', oldSection:'194BA', name:'Winnings — Online Games', rate:30, threshold:0, annualThreshold:0, ledgerId:'1329', nature:'Online Gaming'},
 ];
 
 // Default full dataset — used when creating a new company (Firebase flow)
@@ -2301,6 +2564,13 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
       if(saved.company.isPremium === undefined) saved.company.isPremium = false;
       if(!saved.company.premiumSince) saved.company.premiumSince = '';
       if(!saved.company.booksLockedUpto) saved.company.booksLockedUpto = '';
+      // Migrate: ensure new TDS-payable ledgers (ITA-2025 sections) exist
+      ['1325','1326','1327','1328','1329'].forEach(id => {
+        if(saved.coa && !saved.coa.find(a => a.id === id)){
+          const seed = SEED_COA.find(a => a.id === id);
+          if(seed) saved.coa.push({...seed});
+        }
+      });
       // Migrate: ensure modules config exists (preserve existing true for legacy installs)
       if(!saved.company.modules) {
         saved.company.modules = { gst:true, tds:true, payroll:true, factory:false, trader:false, service:false };
@@ -2403,6 +2673,12 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
         if(cloudData.company.isPremium === undefined) cloudData.company.isPremium = false;
         if(!cloudData.company.premiumSince) cloudData.company.premiumSince = '';
         if(!cloudData.company.booksLockedUpto) cloudData.company.booksLockedUpto = '';
+        ['1325','1326','1327','1328','1329'].forEach(id => {
+          if(cloudData.coa && !cloudData.coa.find(a => a.id === id)){
+            const seed = SEED_COA.find(a => a.id === id);
+            if(seed) cloudData.coa.push({...seed});
+          }
+        });
         if(!cloudData.tdsSections)       cloudData.tdsSections = SEED_TDS_SECTIONS;
         if(!cloudData.company.modules){
           cloudData.company.modules = { gst:true, tds:true, payroll:true, factory:false, trader:false, service:false };
@@ -2517,6 +2793,7 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
         {id:'gstr1', label:'GSTR-1', ico:'◐'},
         {id:'gstr3b', label:'GSTR-3B', ico:'◑'},
         {id:'gstr2b', label:'GSTR-2B Recon.', ico:'◓'},
+        {id:'hsn_finder', label:'HSN / SAC Rate Finder', ico:'🔍'},
       ] : []),
       ...(mod.tds===true ? [
         {id:'tds_sections', label:'TDS Sections', ico:'§'},
@@ -2647,6 +2924,7 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
           {page==='gstr1' && <GSTR1 data={data} />}
           {page==='gstr3b' && <GSTR3B data={data} balances={ledgerBalances} />}
           {page==='gstr2b' && <GSTR2B data={data} setData={setData} showToast={showToast} />}
+          {page==='hsn_finder' && <HSNFinder data={data} />}
           {page==='forex' && <Forex data={data} setData={setData} showToast={showToast} />}
           {page==='mis' && <MISDashboard data={data} balances={ledgerBalances} setPage={setPage} />}
           {page==='mis_ratios' && <FinancialRatios data={data} balances={ledgerBalances} />}
@@ -5371,6 +5649,15 @@ function VoucherModal({vtype, voucher, data, onSave, onClose, showToast}){
           updated.gstRate = si.gstRate != null ? si.gstRate : updated.gstRate;
         }
       }
+      // When an HSN/SAC code is entered, look it up in the GST 2.0 master and
+      // auto-fill the GST rate (and description if still blank).
+      if(field === 'hsn' && value) {
+        const m = hsnLookup(value);
+        if(m && m.rate >= 0) {
+          updated.gstRate = m.rate;
+          if(!updated.description) updated.description = m.desc;
+        }
+      }
       return updated;
     });
     setF({...f, items});
@@ -5623,6 +5910,12 @@ function VoucherModal({vtype, voucher, data, onSave, onClose, showToast}){
 
           {(vtype==='SAL' || vtype==='PUR' || vtype==='CRN' || vtype==='DBN') ? (
             <>
+              {/* HSN/SAC autocomplete source — GST 2.0 master (auto-fills rate) */}
+              <datalist id="hsn-sac-list">
+                {HSN_SAC_MASTER.map((h,i) => (
+                  <option key={i} value={`${h.code}  ${h.desc}`}>{h.kind} · {h.rate>=0?h.rate+'% GST':'Outside GST'}{h.cess?` +${h.cess}% cess`:''}</option>
+                ))}
+              </datalist>
               <div className="section-divider">
                 <div className="label">Line Items</div>
                 <div className="line"></div>
@@ -5668,7 +5961,11 @@ function VoucherModal({vtype, voucher, data, onSave, onClose, showToast}){
                           <td><select value={it.accountId} onChange={e => updateItem(it.id, 'accountId', e.target.value)}>
                             {data.coa.filter(a => vtype==='SAL'||vtype==='CRN' ? a.type==='Income' : a.type==='Expense').map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
                           </select></td>
-                          <td><input value={it.hsn||''} onChange={e => updateItem(it.id, 'hsn', e.target.value)} placeholder="HSN" /></td>
+                          <td style={{position:'relative'}}>
+                            <input list="hsn-sac-list" value={it.hsn||''} onChange={e => updateItem(it.id, 'hsn', e.target.value.split(' ')[0].trim())}
+                              placeholder="HSN/SAC" title={(() => { const m = hsnLookup(it.hsn); return m ? `${m.desc} · ${m.rate}% GST${m.cess?` + ${m.cess}% cess`:''}` : 'Type code or name'; })()} />
+                            {(() => { const m = hsnLookup(it.hsn); return m && m.rate>=0 ? <span style={{position:'absolute',right:4,top:'50%',transform:'translateY(-50%)',fontSize:9,color:'var(--primary)',fontWeight:700,pointerEvents:'none'}}>{m.rate}%</span> : null; })()}
+                          </td>
                           <td><input type="number" value={it.qty} onChange={e => updateItem(it.id, 'qty', e.target.value)} /></td>
                           <td><input type="number" step="0.01" value={it.rate} onChange={e => updateItem(it.id, 'rate', e.target.value)} /></td>
                           <td><select value={it.gstRate} onChange={e => updateItem(it.id, 'gstRate', e.target.value)}>
@@ -5924,6 +6221,8 @@ function VoucherModal({vtype, voucher, data, onSave, onClose, showToast}){
                             tdsRate: sec.rate, tdsAmount: tdsAmt,
                             tdsLedgerId: ledgerId,
                             tdsNature: sec.nature,
+                            tdsThreshold: sec.threshold||0,
+                            tdsAnnualThreshold: sec.annualThreshold||0,
                             tdsBaseAmount: base || f.tdsBaseAmount
                           });
                         }
@@ -5933,6 +6232,14 @@ function VoucherModal({vtype, voucher, data, onSave, onClose, showToast}){
                           <option key={s.id} value={s.id}>§{s.section}{s.oldSection?' (Old: '+s.oldSection+')':''} — {s.name} ({s.rate}%)</option>
                         ))}
                       </select>
+                      {f.tdsSectionId && f.tdsThreshold > 0 && (f.tdsBaseAmount||0) < f.tdsThreshold && (
+                        <div className="help" style={{color:'var(--warning)'}}>
+                          ⚠ Below single-transaction threshold of ₹{fmt(f.tdsThreshold)} — TDS may not be required (verify aggregate{f.tdsAnnualThreshold?` / annual ₹${fmt(f.tdsAnnualThreshold)}`:''}).
+                        </div>
+                      )}
+                      {f.tdsSectionId && f.tdsThreshold > 0 && (f.tdsBaseAmount||0) >= f.tdsThreshold && (
+                        <div className="help" style={{color:'var(--primary)'}}>✓ Above ₹{fmt(f.tdsThreshold)} threshold — TDS applicable.</div>
+                      )}
                     </div>
                     <div className="field required">
                       <label>TDS Deducted On (₹)</label>
@@ -7867,6 +8174,92 @@ function CashFlow({data, balances}){
       </div>
     </>
   );
+}
+
+// ============================================================================
+// HSN / SAC RATE FINDER — searchable GST 2.0 rate master
+// ============================================================================
+function HSNFinder({data}){
+  const [q, setQ] = useState('');
+  const [kind, setKind] = useState('All');     // All | HSN | SAC
+  const [rate, setRate] = useState('All');
+
+  const results = useMemo(() => {
+    const s = q.trim().toLowerCase();
+    return HSN_SAC_MASTER.filter(h =>
+      (kind==='All' || h.kind===kind) &&
+      (rate==='All' || String(h.rate)===rate) &&
+      (!s || h.code.includes(s) || h.desc.toLowerCase().includes(s))
+    );
+  }, [q, kind, rate]);
+
+  const rateColor = r => r<0?'#6b7280':r===0?'#6b7280':r<=5?'#0b6b4f':r<=12?'#1976d2':r<=18?'#e65100':'#c62828';
+  const handleExcel = () => exportXLSX(`HSN_SAC_Master_${today()}.xlsx`, [{
+    name:'HSN-SAC Master', rows:[
+      ['HSN/SAC GST Rate Master — GST 2.0 (Notif. 9/2025) · w.e.f. 22-Sep-2025'],[],
+      ['Code','Type','Description','GST Rate %','Cess %','Schedule'],
+      ...results.map(h => [h.code, h.kind, h.desc, h.rate<0?'Outside GST':h.rate, h.cess, h.sch]),
+    ]
+  }]);
+
+  return (<>
+    <div className="page-head">
+      <div>
+        <h1 className="page-title">HSN / SAC Rate Finder</h1>
+        <div className="page-sub">GST 2.0 master · Notif. 9/2025-CT(Rate) · {HSN_SAC_MASTER.length} codes · search by code or description</div>
+      </div>
+      <div className="page-actions">
+        <button className="btn btn-sm" onClick={handleExcel}>⬇ Excel</button>
+      </div>
+    </div>
+
+    <div className="filter-bar">
+      <div className="field" style={{flex:1,minWidth:240}}><label>Search</label>
+        <input value={q} onChange={e=>setQ(e.target.value)} placeholder="e.g. 8471, laptop, cement, audit, hotel…" autoFocus />
+      </div>
+      <div className="field"><label>Type</label>
+        <select value={kind} onChange={e=>setKind(e.target.value)}>
+          <option>All</option><option value="HSN">HSN (Goods)</option><option value="SAC">SAC (Services)</option>
+        </select>
+      </div>
+      <div className="field"><label>GST Rate</label>
+        <select value={rate} onChange={e=>setRate(e.target.value)}>
+          <option value="All">All Rates</option>
+          <option value="0">0% (Nil/Exempt)</option><option value="0.25">0.25%</option><option value="3">3%</option>
+          <option value="5">5%</option><option value="12">12%</option><option value="18">18%</option><option value="28">28%</option>
+          <option value="-1">Outside GST</option>
+        </select>
+      </div>
+    </div>
+
+    <div className="table-wrap">
+      <table>
+        <thead><tr>
+          <th style={{width:90}}>Code</th><th style={{width:60}}>Type</th><th>Description</th>
+          <th className="num" style={{width:90}}>GST %</th><th className="num" style={{width:70}}>Cess %</th>
+          <th style={{width:90}}>Schedule</th>
+        </tr></thead>
+        <tbody>
+          {results.length===0 ? (
+            <tr><td colSpan="6"><div className="empty"><div className="empty-ico">🔍</div><div>No match. Try a 4-digit HSN, a SAC like 9982, or a keyword.</div></div></td></tr>
+          ) : results.slice(0,400).map((h,i)=>(
+            <tr key={i}>
+              <td style={{fontFamily:'var(--mono)',fontWeight:600}}>{h.code}</td>
+              <td><span className={'badge '+(h.kind==='HSN'?'badge-info':'badge-gold')} style={{fontSize:10}}>{h.kind}</span></td>
+              <td>{h.desc}</td>
+              <td className="num" style={{fontWeight:700,color:rateColor(h.rate)}}>{h.rate<0?'—':h.rate+'%'}</td>
+              <td className="num" style={{color:h.cess?'var(--danger)':'var(--ink-3)'}}>{h.cess?h.cess+'%':''}</td>
+              <td style={{fontSize:11,color:'var(--ink-3)'}}>{h.sch}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {results.length>400 && <div style={{padding:'8px 12px',fontSize:11,color:'var(--ink-3)'}}>Showing first 400 of {results.length} — refine your search.</div>}
+    </div>
+    <div style={{marginTop:12,fontSize:11,color:'var(--ink-3)'}}>
+      ℹ Tip: in any Sales/Purchase voucher, type the HSN/SAC code in the line's HSN field — the GST rate auto-fills from this master. Rates per GST 2.0 (22-Sep-2025); always verify against the CBIC notification before filing.
+    </div>
+  </>);
 }
 
 // ============================================================================
@@ -10767,14 +11160,27 @@ function TDSSections({data, setData, showToast}){
     showToast('TDS Section deleted');
   };
 
+  // Merge the latest ITA-2025 standard sections without removing user-added ones
+  const loadStandard = () => {
+    const existing = data.tdsSections || [];
+    const key = s => (s.oldSection||'') + '|' + (s.name||'');
+    const have = new Set(existing.map(key));
+    const toAdd = SEED_TDS_SECTIONS.filter(s => !have.has(key(s))).map(s => ({...s, id: uid()}));
+    if(toAdd.length === 0){ showToast('All standard ITA-2025 sections are already present'); return; }
+    if(!confirm(`Add ${toAdd.length} standard TDS section(s) from the Income Tax Act 2025 master?\n\nExisting sections are kept unchanged.`)) return;
+    setData({...data, tdsSections: [...existing, ...toAdd]});
+    showToast(`✓ Added ${toAdd.length} ITA-2025 TDS section(s)`);
+  };
+
   return (
     <>
       <div className="page-head">
         <div>
           <h1 className="page-title">TDS Sections</h1>
-          <div className="page-sub">Configure TDS sections, rates, thresholds & linked payable ledgers · {(data.tdsSections||[]).length} sections</div>
+          <div className="page-sub">Income Tax Act 2025 (§392/393) · rates, thresholds & linked payable ledgers · {(data.tdsSections||[]).length} sections</div>
         </div>
         <div className="page-actions">
+          <button className="btn" onClick={loadStandard}>↻ Load ITA-2025 Standard</button>
           <button className="btn btn-primary" onClick={() => { setEditing(null); setShowModal(true); }}>+ Add TDS Section</button>
         </div>
       </div>
