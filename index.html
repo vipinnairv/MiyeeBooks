@@ -1239,6 +1239,299 @@ const buildDefaultData = (companyOverrides = {}) => ({
 });
 
 // ============================================================================
+// SAMPLE DATA GENERATOR — a complete, fully-tallied FY 2025-26 dataset
+// (covers SAL/PUR/PAY/REC/JV/CON/CRN/DBN, GST intra/inter/export, TDS 194C/J/I,
+//  payroll with PF/PT/TDS, cost centres, departments, bill tagging)
+// Invariant: sum(openings)=0 and every voucher Dr=Cr → Trial Balance & BS tally.
+// ============================================================================
+const buildSampleData = () => {
+  const r2 = n => Math.round(n*100)/100;
+  const gst = (t, rate, inter) => inter
+    ? {cgst:0, sgst:0, igst:r2(t*rate/100)}
+    : {cgst:r2(t*rate/200), sgst:r2(t*rate/200), igst:0};
+
+  // ---- Chart of Accounts: SEED openings re-signed so the books tally ----
+  const openOverrides = {'1100':-1000000,'1110':-200000,'1200':-500000,'1300':0,'2400':0};
+  const coa = SEED_COA.map(a => a.id in openOverrides ? {...a, opening:openOverrides[a.id]} : a)
+    .concat([
+      {id:'4505', name:'Repairs & Maintenance', group:'Other Expenses', type:'Expense', schedule:'Other Expenses', opening:0, gstRate:18},
+      {id:'4555', name:'Audit Fees', group:'Other Expenses', type:'Expense', schedule:'Other Expenses', opening:0, gstRate:18},
+    ]);
+
+  // ---- Parties (fixed ids for bill-tag references) ----
+  const P = {
+    reliance:'sp_rel', tcs:'sp_tcs', acme:'sp_acme', global:'sp_glob',
+    birla:'sp_birla', mahesh:'sp_mahesh', jio:'sp_jio', landlord:'sp_land',
+    sharma:'sp_sharma', buildwell:'sp_build',
+  };
+  const parties = [
+    {id:P.reliance, name:'Reliance Industries Ltd', type:'Customer', gstin:'27AAACR5055K1Z7', state:'Maharashtra', stateCode:'27', address:'Maker Chambers IV, Mumbai', email:'ap@ril.com', phone:'+91 22 3555 5000', currency:'INR', balance:0},
+    {id:P.tcs, name:'Tata Consultancy Services', type:'Customer', gstin:'27AAACT2727Q1ZW', state:'Maharashtra', stateCode:'27', address:'TCS House, Mumbai', email:'vendor@tcs.com', phone:'+91 22 6778 9999', currency:'INR', balance:0},
+    {id:P.acme, name:'Acme Trading Co.', type:'Customer', gstin:'24AABCA1234Z1Z5', state:'Gujarat', stateCode:'24', address:'Ahmedabad', email:'info@acme.in', phone:'+91 79 2658 0000', currency:'INR', balance:0},
+    {id:P.global, name:'GlobalCorp Inc. (USA)', type:'Customer', gstin:'', state:'Outside India', stateCode:'97', address:'Delaware, USA', email:'ap@globalcorp.com', phone:'+1 302 555 0100', currency:'USD', balance:0, isForeign:true},
+    {id:P.birla, name:'Aditya Birla Supplies', type:'Vendor', gstin:'24AABCA9999B1Z2', state:'Gujarat', stateCode:'24', address:'Surat', email:'sales@absupplies.in', phone:'+91 261 234 5000', currency:'INR', balance:0},
+    {id:P.mahesh, name:'Mahesh Stationers', type:'Vendor', gstin:'24BBCDM4321A1Z0', state:'Gujarat', stateCode:'24', address:'Ahmedabad', email:'mahesh@stat.in', phone:'+91 98765 12345', currency:'INR', balance:0},
+    {id:P.jio, name:'Reliance Jio (Telecom)', type:'Vendor', gstin:'27AAACR5055K2Z6', state:'Maharashtra', stateCode:'27', address:'Mumbai', email:'support@jio.com', phone:'1800 889 9999', currency:'INR', balance:0},
+    {id:P.landlord, name:'Office Landlord — Mr. Patel', type:'Vendor', gstin:'', state:'Gujarat', stateCode:'24', address:'Ahmedabad', email:'patel@landlord.in', phone:'+91 99999 11111', currency:'INR', balance:0, unregistered:true},
+    {id:P.sharma, name:'Sharma & Associates (CA)', type:'Vendor', gstin:'24AAFFS1234K1ZP', state:'Gujarat', stateCode:'24', address:'Ahmedabad', email:'ca@sharma.in', phone:'+91 79 4000 1111', currency:'INR', balance:0, pan:'AAFFS1234K'},
+    {id:P.buildwell, name:'BuildWell Contractors Pvt Ltd', type:'Vendor', gstin:'24AABCB7777C1Z9', state:'Gujarat', stateCode:'24', address:'Gandhinagar', email:'works@buildwell.in', phone:'+91 79 5000 2222', currency:'INR', balance:0, pan:'AABCB7777C'},
+  ];
+  const partyOf = id => parties.find(p => p.id === id);
+
+  // ---- Cost Centres & Departments ----
+  const CC = {a:'sc_a', b:'sc_b'};
+  const costCentres = [
+    {id:CC.a, code:'PLANT-A', name:'Plant A — Manufacturing', description:'Main production unit', budget:1500000, budgetEnforce:'warn', active:true},
+    {id:CC.b, code:'PLANT-B', name:'Plant B — Assembly', description:'Assembly & packaging', budget:900000, budgetEnforce:'warn', active:true},
+  ];
+  const D = {sales:'sd_sales', prod:'sd_prod', admin:'sd_admin'};
+  const departments = [
+    {id:D.sales, code:'SALES', name:'Sales & Marketing', active:true},
+    {id:D.prod,  code:'PROD',  name:'Production', active:true},
+    {id:D.admin, code:'ADMIN', name:'Administration', active:true},
+  ];
+
+  // ---- Employees ----
+  const employees = [
+    {id:'emp1', empCode:'EMP001', name:'Ramesh Sharma', designation:'Senior Manager', department:'Finance', doj:'2023-01-15', pan:'ABCDE1234F', uan:'100234567890', esicNo:'', bankAcc:'12345678901234', ifsc:'SBIN0001234', email:'ramesh@company.com', phone:'9876543210', status:'Active', basic:35000, hra:14000, da:0, sa:5000, allowances:[], pfApplicable:true, pfBase:35000, esicApplicable:false, ptAmount:200, tdsSalary:2000},
+    {id:'emp2', empCode:'EMP002', name:'Priya Nair', designation:'Executive', department:'HR', doj:'2024-06-01', pan:'BCDFE5678G', uan:'100987654321', esicNo:'', bankAcc:'98765432109876', ifsc:'HDFC0002345', email:'priya@company.com', phone:'9988776655', status:'Active', basic:22000, hra:8800, da:0, sa:3200, allowances:[], pfApplicable:true, pfBase:22000, esicApplicable:false, ptAmount:200, tdsSalary:0},
+    {id:'emp3', empCode:'EMP003', name:'Amit Patel', designation:'Production Lead', department:'Production', doj:'2023-09-10', pan:'CDEFG9012H', uan:'100456789012', esicNo:'', bankAcc:'45678901234567', ifsc:'ICIC0003456', email:'amit@company.com', phone:'9123456780', status:'Active', basic:28000, hra:11200, da:0, sa:4000, allowances:[], pfApplicable:true, pfBase:28000, esicApplicable:false, ptAmount:200, tdsSalary:500},
+  ];
+
+  // ---- Voucher builders (each guaranteed Dr = Cr) ----
+  const vouchers = [], payrollRuns = [];
+  const ctr = {};
+  const vnum = t => { ctr[t]=(ctr[t]||0)+1; return t+'/'+String(ctr[t]).padStart(4,'0'); };
+  const stamp = new Date().toISOString();
+
+  const mkSale = (date, pid, salesAcc, taxable, rate, {inter=false, exp=false, cc='', dept=D.sales}={}) => {
+    const g = exp ? {cgst:0,sgst:0,igst:0} : gst(taxable, rate, inter);
+    const total = r2(taxable+g.cgst+g.sgst+g.igst);
+    const p = partyOf(pid);
+    const lines = [{id:uid(), accountId:'2400', debit:total, credit:0, narration:'To '+p.name, partyId:pid}];
+    lines.push({id:uid(), accountId:salesAcc, debit:0, credit:taxable, narration:'Sales', costCentreId:cc, departmentId:dept});
+    if(g.igst) lines.push({id:uid(), accountId:'1312', debit:0, credit:g.igst, narration:'IGST Output'});
+    if(g.cgst) lines.push({id:uid(), accountId:'1310', debit:0, credit:g.cgst, narration:'CGST Output'});
+    if(g.sgst) lines.push({id:uid(), accountId:'1311', debit:0, credit:g.sgst, narration:'SGST Output'});
+    const v = {id:uid(), type:'SAL', date, number:vnum('SAL'), partyId:pid, partyName:p.name,
+      narration:'Sales to '+p.name, reference:'', placeOfSupply:p.stateCode,
+      items:[{id:uid(), description:exp?'Export Goods':'Goods/Services', hsn:'998311', qty:1, rate:taxable, gstRate:exp?0:rate, accountId:salesAcc}],
+      taxable, cgst:g.cgst, sgst:g.sgst, igst:g.igst, total, amount:total, isInterState:inter, isExport:exp,
+      costCentreId:cc, departmentId:dept, lines, status:'Posted', createdAt:stamp};
+    vouchers.push(v); return v;
+  };
+  const mkPurchase = (date, pid, purAcc, taxable, rate, {inter=false, cc=CC.a, dept=D.prod}={}) => {
+    const g = gst(taxable, rate, inter);
+    const total = r2(taxable+g.cgst+g.sgst+g.igst);
+    const p = partyOf(pid);
+    const lines = [{id:uid(), accountId:purAcc, debit:taxable, credit:0, narration:'Purchase', costCentreId:cc, departmentId:dept}];
+    if(g.igst) lines.push({id:uid(), accountId:'2602', debit:g.igst, credit:0, narration:'IGST Input'});
+    if(g.cgst) lines.push({id:uid(), accountId:'2600', debit:g.cgst, credit:0, narration:'CGST Input'});
+    if(g.sgst) lines.push({id:uid(), accountId:'2601', debit:g.sgst, credit:0, narration:'SGST Input'});
+    lines.push({id:uid(), accountId:'1300', debit:0, credit:total, narration:'To '+p.name, partyId:pid});
+    const v = {id:uid(), type:'PUR', date, number:vnum('PUR'), partyId:pid, partyName:p.name,
+      narration:'Purchase from '+p.name, reference:'', placeOfSupply:p.stateCode,
+      items:[{id:uid(), description:'Materials', hsn:'998311', qty:1, rate:taxable, gstRate:rate, accountId:purAcc}],
+      taxable, cgst:g.cgst, sgst:g.sgst, igst:g.igst, total, amount:total, isInterState:inter,
+      costCentreId:cc, departmentId:dept, lines, status:'Posted', createdAt:stamp};
+    vouchers.push(v); return v;
+  };
+  const mkReceipt = (date, pid, amount, tagId, bank='2510') => {
+    const p = partyOf(pid);
+    const v = {id:uid(), type:'REC', date, number:vnum('REC'), partyId:pid, partyName:p.name,
+      narration:'Receipt from '+p.name, reference:'', amount, status:'Posted',
+      billTags: tagId?[{voucherId:tagId, allocated:amount}]:[], isAdvance:!tagId,
+      lines:[{id:uid(), accountId:bank, debit:amount, credit:0, narration:'Received from '+p.name},
+             {id:uid(), accountId:'2400', debit:0, credit:amount, narration:'From '+p.name, partyId:pid}],
+      createdAt:stamp};
+    vouchers.push(v); return v;
+  };
+  const mkPayVendor = (date, pid, amount, tagId, bank='2510') => {
+    const p = partyOf(pid);
+    const v = {id:uid(), type:'PAY', date, number:vnum('PAY'), partyId:pid, partyName:p.name,
+      narration:'Payment to '+p.name, reference:'', amount, status:'Posted',
+      billTags: tagId?[{voucherId:tagId, allocated:amount}]:[], isAdvance:!tagId,
+      lines:[{id:uid(), accountId:'1300', debit:amount, credit:0, narration:'Paid to '+p.name, partyId:pid},
+             {id:uid(), accountId:bank, debit:0, credit:amount, narration:'To '+p.name}],
+      createdAt:stamp};
+    vouchers.push(v); return v;
+  };
+  const mkExpTDS = (date, pid, expAcc, taxable, {gstRate=18, inter=false, tdsRate, tdsSection, tdsLedger, tdsNature, noGst=false, cc='', dept=D.admin, bank='2510'}) => {
+    const g = noGst ? {cgst:0,sgst:0,igst:0} : gst(taxable, gstRate, inter);
+    const tds = r2(taxable*tdsRate/100);
+    const gstTot = g.cgst+g.sgst+g.igst;
+    const net = r2(taxable+gstTot-tds);
+    const p = partyOf(pid);
+    const lines = [{id:uid(), accountId:expAcc, debit:taxable, credit:0, narration:tdsNature, costCentreId:cc, departmentId:dept}];
+    if(g.igst) lines.push({id:uid(), accountId:'2602', debit:g.igst, credit:0, narration:'IGST Input'});
+    if(g.cgst) lines.push({id:uid(), accountId:'2600', debit:g.cgst, credit:0, narration:'CGST Input'});
+    if(g.sgst) lines.push({id:uid(), accountId:'2601', debit:g.sgst, credit:0, narration:'SGST Input'});
+    lines.push({id:uid(), accountId:tdsLedger, debit:0, credit:tds, narration:'TDS '+tdsSection});
+    lines.push({id:uid(), accountId:bank, debit:0, credit:net, narration:'Net paid to '+p.name});
+    const v = {id:uid(), type:'PAY', date, number:vnum('PAY'), partyId:pid, partyName:p.name,
+      narration:tdsNature+' — '+p.name, reference:'', amount:r2(taxable+gstTot), status:'Posted',
+      tdsApplicable:true, tdsAmount:tds, tdsBaseAmount:taxable, tdsRate, tdsSection, tdsLedgerId:tdsLedger, tdsNature,
+      costCentreId:cc, departmentId:dept, lines, createdAt:stamp};
+    vouchers.push(v); return v;
+  };
+  const mkPay = (date, expAcc, amount, narr, {cc='', dept=D.admin, bank='2510', pid=''}={}) => {
+    const v = {id:uid(), type:'PAY', date, number:vnum('PAY'), partyId:pid, partyName:pid?partyOf(pid)?.name||'':'',
+      narration:narr, reference:'', amount, status:'Posted', costCentreId:cc, departmentId:dept,
+      lines:[{id:uid(), accountId:expAcc, debit:amount, credit:0, narration:narr, costCentreId:cc, departmentId:dept},
+             {id:uid(), accountId:bank, debit:0, credit:amount, narration:narr}],
+      createdAt:stamp};
+    vouchers.push(v); return v;
+  };
+  const mkJV = (date, lines, narr) => {
+    const v = {id:uid(), type:'JV', date, number:vnum('JV'), partyName:'', narration:narr, reference:'',
+      lines:lines.map(l=>({id:uid(), debit:0, credit:0, ...l})),
+      amount:lines.reduce((s,l)=>s+(l.debit||0),0), status:'Posted', createdAt:stamp};
+    vouchers.push(v); return v;
+  };
+  const mkContra = (date, fromAcc, toAcc, amount, narr) => {
+    const v = {id:uid(), type:'CON', date, number:vnum('CON'), partyName:'', narration:narr, reference:'',
+      lines:[{id:uid(), accountId:toAcc, debit:amount, credit:0, narration:narr},
+             {id:uid(), accountId:fromAcc, debit:0, credit:amount, narration:narr}],
+      amount, status:'Posted', createdAt:stamp};
+    vouchers.push(v); return v;
+  };
+  const mkCRN = (date, pid, salesAcc, taxable, rate, {inter=false, cc='', dept=D.sales}={}) => {
+    const g = gst(taxable, rate, inter); const total = r2(taxable+g.cgst+g.sgst+g.igst); const p = partyOf(pid);
+    const lines = [{id:uid(), accountId:salesAcc, debit:taxable, credit:0, narration:'Sales return', costCentreId:cc, departmentId:dept}];
+    if(g.igst) lines.push({id:uid(), accountId:'1312', debit:g.igst, credit:0, narration:'IGST reversal'});
+    if(g.cgst) lines.push({id:uid(), accountId:'1310', debit:g.cgst, credit:0, narration:'CGST reversal'});
+    if(g.sgst) lines.push({id:uid(), accountId:'1311', debit:g.sgst, credit:0, narration:'SGST reversal'});
+    lines.push({id:uid(), accountId:'2400', debit:0, credit:total, narration:'To '+p.name, partyId:pid});
+    const v = {id:uid(), type:'CRN', date, number:vnum('CRN'), partyId:pid, partyName:p.name,
+      narration:'Credit note to '+p.name, reference:'', placeOfSupply:p.stateCode,
+      items:[{id:uid(), description:'Sales Return', hsn:'998311', qty:1, rate:taxable, gstRate:rate, accountId:salesAcc}],
+      taxable, cgst:g.cgst, sgst:g.sgst, igst:g.igst, total, amount:total, isInterState:inter,
+      lines, status:'Posted', createdAt:stamp};
+    vouchers.push(v); return v;
+  };
+  const mkDBN = (date, pid, purAcc, taxable, rate, {inter=false, cc=CC.a, dept=D.prod}={}) => {
+    const g = gst(taxable, rate, inter); const total = r2(taxable+g.cgst+g.sgst+g.igst); const p = partyOf(pid);
+    const lines = [{id:uid(), accountId:'1300', debit:total, credit:0, narration:'To '+p.name, partyId:pid},
+                   {id:uid(), accountId:purAcc, debit:0, credit:taxable, narration:'Purchase return', costCentreId:cc, departmentId:dept}];
+    if(g.igst) lines.push({id:uid(), accountId:'2602', debit:0, credit:g.igst, narration:'IGST reversal'});
+    if(g.cgst) lines.push({id:uid(), accountId:'2600', debit:0, credit:g.cgst, narration:'CGST reversal'});
+    if(g.sgst) lines.push({id:uid(), accountId:'2601', debit:0, credit:g.sgst, narration:'SGST reversal'});
+    const v = {id:uid(), type:'DBN', date, number:vnum('DBN'), partyId:pid, partyName:p.name,
+      narration:'Debit note to '+p.name, reference:'', placeOfSupply:p.stateCode,
+      items:[{id:uid(), description:'Purchase Return', hsn:'998311', qty:1, rate:taxable, gstRate:rate, accountId:purAcc}],
+      taxable, cgst:g.cgst, sgst:g.sgst, igst:g.igst, total, amount:total, isInterState:inter,
+      lines, status:'Posted', createdAt:stamp};
+    vouchers.push(v); return v;
+  };
+  const runPayroll = (month) => {
+    const rows = employees.map(e => {
+      const gross = e.basic+e.hra+e.da+e.sa;
+      const pfEe = e.pfApplicable ? Math.round(Math.min(e.pfBase||e.basic,15000)*0.12) : 0;
+      const pfEr = pfEe, esicEe=0, esicEr=0, pt=e.ptAmount||200, tds=e.tdsSalary||0;
+      const totalDed = pfEe+esicEe+pt+tds, net = gross-totalDed;
+      return {empId:e.id, empCode:e.empCode, name:e.name, designation:e.designation, department:e.department,
+        pan:e.pan, uan:e.uan, bankAcc:e.bankAcc, basic:e.basic, hra:e.hra, da:e.da, sa:e.sa, allowances:[],
+        gross, pfEe, pfEr, esicEe, esicEr, pt, tds, totalDed, net};
+    });
+    const T = k => rows.reduce((s,l)=>s+l[k],0);
+    const tGross=T('gross'), tPfEe=T('pfEe'), tPfEr=T('pfEr'), tPT=T('pt'), tTDS=T('tds'), tNet=T('net');
+    const jl = [{id:uid(), accountId:'4200', debit:tGross, credit:0, narration:'Salary '+month, departmentId:D.admin}];
+    if(tPfEr>0) jl.push({id:uid(), accountId:'4210', debit:tPfEr, credit:0, narration:'Employer PF'});
+    if(tPfEe+tPfEr>0) jl.push({id:uid(), accountId:'1322', debit:0, credit:tPfEe+tPfEr, narration:'PF EE+ER'});
+    if(tPT>0) jl.push({id:uid(), accountId:'1324', debit:0, credit:tPT, narration:'Professional Tax'});
+    if(tTDS>0) jl.push({id:uid(), accountId:'1321', debit:0, credit:tTDS, narration:'TDS u/s 192'});
+    jl.push({id:uid(), accountId:'1320', debit:0, credit:tNet, narration:'Net salary payable'});
+    const jv = {id:uid(), type:'JV', date:month+'-28', number:vnum('JV'), partyName:'Payroll — '+month,
+      narration:'Being salary for '+month+' (3 employees)', reference:'Payroll', lines:jl,
+      amount:tGross+tPfEr, status:'Posted', createdAt:stamp};
+    vouchers.push(jv);
+    payrollRuns.push({id:uid(), month, processedAt:stamp, voucherId:jv.id, employees:rows,
+      totalGross:tGross, totalNet:tNet, totalPfEe:tPfEe, totalPfEr:tPfEr, totalEsicEe:0, totalEsicEr:0, totalPT:tPT, totalTDS:tTDS});
+    // Pay the net salary
+    vouchers.push({id:uid(), type:'PAY', date:month+'-30', number:vnum('PAY'), partyName:'', reference:'',
+      narration:'Net salary paid for '+month, amount:tNet, status:'Posted', createdAt:stamp,
+      lines:[{id:uid(), accountId:'1320', debit:tNet, credit:0, narration:'Salary paid'},
+             {id:uid(), accountId:'2510', debit:0, credit:tNet, narration:'Salary paid'}]});
+  };
+
+  // TDS preset shorthands
+  const TDS_J = {tdsRate:10, tdsSection:'194J — Professional', tdsLedger:'1316', tdsNature:'Professional/Technical Fees'};
+  const TDS_I = {tdsRate:10, tdsSection:'194I — Rent', tdsLedger:'1317', tdsNature:'Rent', noGst:true};
+  const TDS_C = {tdsRate:2,  tdsSection:'194C — Contractor', tdsLedger:'1315', tdsNature:'Contractor Payments'};
+
+  // ================= TRANSACTIONS (FY 2025-26) =================
+  // ---- April ----
+  const s1 = mkSale('2025-04-03', P.acme, '3100', 100000, 18, {cc:CC.a});
+  const s2 = mkSale('2025-04-08', P.reliance, '3100', 200000, 18, {inter:true, cc:CC.a});
+  const pu1 = mkPurchase('2025-04-05', P.birla, '4100', 80000, 18, {cc:CC.a});
+  mkPurchase('2025-04-10', P.mahesh, '4540', 15000, 18, {cc:CC.b, dept:D.admin});
+  mkExpTDS('2025-04-12', P.landlord, '4500', 50000, {...TDS_I, dept:D.admin});
+  mkReceipt('2025-04-20', P.acme, s1.total, s1.id);
+  mkPayVendor('2025-04-25', P.birla, pu1.total, pu1.id);
+  mkContra('2025-04-28', '2500', '2510', 20000, 'Cash deposited to Kotak bank');
+  runPayroll('2025-04');
+  // ---- May ----
+  const s3 = mkSale('2025-05-05', P.tcs, '3110', 150000, 18, {inter:true});
+  mkSale('2025-05-12', P.global, '3120', 300000, 0, {exp:true});
+  mkPurchase('2025-05-08', P.birla, '4110', 120000, 18, {cc:CC.b});
+  mkExpTDS('2025-05-15', P.sharma, '4550', 40000, {...TDS_J, dept:D.admin});
+  mkPay('2025-05-18', '4520', 9440, 'Telephone & Internet — Jio', {dept:D.admin});
+  mkReceipt('2025-05-22', P.reliance, s2.total, s2.id);
+  mkJV('2025-05-25', [{accountId:'4400', debit:15000}, {accountId:'2130', credit:15000}], 'Depreciation for April-May');
+  runPayroll('2025-05');
+  // ---- June ----
+  const s5 = mkSale('2025-06-04', P.acme, '3100', 90000, 18, {cc:CC.a});
+  const pu4 = mkPurchase('2025-06-07', P.birla, '4100', 60000, 18, {cc:CC.a});
+  mkExpTDS('2025-06-10', P.buildwell, '4505', 100000, {...TDS_C, cc:CC.b, dept:D.prod});
+  mkReceipt('2025-06-15', P.tcs, s3.total, s3.id);
+  mkContra('2025-06-20', '2510', '2511', 100000, 'Fund transfer Kotak → HDFC');
+  mkJV('2025-06-28', [{accountId:'4555', debit:25000}, {accountId:'1330', credit:25000}], 'Provision for audit fees');
+  runPayroll('2025-06');
+  // ---- July ----
+  const s6 = mkSale('2025-07-03', P.acme, '3110', 120000, 18, {cc:CC.b});
+  mkPurchase('2025-07-09', P.mahesh, '4540', 12000, 18, {cc:CC.b, dept:D.admin});
+  mkPay('2025-07-12', '4510', 18000, 'Electricity charges', {dept:D.admin});
+  mkPay('2025-07-15', '4300', 8000, 'Interest on bank loan', {dept:D.admin});
+  mkReceipt('2025-07-20', P.acme, s5.total, s5.id);
+  mkJV('2025-07-25', [{accountId:'4400', debit:15000}, {accountId:'2130', credit:15000}], 'Depreciation for June-July');
+  runPayroll('2025-07');
+  // ---- August ----
+  const s7 = mkSale('2025-08-05', P.reliance, '3100', 250000, 18, {inter:true, cc:CC.a});
+  const pu6 = mkPurchase('2025-08-08', P.birla, '4100', 100000, 18, {cc:CC.a});
+  mkExpTDS('2025-08-14', P.sharma, '4555', 30000, {...TDS_J, dept:D.admin});
+  mkPayVendor('2025-08-20', P.birla, pu6.total, pu6.id);
+  mkReceipt('2025-08-25', P.reliance, s7.total, s7.id);
+  // ---- September ----
+  mkSale('2025-09-04', P.global, '3120', 350000, 0, {exp:true});
+  mkPurchase('2025-09-10', P.birla, '4110', 140000, 18, {cc:CC.b});
+  mkExpTDS('2025-09-15', P.buildwell, '4505', 80000, {...TDS_C, cc:CC.b, dept:D.prod});
+  mkCRN('2025-09-18', P.acme, '3100', 20000, 18, {cc:CC.a});
+  mkJV('2025-09-25', [{accountId:'4400', debit:15000}, {accountId:'2130', credit:15000}], 'Depreciation for Aug-Sep');
+  // ---- October ----
+  const s9 = mkSale('2025-10-06', P.tcs, '3110', 180000, 18, {inter:true});
+  mkPurchase('2025-10-09', P.mahesh, '4540', 10000, 18, {cc:CC.b, dept:D.admin});
+  mkDBN('2025-10-12', P.birla, '4100', 15000, 18, {cc:CC.a});
+  mkPay('2025-10-18', '4310', 2500, 'Bank charges', {dept:D.admin});
+  mkReceipt('2025-10-22', P.tcs, s9.total, s9.id);
+  // ---- November ----
+  mkSale('2025-11-05', P.acme, '3100', 110000, 18, {cc:CC.a});
+  mkPurchase('2025-11-08', P.birla, '4100', 70000, 18, {cc:CC.a});
+  mkExpTDS('2025-11-15', P.landlord, '4500', 50000, {...TDS_I, dept:D.admin});
+  mkJV('2025-11-25', [{accountId:'4400', debit:15000}, {accountId:'2130', credit:15000}], 'Depreciation for Oct-Nov');
+
+  return {
+    company: {...DEFAULT_COMPANY, name:'Demo MSME Industries Pvt Ltd'},
+    coa, parties, vouchers,
+    forexRates: FOREX_RATES, gstr2bData: [],
+    employees, payrollRuns,
+    tdsSections: SEED_TDS_SECTIONS.map(s => ({...s, id: uid()})),
+    stockItems: [], boms: [], productionOrders: [],
+    costCentres, departments, bankRecon: [], allocations: [], bankRules: [],
+    auditLog: [auditEntry('SAMPLE_DATA', `Loaded sample dataset · ${vouchers.length} vouchers · FY 2025-26`)],
+  };
+};
+
+// ============================================================================
 // UPGRADE MODAL — shown when free tier limit is reached or from settings
 // ============================================================================
 function UpgradeModal({ data, setData, showToast, onClose, triggerReason='limit', companyId=null, userUid=null }) {
@@ -9269,12 +9562,58 @@ function DataManagement({data, setData, showToast}){
   // Data summary
   const sizeKB = (new Blob([JSON.stringify(data)])).size / 1024;
 
+  const loadSample = () => {
+    const sample = buildSampleData();
+    // Self-check: confirm the books tally before loading
+    const bal = {};
+    sample.coa.forEach(a => { bal[a.id] = a.opening || 0; });
+    sample.vouchers.forEach(v => { if(v.status!=='Cancelled') (v.lines||[]).forEach(l => {
+      bal[l.accountId] = (bal[l.accountId]||0) + (l.debit||0) - (l.credit||0);
+    });});
+    const totalDr = Object.values(bal).reduce((s,b)=>s+(b>0?b:0),0);
+    const totalCr = Object.values(bal).reduce((s,b)=>s+(b<0?-b:0),0);
+    const diff = Math.round((totalDr-totalCr)*100)/100;
+    if(Math.abs(diff) > 0.01){
+      showToast('Sample data tally error: Dr ₹'+fmt(totalDr)+' vs Cr ₹'+fmt(totalCr)+' (diff '+fmt(diff)+')', 'error');
+      return;
+    }
+    if(!confirm(
+      'Load complete SAMPLE DATA?\n\n'+
+      'This REPLACES all current data with a fully-tallied demo company:\n'+
+      '• '+sample.vouchers.length+' vouchers (Sales, Purchase, Payment, Receipt, JV, Contra, Credit/Debit Notes)\n'+
+      '• GST: intra-state, inter-state & export · TDS: 194C / 194J / 194I\n'+
+      '• 4 months payroll (PF, PT, TDS) · '+sample.employees.length+' employees\n'+
+      '• Cost Centres, Departments, bill-tagged receipts/payments\n\n'+
+      '✓ Trial Balance tallies: Dr = Cr = ₹'+fmt(totalDr)+'\n\n'+
+      'Proceed? (Export a backup first if you have real data.)'
+    )) return;
+    setData(sample);
+    showToast('✓ Sample data loaded — '+sample.vouchers.length+' vouchers · Books tally at ₹'+fmt(totalDr));
+  };
+
   return (
     <>
       <div className="page-head">
         <div>
           <h1 className="page-title">Data Management</h1>
           <div className="page-sub">Export, import & backup your MiyeeBooks data</div>
+        </div>
+      </div>
+
+      {/* Sample data loader */}
+      <div className="card" style={{marginBottom:18, border:'1px solid var(--primary)', background:'var(--primary-soft)'}}>
+        <div className="card-body" style={{display:'flex', alignItems:'center', justifyContent:'space-between', gap:16, flexWrap:'wrap'}}>
+          <div>
+            <div style={{fontWeight:700, fontSize:14, marginBottom:3}}>🎁 Load Complete Sample Data</div>
+            <div style={{fontSize:12, color:'var(--ink-2)', maxWidth:620}}>
+              A fully-tallied FY 2025-26 demo company — 50+ vouchers across every type, GST (intra/inter/export),
+              TDS (194C/J/I), 4 months of payroll, cost centres &amp; departments, and bill-tagged settlements.
+              Perfect for exploring every report. <b>Replaces current data.</b>
+            </div>
+          </div>
+          <button className="btn btn-primary" onClick={loadSample} style={{padding:'12px 22px', fontWeight:700, whiteSpace:'nowrap'}}>
+            🎁 Load Sample Data
+          </button>
         </div>
       </div>
 
