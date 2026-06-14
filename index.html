@@ -371,7 +371,15 @@ const loadData = () => {
   return null;
 };
 const saveData = (data) => {
-  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(data)); } catch(e){}
+  try {
+    // Cap the unbounded audit log so localStorage (≈5 MB) doesn't silently overflow
+    const toSave = (data.auditLog && data.auditLog.length > 1000)
+      ? { ...data, auditLog: data.auditLog.slice(-1000) } : data;
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(toSave));
+  } catch(e){
+    // localStorage full — warn once so the user knows to enable cloud sync / export
+    console.warn('saveData: localStorage write failed (quota?)', e);
+  }
 };
 
 // ============================================================================
@@ -420,17 +428,47 @@ const fbListCompanies = async (uid) => {
   } catch(e){ console.warn('fbListCompanies:', e); return []; }
 };
 
+// ── Chunked storage ─────────────────────────────────────────────────────────
+// Firestore caps a document at 1 MB. Storing the whole company as one JSON blob
+// silently fails (→ data loss) once a business has a few thousand vouchers.
+// We therefore split large payloads across a `chunks` subcollection.
+const FB_CHUNK_SIZE = 250000;   // chars/chunk — safely < 1 MB even with multibyte (₹) chars
+const FB_AUDIT_CAP  = 1000;     // keep only the most recent N audit entries when persisting
+
+// Trim the unbounded audit log before persisting (prevents the blob inflating forever)
+const capAudit = (data) => (data.auditLog && data.auditLog.length > FB_AUDIT_CAP)
+  ? { ...data, auditLog: data.auditLog.slice(-FB_AUDIT_CAP) }
+  : data;
+
+const fbClearChunks = async (ref, keepFrom = 0) => {
+  try {
+    const snap = await ref.collection('chunks').get();
+    if(snap.empty) return;
+    const batch = fbDb.batch(); let n = 0;
+    snap.docs.forEach(d => { if((d.data().i ?? 0) >= keepFrom){ batch.delete(d.ref); n++; } });
+    if(n > 0) await batch.commit();
+  } catch(e){ console.warn('fbClearChunks:', e); }
+};
+
 const fbLoadCompany = async (uid, companyId) => {
   if(!fbDb) return null;
   try {
-    const snap = await fbCompanyRef(uid, companyId).get();
+    const ref  = fbCompanyRef(uid, companyId);
+    const snap = await ref.get();
     if(!snap.exists) return null;
     const doc  = snap.data();
-    const data = JSON.parse(doc.payload || 'null');
+    // Reassemble payload from chunks if the company was stored chunked.
+    let payloadStr;
+    if(doc.chunked === true){
+      const chunkSnap = await ref.collection('chunks').orderBy('i').get();
+      payloadStr = chunkSnap.docs.map(d => d.data().d).join('');
+    } else {
+      payloadStr = doc.payload || 'null';
+    }
+    const data = JSON.parse(payloadStr || 'null');
     if(!data) return null;
-    // isPremium is stored as a TOP-LEVEL Firestore field so the developer
-    // can set it directly in Firebase Console without touching the payload.
-    // The app always trusts the Firestore field over anything in the payload.
+    // isPremium is stored as a TOP-LEVEL Firestore field so the developer can set
+    // it directly in Firebase Console; the app always trusts the field over payload.
     if(doc.isPremium === true){
       data.company.isPremium    = true;
       data.company.premiumSince = doc.premiumSince || data.company.premiumSince || '';
@@ -443,19 +481,27 @@ const fbLoadCompany = async (uid, companyId) => {
 
 const fbSaveCompany = async (uid, companyId, data) => {
   if(!fbDb) return;
-  await fbCompanyRef(uid, companyId).set({
-    name:         data.company?.name     || 'My Company',
-    gstin:        data.company?.gstin    || '',
-    updatedAt:    firebase.firestore.FieldValue.serverTimestamp(),
-    payload:      JSON.stringify(data),
-    // isPremium is a top-level field so the developer can set it directly
-    // in Firebase Console without parsing the payload JSON.
-    // We write it here only if it's already true (never downgrade via app save).
-    ...(data.company?.isPremium ? {
-      isPremium:    true,
-      premiumSince: data.company.premiumSince || '',
-    } : {}),
-  }, { merge: true });
+  const ref = fbCompanyRef(uid, companyId);
+  const payload = JSON.stringify(capAudit(data));
+  const meta = {
+    name:      data.company?.name  || 'My Company',
+    gstin:     data.company?.gstin || '',
+    updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+    // top-level premium flag (developer-set) — only ever written true, never downgraded here
+    ...(data.company?.isPremium ? { isPremium: true, premiumSince: data.company.premiumSince || '' } : {}),
+  };
+  if(payload.length <= FB_CHUNK_SIZE){
+    await ref.set({ ...meta, payload, chunked: false, chunkCount: 0 }, { merge: true });
+    await fbClearChunks(ref, 0);   // remove any leftover chunks from a previous large save
+  } else {
+    const chunks = [];
+    for(let i = 0; i < payload.length; i += FB_CHUNK_SIZE) chunks.push(payload.slice(i, i + FB_CHUNK_SIZE));
+    const batch = fbDb.batch();
+    chunks.forEach((c, idx) => batch.set(ref.collection('chunks').doc('c' + String(idx).padStart(4,'0')), { i: idx, d: c }));
+    await batch.commit();
+    await fbClearChunks(ref, chunks.length);  // delete stale chunks beyond the new count
+    await ref.set({ ...meta, payload: '', chunked: true, chunkCount: chunks.length }, { merge: true });
+  }
 };
 
 const fbCreateCompany = async (uid, initialData) => {
@@ -467,13 +513,16 @@ const fbCreateCompany = async (uid, initialData) => {
     createdAt: firebase.firestore.FieldValue.serverTimestamp(),
     updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
     payload:   JSON.stringify(initialData),
+    chunked:   false, chunkCount: 0,
   });
   return ref.id;
 };
 
 const fbDeleteCompany = async (uid, companyId) => {
   if(!fbDb) return;
-  await fbCompanyRef(uid, companyId).delete();
+  const ref = fbCompanyRef(uid, companyId);
+  await fbClearChunks(ref, 0);   // delete the chunks subcollection (Firestore won't cascade)
+  await ref.delete();
 };
 
 // Friendly Firebase auth error messages
@@ -2829,6 +2878,7 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
       {id:'hr_payslips', label:'Payslips', ico:'⊡'},
     ]}] : []),
     {section:'🔍 Auditor', items:[
+      {id:'health', label:'Data Health Check', ico:'❤'},
       {id:'audit_log', label:'Audit Trail', ico:'🔍'},
       {id:'year_end', label:'Year-End Closing', ico:'🔒'},
       {id:'datamanage', label:'Export / Import', ico:'⇋'},
@@ -2962,6 +3012,7 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
           {page==='pnl_trend' && <PnLTrend data={data} />}
           {page==='billwise' && <BillwiseAgeing data={data} />}
           {page==='adv_tax' && <AdvanceTax data={data} />}
+          {page==='health' && <HealthCheck data={data} setPage={setPage} />}
           {page==='audit_log' && <AuditLog data={data} />}
           {page==='year_end' && <YearEndClose data={data} setData={canWrite?setData:()=>{}} showToast={showToast} />}
           {page==='ledger_stmt' && <LedgerStatement data={data} balances={ledgerBalances} />}
@@ -5246,6 +5297,10 @@ function Vouchers({data, setData, showToast, readOnly=false}){
   const isAtLimit = !prem && activeCount >= FREE_VOUCHER_LIMIT;
   const [vtype, setVtype] = useState('JV');
   const [filter, setFilter] = useState('All');
+  const [search, setSearch] = useState('');
+  const [page, setPage] = useState(1);
+  const vPageSize = 50;
+  useEffect(() => { setPage(1); }, [filter, search]);
 
   // NEW multi-line format: each CSV row = one journal line; rows grouped by (date+type+reference) = one voucher
   const VCHR_SAMPLE_HEADERS = ['date','type','reference','narration','accountCode','debit','credit','partyName','partyGSTIN','partyType','costCentre','department'];
@@ -5369,8 +5424,15 @@ function Vouchers({data, setData, showToast, readOnly=false}){
     return { count: imported.length };
   };
 
-  const filteredVouchers = data.vouchers.filter(v => filter==='All' || v.type === filter)
-    .sort((a,b) => b.date.localeCompare(a.date));
+  const filteredVouchers = data.vouchers
+    .filter(v => filter==='All' || v.type === filter)
+    .filter(v => { if(!search) return true; const q=search.toLowerCase();
+      return (v.number||'').toLowerCase().includes(q) || (v.partyName||'').toLowerCase().includes(q)
+          || (v.narration||'').toLowerCase().includes(q) || (v.reference||'').toLowerCase().includes(q); })
+    .sort((a,b) => b.date.localeCompare(a.date) || (b.number||'').localeCompare(a.number||''));
+  const vTotalPages = Math.max(1, Math.ceil(filteredVouchers.length / vPageSize));
+  const vCurPage    = Math.min(page, vTotalPages);
+  const pageVouchers = filteredVouchers.slice((vCurPage-1)*vPageSize, vCurPage*vPageSize);
 
   const openNew = (type) => {
     if(isAtLimit){ setShowUpgradeGate(true); return; }
@@ -5490,6 +5552,12 @@ function Vouchers({data, setData, showToast, readOnly=false}){
             {VOUCHER_TYPES.map(vt => <option key={vt.code} value={vt.code}>{vt.name} ({vt.code})</option>)}
           </select>
         </div>
+        <div className="field" style={{flex:1,minWidth:200}}><label>Search</label>
+          <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Voucher no, party, narration, reference…" />
+        </div>
+        <div style={{marginLeft:'auto',alignSelf:'flex-end',fontSize:12,color:'var(--ink-3)',paddingBottom:6}}>
+          {filteredVouchers.length} voucher{filteredVouchers.length!==1?'s':''}
+        </div>
       </div>
 
       <div className="table-wrap">
@@ -5499,8 +5567,8 @@ function Vouchers({data, setData, showToast, readOnly=false}){
           </thead>
           <tbody>
             {filteredVouchers.length === 0 ? (
-              <tr><td colSpan="8"><div className="empty"><div className="empty-ico">∅</div><div>No vouchers yet  pick a type above to start.</div></div></td></tr>
-            ) : filteredVouchers.map(v => (
+              <tr><td colSpan="8"><div className="empty"><div className="empty-ico">∅</div><div>{search||filter!=='All'?'No vouchers match your filter.':'No vouchers yet — pick a type above to start.'}</div></div></td></tr>
+            ) : pageVouchers.map(v => (
               <tr key={v.id} style={{opacity:v.status==='Cancelled'?.5:1}}>
                 <td>{fmtDate(v.date)}</td>
                 <td style={{fontFamily:'var(--mono)', fontWeight:600}}>{v.number}</td>
@@ -5519,6 +5587,17 @@ function Vouchers({data, setData, showToast, readOnly=false}){
           </tbody>
         </table>
       </div>
+
+      {vTotalPages > 1 && (
+        <div style={{display:'flex',alignItems:'center',justifyContent:'center',gap:10,marginTop:14,fontSize:13}}>
+          <button className="btn btn-sm" disabled={vCurPage<=1} onClick={()=>setPage(1)}>« First</button>
+          <button className="btn btn-sm" disabled={vCurPage<=1} onClick={()=>setPage(vCurPage-1)}>‹ Prev</button>
+          <span style={{color:'var(--ink-3)'}}>Page <b style={{color:'var(--ink)'}}>{vCurPage}</b> of {vTotalPages}
+            <span style={{marginLeft:8}}>({(vCurPage-1)*vPageSize+1}–{Math.min(vCurPage*vPageSize, filteredVouchers.length)} of {filteredVouchers.length})</span></span>
+          <button className="btn btn-sm" disabled={vCurPage>=vTotalPages} onClick={()=>setPage(vCurPage+1)}>Next ›</button>
+          <button className="btn btn-sm" disabled={vCurPage>=vTotalPages} onClick={()=>setPage(vTotalPages)}>Last »</button>
+        </div>
+      )}
 
       {showModal && <VoucherModal vtype={vtype} voucher={editing} data={data} onSave={handleSave} onClose={() => { setShowModal(false); setEditing(null); }} showToast={showToast} />}
       {showImport && <CsvImportModal title="Bulk Import Vouchers" sampleHeaders={VCHR_SAMPLE_HEADERS} sampleRows={VCHR_SAMPLE_ROWS} sampleFilename="vouchers_import_template.csv" onImport={handleImportVouchers} onClose={() => setShowImport(false)} />}
@@ -6935,6 +7014,114 @@ function AdvanceTax({data}){
 
     <div style={{marginTop:12,fontSize:11,color:'var(--ink-3)'}}>
       ⚠ Working estimate — figures are editable and pre-filled from your books (profit annualised over {monthsElapsed} month{monthsElapsed!==1?'s':''}). Verify entity type, rate, surcharge slab and deductions with your CA before payment. Presumptive (44AD/44ADA) assessees pay 100% by 15 Mar.
+    </div>
+  </>);
+}
+
+// ============================================================================
+// DATA HEALTH CHECK — built-in integrity safety net
+// ============================================================================
+function HealthCheck({data, setPage}){
+  const checks = useMemo(() => {
+    const coaIds   = new Set(data.coa.map(a=>a.id));
+    const partyIds = new Set(data.parties.map(p=>p.id));
+    const active   = (data.vouchers||[]).filter(v=>v.status!=='Cancelled');
+
+    const unbalanced = active.filter(v => {
+      const dr=(v.lines||[]).reduce((s,l)=>s+(l.debit||0),0), cr=(v.lines||[]).reduce((s,l)=>s+(l.credit||0),0);
+      return Math.abs(dr-cr) > 0.01;
+    });
+    const orphan = [];
+    active.forEach(v => (v.lines||[]).forEach(l => { if(l.accountId && !coaIds.has(l.accountId)) orphan.push(v.number+' → '+l.accountId); }));
+    const bal = {}; data.coa.forEach(a=>bal[a.id]=a.opening||0);
+    active.forEach(v=>(v.lines||[]).forEach(l=>{ if(!(l.accountId in bal)) bal[l.accountId]=0; bal[l.accountId]+=(l.debit||0)-(l.credit||0); }));
+    const tbDr = Object.values(bal).reduce((s,b)=>s+(b>0?b:0),0);
+    const tbCr = Object.values(bal).reduce((s,b)=>s+(b<0?-b:0),0);
+    const tbDiff = Math.round((tbDr-tbCr)*100)/100;
+    const empty = active.filter(v => !(v.lines||[]).length || (v.lines||[]).every(l=>!(l.debit||0)&&!(l.credit||0)));
+    const missingParty = active.filter(v => v.partyId && !partyIds.has(v.partyId));
+    const gstMissing = active.filter(v => {
+      if(!['SAL','PUR','CRN','DBN'].includes(v.type)) return false;
+      if(((v.cgst||0)+(v.sgst||0)+(v.igst||0)) < 1) return false;
+      return !(v.lines||[]).some(l => ['1310','1311','1312','2600','2601','2602'].includes(l.accountId));
+    });
+    const negCash = data.coa.filter(a => (a.isBank || a.id==='2500') && (bal[a.id]||0) < -0.5);
+    const dupNums = (() => {
+      const seen={}, dups=new Set(); active.forEach(v=>{ if(v.number){ if(seen[v.number]) dups.add(v.number); seen[v.number]=1; } }); return [...dups];
+    })();
+    const sizeKB = new Blob([JSON.stringify(data)]).size/1024;
+    return {unbalanced, orphan, tbDr, tbCr, tbDiff, empty, missingParty, gstMissing, negCash, dupNums,
+      sizeKB, auditCount:(data.auditLog||[]).length, voucherCount:active.length};
+  }, [data]);
+
+  const items = [
+    { key:'tally', label:'Trial Balance tallies (Dr = Cr)', ok: Math.abs(checks.tbDiff)<1,
+      detail: Math.abs(checks.tbDiff)<1 ? `Dr = Cr = ₹${fmt(checks.tbDr)}` : `Out of balance by ₹${fmt(checks.tbDiff)} — there is an unbalanced or orphaned entry`,
+      fix:'Vouchers' },
+    { key:'unbal', label:'All vouchers balanced (Dr = Cr per entry)', ok: checks.unbalanced.length===0,
+      detail: checks.unbalanced.length===0 ? 'Every voucher is internally balanced' : `${checks.unbalanced.length} unbalanced: ${checks.unbalanced.slice(0,6).map(v=>v.number).join(', ')}`,
+      fix:'Vouchers' },
+    { key:'orphan', label:'No orphaned voucher lines (account exists in COA)', ok: checks.orphan.length===0,
+      detail: checks.orphan.length===0 ? 'Every line references a valid ledger' : `${checks.orphan.length} line(s) point to a deleted account: ${checks.orphan.slice(0,6).join(', ')}` },
+    { key:'empty', label:'No empty / zero-value vouchers', ok: checks.empty.length===0,
+      detail: checks.empty.length===0 ? 'No blank entries' : `${checks.empty.length}: ${checks.empty.slice(0,6).map(v=>v.number).join(', ')}` },
+    { key:'party', label:'No vouchers referencing a deleted party', ok: checks.missingParty.length===0,
+      detail: checks.missingParty.length===0 ? 'All party links valid' : `${checks.missingParty.length}: ${checks.missingParty.slice(0,6).map(v=>v.number).join(', ')}` },
+    { key:'dup', label:'No duplicate voucher numbers', ok: checks.dupNums.length===0,
+      detail: checks.dupNums.length===0 ? 'All voucher numbers unique' : `${checks.dupNums.length} duplicated: ${checks.dupNums.slice(0,6).join(', ')}` },
+    { key:'gst', label:'GST invoices post to GST ledgers', ok: checks.gstMissing.length===0, warn:true,
+      detail: checks.gstMissing.length===0 ? 'GST on every taxable invoice hits the GST ledgers' : `${checks.gstMissing.length} invoice(s) carry tax but no GST ledger line — GSTR reports may understate: ${checks.gstMissing.slice(0,5).map(v=>v.number).join(', ')}` },
+    { key:'cash', label:'No negative cash / bank balances', ok: checks.negCash.length===0, warn:true,
+      detail: checks.negCash.length===0 ? 'Cash and bank balances are non-negative' : `Negative: ${checks.negCash.map(a=>a.name).join(', ')} — check for missing receipts or wrong dates` },
+    { key:'size', label:'Data size within safe limits', ok: checks.sizeKB < 3500, warn:true,
+      detail: `${checks.sizeKB.toFixed(0)} KB · ${checks.voucherCount} active vouchers · ${checks.auditCount} audit entries` + (checks.sizeKB>=3500?' — approaching local/cloud limits; export a backup or close the FY':'') },
+  ];
+  const fails = items.filter(i=>!i.ok && !i.warn).length;
+  const warns = items.filter(i=>!i.ok && i.warn).length;
+
+  return (<>
+    <div className="page-head">
+      <div>
+        <h1 className="page-title">Data Health Check</h1>
+        <div className="page-sub">Live integrity checks across your books · run anytime before filing or year-end</div>
+      </div>
+    </div>
+
+    <div style={{display:'flex',gap:12,marginBottom:18,flexWrap:'wrap'}}>
+      <div className={'stat '+(fails===0?'':'stat-danger')} style={{flex:1,minWidth:160}}>
+        <div className="stat-label">Critical Issues</div>
+        <div className="stat-value" style={{color:fails===0?'var(--primary)':'var(--danger)'}}>{fails===0?'✓ 0':fails}</div>
+      </div>
+      <div className="stat stat-gold" style={{flex:1,minWidth:160}}>
+        <div className="stat-label">Warnings</div><div className="stat-value">{warns}</div>
+      </div>
+      <div className="stat stat-info" style={{flex:1,minWidth:160}}>
+        <div className="stat-label">Checks Passed</div><div className="stat-value">{items.filter(i=>i.ok).length}/{items.length}</div>
+      </div>
+    </div>
+
+    {fails===0 && warns===0 && (
+      <div style={{background:'#e8f5e9',border:'1px solid #a5d6a7',borderRadius:10,padding:'14px 18px',marginBottom:16,color:'#1b5e20',fontWeight:600}}>
+        ✓ All checks passed — your books are internally consistent and filing-ready.
+      </div>
+    )}
+
+    <div className="card">
+      <div className="card-body" style={{padding:0}}>
+        {items.map((it,i)=>(
+          <div key={it.key} style={{display:'flex',alignItems:'flex-start',gap:14,padding:'13px 18px',borderBottom:i<items.length-1?'1px solid var(--line-2)':'none'}}>
+            <span style={{fontSize:18,flexShrink:0,marginTop:1}}>{it.ok?'✅':it.warn?'⚠️':'❌'}</span>
+            <div style={{flex:1}}>
+              <div style={{fontWeight:600,fontSize:13,color:it.ok?'var(--ink)':it.warn?'#e65100':'var(--danger)'}}>{it.label}</div>
+              <div style={{fontSize:12,color:'var(--ink-3)',marginTop:2}}>{it.detail}</div>
+            </div>
+            {!it.ok && it.fix && <button className="btn btn-sm" onClick={()=>setPage(it.fix==='Vouchers'?'vouchers':it.fix)}>Review →</button>}
+          </div>
+        ))}
+      </div>
+    </div>
+    <div style={{marginTop:12,fontSize:11,color:'var(--ink-3)'}}>
+      These checks run live on every visit. A clean report means the Trial Balance, Balance Sheet and Cash Flow will all tally and GST reports will reconcile.
     </div>
   </>);
 }
