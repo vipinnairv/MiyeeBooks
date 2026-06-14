@@ -88,7 +88,8 @@
   .nav-item:hover{background:var(--surface-2);color:var(--ink)}
   .nav-item.active{background:var(--primary-soft);color:var(--primary);font-weight:600}
   .nav-item .ico{width:14px;height:14px;display:inline-flex;align-items:center;justify-content:center;font-size:13px}
-  .main{padding:22px 28px;overflow-x:auto}
+  .main{padding:22px 28px;overflow-x:auto;display:flex;flex-direction:column;min-height:calc(100vh - 45px)}
+  .main > .credit{margin-top:auto}
   /* Page header */
   .page-head{display:flex;justify-content:space-between;align-items:flex-end;margin-bottom:20px;padding-bottom:14px;border-bottom:1px solid var(--line)}
   .page-title{font-family:var(--serif);font-size:28px;font-weight:600;color:var(--ink);margin:0;letter-spacing:-.5px}
@@ -311,6 +312,13 @@ const fmt = (n, dec=2) => {
 };
 const today = () => new Date().toISOString().slice(0,10);
 const uid = () => Math.random().toString(36).slice(2,9);
+// Display an ISO date (YYYY-MM-DD) as DD-MM-YYYY for Indian convention.
+const fmtDate = (iso) => {
+  if(!iso) return '';
+  const s = String(iso).slice(0,10);
+  const m = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  return m ? `${m[3]}-${m[2]}-${m[1]}` : iso;
+};
 // PT helper (Gujarat): Rs200/month, manual (keep ptAmount editable)
 // Monthly: returns 0 if not joined, else ptAmount (user sets this)
 const calcPTMonthly = (employee, month, fyStart) => {
@@ -768,8 +776,17 @@ const numberToWords = (num) => {
   return 'Indian Rupees ' + result + ' Only';
 };
 
+// Invoice template themes (Zoho-style — pick in Company Settings)
+const INVOICE_TEMPLATES = {
+  classic:   { name:'Classic Green',  accent:'#0b6b4f', accent2:'#c9a227' },
+  corporate: { name:'Corporate Blue', accent:'#1565c0', accent2:'#ff8f00' },
+  royal:     { name:'Royal Purple',   accent:'#6a1b9a', accent2:'#c9a227' },
+  slate:     { name:'Minimal Slate',  accent:'#37474f', accent2:'#90a4ae' },
+  crimson:   { name:'Crimson Red',    accent:'#b71c1c', accent2:'#37474f' },
+};
 function generateInvoicePDF(voucher, appData){
   const co = appData.company;
+  const tpl = INVOICE_TEMPLATES[co.invoiceTemplate] || INVOICE_TEMPLATES.classic;
   const party = appData.parties.find(p => p.id === voucher.partyId) || {};
   const isCredit = voucher.type === 'CRN';
   const isDebit = voucher.type === 'DBN';
@@ -1001,7 +1018,9 @@ function generateInvoicePDF(voucher, appData){
     alert('Pop-up blocked! Please allow pop-ups for this site and try again.');
     return;
   }
-  win.document.write(html);
+  // Apply selected invoice template theme (recolours headers, totals, borders, accents)
+  const themed = html.replace(/#0b6b4f/g, tpl.accent).replace(/#c9a227/g, tpl.accent2);
+  win.document.write(themed);
   win.document.close();
   win.focus();
 }
@@ -1113,6 +1132,7 @@ const DEFAULT_COMPANY = {
   isPremium:    false,
   premiumSince: '',
   booksLockedUpto: '',   // vouchers on/before this date cannot be added/edited/cancelled
+  invoiceTemplate: 'classic',
 };
 
 // ── Audit trail helper ───────────────────────────────────────────────────────
@@ -2564,6 +2584,7 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
       if(saved.company.isPremium === undefined) saved.company.isPremium = false;
       if(!saved.company.premiumSince) saved.company.premiumSince = '';
       if(!saved.company.booksLockedUpto) saved.company.booksLockedUpto = '';
+      if(!saved.company.invoiceTemplate) saved.company.invoiceTemplate = 'classic';
       // Migrate: ensure new TDS-payable ledgers (ITA-2025 sections) exist
       ['1325','1326','1327','1328','1329'].forEach(id => {
         if(saved.coa && !saved.coa.find(a => a.id === id)){
@@ -2673,6 +2694,7 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
         if(cloudData.company.isPremium === undefined) cloudData.company.isPremium = false;
         if(!cloudData.company.premiumSince) cloudData.company.premiumSince = '';
         if(!cloudData.company.booksLockedUpto) cloudData.company.booksLockedUpto = '';
+        if(!cloudData.company.invoiceTemplate) cloudData.company.invoiceTemplate = 'classic';
         ['1325','1326','1327','1328','1329'].forEach(id => {
           if(cloudData.coa && !cloudData.coa.find(a => a.id === id)){
             const seed = SEED_COA.find(a => a.id === id);
@@ -3770,8 +3792,8 @@ function LedgerDrillModal({accountIds, title, data, from, to, onClose}){
     const hdr = multiAcc ? 'Date,Account,Voucher,Type,Narration,Debit,Credit,Balance\n'
                          : 'Date,Voucher,Type,Narration,Debit,Credit,Balance\n';
     const body = tableRows.map(r => multiAcc
-      ? `${r.date},"${r.account}",${r.vno},${r.type},"${r.narration}",${r.dr.toFixed(2)},${r.cr.toFixed(2)},${r.bal.toFixed(2)}`
-      : `${r.date},${r.vno},${r.type},"${r.narration}",${r.dr.toFixed(2)},${r.cr.toFixed(2)},${r.bal.toFixed(2)}`
+      ? `${fmtDate(r.date)},"${r.account}",${r.vno},${r.type},"${r.narration}",${r.dr.toFixed(2)},${r.cr.toFixed(2)},${r.bal.toFixed(2)}`
+      : `${fmtDate(r.date)},${r.vno},${r.type},"${r.narration}",${r.dr.toFixed(2)},${r.cr.toFixed(2)},${r.bal.toFixed(2)}`
     ).join('\n');
     downloadCSV(`Ledger_${title.replace(/[^a-z0-9]/gi,'_')}_${from}_${to}.csv`, hdr+body);
   };
@@ -3781,7 +3803,7 @@ function LedgerDrillModal({accountIds, title, data, from, to, onClose}){
       <div className="modal" style={{maxWidth:900,maxHeight:'88vh',display:'flex',flexDirection:'column'}} onClick={e=>e.stopPropagation()}>
         <div className="modal-header" style={{display:'flex',alignItems:'center',gap:10}}>
           <span style={{fontWeight:700}}>📒 {title}</span>
-          <span style={{fontSize:11,color:'var(--ink-3)'}}>Period: {from} → {to}</span>
+          <span style={{fontSize:11,color:'var(--ink-3)'}}>Period: {fmtDate(from)} → {fmtDate(to)}</span>
           <div style={{marginLeft:'auto',display:'flex',gap:8}}>
             <button className="btn btn-sm" onClick={handleCSV}>⬇ CSV</button>
             <button onClick={onClose} style={{background:'none',border:'none',fontSize:20,cursor:'pointer',color:'var(--ink-3)',lineHeight:1}}>×</button>
@@ -3813,7 +3835,7 @@ function LedgerDrillModal({accountIds, title, data, from, to, onClose}){
               )}
               {tableRows.map((r,i)=>(
                 <tr key={i} style={{borderBottom:'1px solid var(--line)',background:i%2===0?'':'var(--surface-2)'}}>
-                  <td style={{padding:'6px 12px',fontFamily:'var(--mono)',fontSize:12}}>{r.date}</td>
+                  <td style={{padding:'6px 12px',fontFamily:'var(--mono)',fontSize:12}}>{fmtDate(r.date)}</td>
                   {multiAcc && <td style={{padding:'6px 12px',fontSize:11,color:'var(--ink-3)'}}>{r.account}</td>}
                   <td style={{padding:'6px 12px',fontFamily:'var(--mono)',fontSize:11,color:'var(--ink-3)'}}>{r.vno}</td>
                   <td style={{padding:'6px 12px'}}>
@@ -4003,7 +4025,7 @@ function Dashboard({data, balances, setPage, setData=()=>{}, showToast=()=>{}}){
                 <tbody>
                   {recentVouchers.map(v => (
                     <tr key={v.id}>
-                      <td>{v.date}</td>
+                      <td>{fmtDate(v.date)}</td>
                       <td><span className="badge badge-info">{v.type}</span></td>
                       <td style={{fontFamily:'var(--mono)'}}>{v.number}</td>
                       <td>{v.narration||''}</td>
@@ -4084,6 +4106,18 @@ function CsvImportModal({ title, sampleHeaders, sampleRows, sampleFilename, onIm
           <div style={{background:'var(--surface-2)',borderRadius:10,padding:'14px 18px',marginBottom:16,border:'1px solid var(--line)'}}>
             <div style={{fontWeight:600,fontSize:13,marginBottom:5}}>Step 1  Download the sample template</div>
             <div style={{fontSize:12,color:'var(--ink-3)',marginBottom:10}}>Fill in your data and save as CSV. Do not rename the column headers.</div>
+            {/* Expected columns so the user knows exactly which fields to enter */}
+            <div style={{marginBottom:12}}>
+              <div style={{fontSize:11,fontWeight:600,color:'var(--ink-2)',marginBottom:6}}>Columns expected ({sampleHeaders.length}) — <span style={{color:'var(--danger)'}}>★ required</span>:</div>
+              <div style={{display:'flex',flexWrap:'wrap',gap:6}}>
+                {sampleHeaders.map((h,i) => (
+                  <span key={h} style={{fontSize:11,fontFamily:'var(--mono)',background:'var(--surface)',border:'1px solid var(--line)',
+                    borderRadius:6,padding:'3px 9px',color: i<2?'var(--danger)':'var(--ink-2)',fontWeight: i<2?700:400}}>
+                    {i<2?'★ ':''}{h}
+                  </span>
+                ))}
+              </div>
+            </div>
             <button className="btn btn-sm" onClick={handleDownloadSample}>⬇ Download Sample CSV Template</button>
           </div>
           <div style={{background:'var(--surface-2)',borderRadius:10,padding:'14px 18px',marginBottom:16,border:'1px solid var(--line)'}}>
@@ -5009,6 +5043,41 @@ function CompanySettings({data, setData, showToast, readOnly=false}){
         </div>
       </div>
 
+      {/* Invoice Template */}
+      <div className="card" style={{marginBottom:18}}>
+        <div className="card-head">
+          <h3 className="card-title">GST Invoice Template</h3>
+          <span style={{fontSize:11,color:'var(--ink-3)'}}>Choose a design theme for Tax Invoices / Credit / Debit Notes</span>
+        </div>
+        <div className="card-body">
+          <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(180px,1fr))',gap:12}}>
+            {Object.entries(INVOICE_TEMPLATES).map(([key,t]) => {
+              const sel = (f.invoiceTemplate||'classic') === key;
+              return (
+                <div key={key} onClick={() => setF({...f, invoiceTemplate:key})}
+                  style={{cursor:'pointer',border:`2px solid ${sel?t.accent:'var(--line-2)'}`,borderRadius:8,overflow:'hidden',
+                    boxShadow:sel?`0 2px 10px ${t.accent}33`:'none',background:'#fff'}}>
+                  {/* mini invoice preview */}
+                  <div style={{background:t.accent,color:'#fff',padding:'8px 10px',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+                    <span style={{fontWeight:700,fontSize:11}}>TAX INVOICE</span>
+                    <span style={{width:14,height:14,borderRadius:'50%',background:t.accent2}}></span>
+                  </div>
+                  <div style={{padding:'8px 10px'}}>
+                    <div style={{height:5,background:'#eee',borderRadius:3,marginBottom:5,width:'70%'}}></div>
+                    <div style={{height:5,background:'#eee',borderRadius:3,marginBottom:8,width:'45%'}}></div>
+                    <div style={{borderTop:`2px solid ${t.accent}`,paddingTop:6,display:'flex',justifyContent:'space-between',fontSize:10}}>
+                      <span style={{color:t.accent,fontWeight:700}}>{t.name}</span>
+                      {sel && <span style={{color:t.accent,fontWeight:700}}>✓</span>}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          <div style={{marginTop:10,fontSize:11,color:'var(--ink-3)'}}>The selected theme recolours invoice headers, totals and accents. Click Save Settings to apply, then print any Sales invoice.</div>
+        </div>
+      </div>
+
       {/* Module Configuration */}
       <div className="card" style={{marginBottom:18}}>
         <div className="card-head">
@@ -5313,7 +5382,7 @@ function Vouchers({data, setData, showToast, readOnly=false}){
   const handleSave = (v) => {
     // Period lock: no posting/editing into a closed FY
     if(isDateLocked(data.company, v.date)){
-      showToast(`Books are locked up to ${data.company.booksLockedUpto}  cannot post on ${v.date}`,'error');
+      showToast(`Books are locked up to ${data.company.booksLockedUpto}  cannot post on ${fmtDate(v.date)}`,'error');
       return;
     }
     if(editing && isDateLocked(data.company, editing.date)){
@@ -5323,7 +5392,7 @@ function Vouchers({data, setData, showToast, readOnly=false}){
     if(editing){
       setData(prev => ({...prev,
         vouchers: prev.vouchers.map(x => x.id === editing.id ? {...v, id:editing.id} : x),
-        auditLog: [...(prev.auditLog||[]), auditEntry('EDIT', `${editing.number} (${v.type}) ₹${fmt(v.amount||0)} dt ${v.date}`)],
+        auditLog: [...(prev.auditLog||[]), auditEntry('EDIT', `${editing.number} (${v.type}) ₹${fmt(v.amount||0)} dt ${fmtDate(v.date)}`)],
       }));
       showToast('Voucher updated: ' + v.number);
     } else {
@@ -5332,7 +5401,7 @@ function Vouchers({data, setData, showToast, readOnly=false}){
         const num = v.type + '/' + (typeVouchers.length + 1).toString().padStart(4,'0');
         return {...prev,
           vouchers: [...prev.vouchers, {...v, id:uid(), number:v.number||num, createdAt:new Date().toISOString()}],
-          auditLog: [...(prev.auditLog||[]), auditEntry('CREATE', `${v.number||num} (${v.type}) ₹${fmt(v.amount||0)} dt ${v.date}`)],
+          auditLog: [...(prev.auditLog||[]), auditEntry('CREATE', `${v.number||num} (${v.type}) ₹${fmt(v.amount||0)} dt ${fmtDate(v.date)}`)],
         };
       });
       showToast('Voucher posted: ' + (v.number || v.type));
@@ -5349,7 +5418,7 @@ function Vouchers({data, setData, showToast, readOnly=false}){
     if(!confirm('Cancel voucher ' + v.number + '?')) return;
     setData({...data,
       vouchers: data.vouchers.map(x => x.id === v.id ? {...x, status:'Cancelled'} : x),
-      auditLog: [...(data.auditLog||[]), auditEntry('CANCEL', `${v.number} (${v.type}) ₹${fmt(v.amount||0)} dt ${v.date}`)],
+      auditLog: [...(data.auditLog||[]), auditEntry('CANCEL', `${v.number} (${v.type}) ₹${fmt(v.amount||0)} dt ${fmtDate(v.date)}`)],
     });
     showToast('Voucher cancelled');
   };
@@ -5433,7 +5502,7 @@ function Vouchers({data, setData, showToast, readOnly=false}){
               <tr><td colSpan="8"><div className="empty"><div className="empty-ico">∅</div><div>No vouchers yet  pick a type above to start.</div></div></td></tr>
             ) : filteredVouchers.map(v => (
               <tr key={v.id} style={{opacity:v.status==='Cancelled'?.5:1}}>
-                <td>{v.date}</td>
+                <td>{fmtDate(v.date)}</td>
                 <td style={{fontFamily:'var(--mono)', fontWeight:600}}>{v.number}</td>
                 <td><span className="badge badge-info">{v.type}</span></td>
                 <td>{v.partyName || ''}</td>
@@ -5871,13 +5940,14 @@ function VoucherModal({vtype, voucher, data, onSave, onClose, showToast}){
                   {vtype==='SAL'||vtype==='CRN'?'Customer':vtype==='PUR'||vtype==='DBN'?'Vendor':'Party'}
                   {['PAY','REC'].includes(vtype) && <span style={{fontWeight:400,fontSize:10,color:'var(--ink-3)',marginLeft:6}}> select to include in party statement</span>}
                 </label>
-                <select value={f.partyId} onChange={e => {
-                  const p = data.parties.find(x => x.id === e.target.value);
-                  setF({...f, partyId:e.target.value, partyName: p?.name||'', currency: p?.currency||'INR', placeOfSupply: p?.stateCode || data.company.stateCode});
-                }}>
-                  <option value=""> Select Party </option>
-                  {data.parties.filter(p => isGstVoucher ? (vtype==='SAL'||vtype==='CRN' ? p.type==='Customer' : p.type==='Vendor') : true).map(p => <option key={p.id} value={p.id}>{p.name} {p.gstin?'· '+p.gstin:''}</option>)}
-                </select>
+                <SearchableSelect
+                  options={data.parties.filter(p => isGstVoucher ? (vtype==='SAL'||vtype==='CRN' ? p.type==='Customer' : p.type==='Vendor') : true).map(p => ({value:p.id, label:p.name + (p.gstin?' · '+p.gstin:'')}))}
+                  value={f.partyId}
+                  onChange={v => {
+                    const p = data.parties.find(x => x.id === v);
+                    setF({...f, partyId:v, partyName: p?.name||'', currency: p?.currency||'INR', placeOfSupply: p?.stateCode || data.company.stateCode});
+                  }}
+                  placeholder="Type to search party…" />
               </div>
             )}
             {isGstVoucher && (
@@ -6017,19 +6087,15 @@ function VoucherModal({vtype, voucher, data, onSave, onClose, showToast}){
                   <div style={{display:'grid', gridTemplateColumns:'1fr 1fr 180px', gap:14}}>
                     <div className="field">
                       <label>{vtype==='CON' ? '↓ To (Dr)  Receiving Account' : vtype==='PAY' ? 'Pay From (Bank / Cash)' : 'Deposit To (Bank / Cash)'}</label>
-                      <select value={spBank} onChange={e => setSpBank(e.target.value)}
-                        style={{padding:'8px 10px', border:'1px solid var(--line-2)', borderRadius:6, fontSize:13, width:'100%', background:'var(--surface)', color:'var(--ink)'}}>
-                        <option value=""> Select Bank / Cash </option>
-                        {bankCash.map(a => <option key={a.id} value={a.id}>{a.id} · {a.name}</option>)}
-                      </select>
+                      <SearchableSelect
+                        options={bankCash.map(a => ({value:a.id, label:a.id+' · '+a.name}))}
+                        value={spBank} onChange={v => setSpBank(v)} placeholder="Type to search bank / cash…" />
                     </div>
                     <div className="field">
                       <label>{vtype==='CON' ? '↑ From (Cr)  Source Account' : vtype==='PAY' ? 'Pay To (Vendor / Expense)' : 'Receive From (Customer / Income)'}</label>
-                      <select value={spContra} onChange={e => setSpContra(e.target.value)}
-                        style={{padding:'8px 10px', border:'1px solid var(--line-2)', borderRadius:6, fontSize:13, width:'100%', background:'var(--surface)', color:'var(--ink)'}}>
-                        <option value=""> Select Account </option>
-                        {contraOptions.map(a => <option key={a.id} value={a.id}>{a.id} · {a.name}</option>)}
-                      </select>
+                      <SearchableSelect
+                        options={contraOptions.map(a => ({value:a.id, label:a.id+' · '+a.name}))}
+                        value={spContra} onChange={v => setSpContra(v)} placeholder="Type to search account…" />
                     </div>
                     <div className="field">
                       <label>Amount (₹)</label>
@@ -6620,7 +6686,7 @@ function BillwiseAgeing({data}){
           ) : rows.map(r=>(
             <tr key={r.id} style={r.settled?{opacity:.6,background:'#f0fdf4'}:{}}>
               <td style={{fontWeight:500}}>{r.party}</td>
-              <td style={{fontSize:12}}>{r.date}</td>
+              <td style={{fontSize:12}}>{fmtDate(r.date)}</td>
               <td style={{fontFamily:'var(--mono)',fontSize:12}}>{r.number}</td>
               <td className="num">{fmt(r.total)}</td>
               <td className="num" style={{color:'var(--ink-3)'}}>{r.paid?fmt(r.paid):''}</td>
@@ -7036,7 +7102,7 @@ function BankReconciliation({data, setData, showToast}){
 
   const totalDr   = filtered.reduce((s,r)=>s+r.debit,0);
   const totalCr   = filtered.reduce((s,r)=>s+r.credit,0);
-  const reconCount = filtered.filter(r=>reconSet.has(`${r.date}|${r.ref||r.desc}|${(r.debit||r.credit).toFixed(2)}`)).length;
+  const reconCount = filtered.filter(r=>reconSet.has(`${fmtDate(r.date)}|${r.ref||r.desc}|${(r.debit||r.credit).toFixed(2)}`)).length;
 
   return (
     <>
@@ -7121,7 +7187,7 @@ function BankReconciliation({data, setData, showToast}){
                   <th style={{width:38}}>
                     <input type="checkbox" onChange={e => {
                       const unreconciled = filtered.filter(r=>{
-                        const br=`${r.date}|${r.ref||r.desc}|${(r.debit||r.credit).toFixed(2)}`;
+                        const br=`${fmtDate(r.date)}|${r.ref||r.desc}|${(r.debit||r.credit).toFixed(2)}`;
                         return !reconSet.has(br);
                       }).map(r=>r.idx);
                       setSelected(e.target.checked ? new Set(unreconciled) : new Set());
@@ -7176,11 +7242,11 @@ function BankReconciliation({data, setData, showToast}){
                               <option value="direct">Direct / Advance / Opening</option>
                               {suggestions.length>0 && <option disabled>── Suggested matches ──</option>}
                               {suggestions.map(v=>(
-                                <option key={v.id} value={v.id}>{v.date} · {v.number} · {v.type} · ₹{fmt(v.total)}</option>
+                                <option key={v.id} value={v.id}>{fmtDate(v.date)} · {v.number} · {v.type} · ₹{fmt(v.total)}</option>
                               ))}
                               {suggestions.length>0 && <option disabled>── All vouchers ──</option>}
                               {bookVouchers.filter(v=>!suggestions.find(s=>s.id===v.id)).slice(0,40).map(v=>(
-                                <option key={v.id+'all'} value={v.id}>{v.date} · {v.number} · {v.type} · ₹{fmt(v.total)}</option>
+                                <option key={v.id+'all'} value={v.id}>{fmtDate(v.date)} · {v.number} · {v.type} · ₹{fmt(v.total)}</option>
                               ))}
                             </select>
                           )}
@@ -7267,7 +7333,7 @@ function BankReconciliation({data, setData, showToast}){
                 return (
                   <tr key={i}>
                     <td style={{fontSize:11,color:'var(--ink-3)'}}>{i+1}</td>
-                    <td style={{fontSize:12}}>{r.date}</td>
+                    <td style={{fontSize:12}}>{fmtDate(r.date)}</td>
                     <td style={{fontSize:12}}>{r.desc}</td>
                     <td style={{fontFamily:'var(--mono)',fontSize:11,color:'var(--ink-3)'}}>{r.ref}</td>
                     <td className="num" style={{color:r.debit?'var(--danger)':''}}>{r.debit?fmt(r.debit):''}</td>
@@ -7300,6 +7366,9 @@ function DayBook({data}){
   const [from, setFrom] = useState(data.company.fyStart);
   const [to, setTo] = useState(today());
   const [typeFilter, setTypeFilter] = useState('All');
+  const [page, setPage] = useState(1);
+  const pageSize = 100;
+  useEffect(() => { setPage(1); }, [from, to, typeFilter]);   // reset to first page on filter change
 
   const entries = data.vouchers
     .filter(v => v.status !== 'Cancelled' && v.date >= from && v.date <= to)
@@ -7335,6 +7404,10 @@ function DayBook({data}){
 
   const totalDr = rows.reduce((s,r) => s + r.drAmt, 0);
   const totalCr = rows.reduce((s,r) => s + r.crAmt, 0);
+
+  const totalPages = Math.max(1, Math.ceil(rows.length / pageSize));
+  const curPage    = Math.min(page, totalPages);
+  const pageRows   = rows.slice((curPage-1)*pageSize, curPage*pageSize);
 
   const handleExcel = () => {
     exportXLSX(`DayBook_${from}_${to}.xlsx`, [{
@@ -7390,14 +7463,14 @@ function DayBook({data}){
           <tbody>
             {rows.length === 0 ? (
               <tr><td colSpan="9"><div className="empty"><div className="empty-ico">∅</div><div>No vouchers in this period</div></div></td></tr>
-            ) : rows.map((r, idx) => (
+            ) : pageRows.map((r, idx) => (
               <tr key={r.key}
                 style={{
                   borderTop: r.isFirst && idx > 0 ? '2px solid var(--line)' : undefined,
                   background: r.isFirst && idx > 0 ? 'var(--surface-2)' : undefined,
                 }}>
                 <td style={{color:'var(--ink-3)', fontSize:11, fontFamily:'var(--mono)'}}>{r.sr}</td>
-                <td style={{fontSize:12, whiteSpace:'nowrap'}}>{r.date}</td>
+                <td style={{fontSize:12, whiteSpace:'nowrap'}}>{fmtDate(r.date)}</td>
                 <td style={{fontFamily:'var(--mono)', fontSize:12, fontWeight: r.vchNo ? 600 : 400, color:'var(--ink-2)'}}>{r.vchNo}</td>
                 <td>{r.type ? <span className="badge badge-info" style={{fontSize:10}}>{r.type}</span> : ''}</td>
                 <td style={{color:'var(--primary)', fontSize:13}}>{r.drAcc}</td>
@@ -7413,7 +7486,7 @@ function DayBook({data}){
             ))}
             {rows.length > 0 && (
               <tr className="total">
-                <td colSpan="4" style={{textAlign:'right'}}>TOTAL</td>
+                <td colSpan="4" style={{textAlign:'right'}}>TOTAL (all {rows.length} rows)</td>
                 <td></td>
                 <td className="num">₹{fmt(totalDr)}</td>
                 <td></td>
@@ -7424,6 +7497,19 @@ function DayBook({data}){
           </tbody>
         </table>
       </div>
+
+      {totalPages > 1 && (
+        <div style={{display:'flex',alignItems:'center',justifyContent:'center',gap:10,marginTop:14,fontSize:13}}>
+          <button className="btn btn-sm" disabled={curPage<=1} onClick={()=>setPage(1)}>« First</button>
+          <button className="btn btn-sm" disabled={curPage<=1} onClick={()=>setPage(curPage-1)}>‹ Prev</button>
+          <span style={{color:'var(--ink-3)'}}>
+            Page <b style={{color:'var(--ink)'}}>{curPage}</b> of {totalPages}
+            <span style={{marginLeft:8}}>(rows {(curPage-1)*pageSize+1}–{Math.min(curPage*pageSize, rows.length)} of {rows.length})</span>
+          </span>
+          <button className="btn btn-sm" disabled={curPage>=totalPages} onClick={()=>setPage(curPage+1)}>Next ›</button>
+          <button className="btn btn-sm" disabled={curPage>=totalPages} onClick={()=>setPage(totalPages)}>Last »</button>
+        </div>
+      )}
     </>
   );
 }
@@ -7501,7 +7587,7 @@ function TrialBalance({data, balances}){
           <div className="report-co">{data.company.name}</div>
           <div style={{fontSize:11,color:'var(--ink-3)'}}>{data.company.address} · GSTIN: {data.company.gstin}</div>
           <div className="report-title">Trial Balance</div>
-          <div className="report-period">Period: {from} to {to}</div>
+          <div className="report-period">Period: {fmtDate(from)} to {fmtDate(to)}</div>
         </div>
         <table>
           <thead>
@@ -7659,7 +7745,7 @@ function ProfitLoss({data, balances}){
       <div className="page-head">
         <div>
           <h1 className="page-title">Profit & Loss Statement</h1>
-          <div className="page-sub">Schedule III · Period: {from} → {to} · Click any line to view ledger details</div>
+          <div className="page-sub">Schedule III · Period: {fmtDate(from)} → {fmtDate(to)} · Click any line to view ledger details</div>
         </div>
         <div className="page-actions">
           <button className={'btn btn-sm'+(compare?' btn-primary':'')} onClick={()=>setCompare(!compare)}
@@ -7679,7 +7765,7 @@ function ProfitLoss({data, balances}){
           <div className="report-co">{data.company.name}</div>
           <div style={{fontSize:11,color:'var(--ink-3)'}}>CIN: {data.company.cin} · GSTIN: {data.company.gstin}</div>
           <div className="report-title">Statement of Profit & Loss</div>
-          <div className="report-period">For the period {from} to {to}</div>
+          <div className="report-period">For the period {fmtDate(from)} to {fmtDate(to)}</div>
         </div>
 
         <table>
@@ -7728,7 +7814,7 @@ function ProfitLoss({data, balances}){
         <div style={{marginTop:24}}>
           <div style={{fontWeight:700,fontSize:13,borderBottom:'2px solid var(--ink)',paddingBottom:6,marginBottom:10,display:'flex',alignItems:'center',gap:8}}>
             <span style={{background:'var(--primary)',color:'#fff',borderRadius:4,padding:'2px 9px',fontSize:12}}>Note A</span>
-            <span>Income Breakdown (Period: {from} to {to})</span>
+            <span>Income Breakdown (Period: {fmtDate(from)} to {fmtDate(to)})</span>
           </div>
           <table>
             <thead><tr>
@@ -7761,7 +7847,7 @@ function ProfitLoss({data, balances}){
         <div style={{marginTop:18}}>
           <div style={{fontWeight:700,fontSize:13,borderBottom:'2px solid var(--ink)',paddingBottom:6,marginBottom:10,display:'flex',alignItems:'center',gap:8}}>
             <span style={{background:'var(--danger)',color:'#fff',borderRadius:4,padding:'2px 9px',fontSize:12}}>Note B</span>
-            <span>Expense Breakdown (Period: {from} to {to})</span>
+            <span>Expense Breakdown (Period: {fmtDate(from)} to {fmtDate(to)})</span>
           </div>
           <table>
             <thead><tr>
@@ -8128,7 +8214,7 @@ function CashFlow({data, balances}){
       <div className="page-head">
         <div>
           <h1 className="page-title">Cash Flow Statement</h1>
-          <div className="page-sub">AS-3 (Revised) · Indirect Method · Period: {from} → {to}</div>
+          <div className="page-sub">AS-3 (Revised) · Indirect Method · Period: {fmtDate(from)} → {fmtDate(to)}</div>
         </div>
         <div className="page-actions">
           <button className="btn btn-sm" onClick={handleExcel}>⬇ Excel</button>
@@ -8145,7 +8231,7 @@ function CashFlow({data, balances}){
           {data.company.logo && <img className="report-logo" src={data.company.logo} alt="Logo" />}
           <div className="report-co">{data.company.name}</div>
           <div className="report-title">Cash Flow Statement</div>
-          <div className="report-period">For the period {from} to {to}</div>
+          <div className="report-period">For the period {fmtDate(from)} to {fmtDate(to)}</div>
         </div>
         <table>
           <thead><tr><th>Particulars</th><th className="num" style={{width:200}}>Amount (₹)</th></tr></thead>
@@ -8191,7 +8277,7 @@ function CashFlow({data, balances}){
           </tbody>
         </table>
         <div className="report-foot">
-          <span>Prepared under AS-3 (Indirect Method) · Period: {from} to {to}</span>
+          <span>Prepared under AS-3 (Indirect Method) · Period: {fmtDate(from)} to {fmtDate(to)}</span>
           <span>MiyeeBooks · For {data.company.name}</span>
         </div>
       </div>
@@ -8418,7 +8504,7 @@ function GSTR1({data}){
                   <td style={{fontFamily:'var(--mono)',fontSize:11}}>{p?.gstin||''}</td>
                   <td>{p?.name||v.partyName}</td>
                   <td style={{fontFamily:'var(--mono)'}}>{v.number}</td>
-                  <td>{v.date}</td>
+                  <td>{fmtDate(v.date)}</td>
                   <td>{v.placeOfSupply||p?.stateCode}</td>
                   <td><span className="badge badge-muted">N</span></td>
                   <td className="num">{fmt(v.total||0)}</td>
@@ -8442,7 +8528,7 @@ function GSTR1({data}){
             <tbody>
               {b2cl.length===0 ? <tr><td colSpan="7"><div className="empty">No large inter-state B2C invoices in this period (requires value &gt; ₹2.5L)</div></td></tr> :
               b2cl.map(v=>(
-                <tr key={v.id}><td style={{fontFamily:'var(--mono)'}}>{v.number}</td><td>{v.date}</td><td>{v.placeOfSupply}</td>
+                <tr key={v.id}><td style={{fontFamily:'var(--mono)'}}>{v.number}</td><td>{fmtDate(v.date)}</td><td>{v.placeOfSupply}</td>
                   <td className="num">{fmt(v.total||0)}</td><td className="num">{fmt(v.taxable||0)}</td><td className="num">{fmt(v.igst||0)}</td><td className="num">0.00</td></tr>
               ))}
             </tbody>
@@ -8458,7 +8544,7 @@ function GSTR1({data}){
             <tbody>
               {exports_.length===0 ? <tr><td colSpan="9"><div className="empty">No exports in this period</div></td></tr> :
               exports_.map(v=>(
-                <tr key={v.id}><td><span className="badge badge-info">EXPWOP</span></td><td style={{fontFamily:'var(--mono)'}}>{v.number}</td><td>{v.date}</td>
+                <tr key={v.id}><td><span className="badge badge-info">EXPWOP</span></td><td style={{fontFamily:'var(--mono)'}}>{v.number}</td><td>{fmtDate(v.date)}</td>
                   <td className="num">{fmt(v.total||0)}</td><td className="num">{fmt(v.taxable||0)}</td><td className="num">0.00</td><td></td><td></td><td></td></tr>
               ))}
             </tbody>
@@ -8506,7 +8592,7 @@ function GSTR1({data}){
                   <tr key={v.id}>
                     <td style={{fontFamily:'var(--mono)',fontSize:11}}>{p?.gstin}</td>
                     <td><span className={'badge '+(v.type==='CRN'?'badge-danger':'badge-info')}>{v.type==='CRN'?'Credit Note':'Debit Note'}</span></td>
-                    <td style={{fontFamily:'var(--mono)'}}>{v.number}</td><td>{v.date}</td>
+                    <td style={{fontFamily:'var(--mono)'}}>{v.number}</td><td>{fmtDate(v.date)}</td>
                     <td>{v.isInterState?'Inter-State':'Intra-State'}</td>
                     <td className="num">{fmt(v.total||0)}</td><td className="num">{fmt(v.taxable||0)}</td>
                     <td className="num">{fmt(v.igst||0)}</td><td className="num">{fmt(v.cgst||0)}</td><td className="num">{fmt(v.sgst||0)}</td>
@@ -8524,7 +8610,7 @@ function GSTR1({data}){
                 cdnur.map(v=>(
                   <tr key={v.id}><td>B2CL</td>
                     <td><span className={'badge '+(v.type==='CRN'?'badge-danger':'badge-info')}>{v.type==='CRN'?'Credit Note':'Debit Note'}</span></td>
-                    <td style={{fontFamily:'var(--mono)'}}>{v.number}</td><td>{v.date}</td><td>{v.placeOfSupply}</td>
+                    <td style={{fontFamily:'var(--mono)'}}>{v.number}</td><td>{fmtDate(v.date)}</td><td>{v.placeOfSupply}</td>
                     <td className="num">{fmt(v.total||0)}</td><td className="num">{fmt(v.taxable||0)}</td>
                     <td className="num">{fmt(v.igst||0)}</td><td className="num">{fmt(v.cgst||0)}</td><td className="num">{fmt(v.sgst||0)}</td>
                   </tr>
@@ -8622,15 +8708,31 @@ function GSTR3B({data, balances}){
   // 3.2 Interstate supplies breakdown
   const interStateUnreg = sales.filter(v=>v.isInterState&&v.type!=='CRN'&&(()=>{const p=data.parties.find(x=>x.id===v.partyId);return !p||!p.gstin;})());
 
-  // 4 ITC (net of debit notes)
-  const signP = v => v.type==='DBN' ? -1 : 1;
-  const itcIgst = purchases.reduce((s,v)=>s+signP(v)*(v.igst||0),0);
-  const itcCgst = purchases.reduce((s,v)=>s+signP(v)*(v.cgst||0),0);
-  const itcSgst = purchases.reduce((s,v)=>s+signP(v)*(v.sgst||0),0);
+  // Period ledger movements (needed for ledger-based ITC)
+  const periodStart = activePeriods[0] + '-01';
+  const lastP = activePeriods[activePeriods.length-1];
+  const periodEnd = lastP + '-' + String(new Date(parseInt(lastP.slice(0,4)), parseInt(lastP.slice(5,7)), 0).getDate()).padStart(2,'0');
+  const pbLedger = useMemo(() => computePeriodBals(data, periodStart, periodEnd), [data, periodStart, periodEnd]);
+  const ledgerMv = (id, isOutput) => isOutput ? -(pbLedger.period[id]||0) : (pbLedger.period[id]||0);
 
-  // ITC utilization order per CGST rules:
-  // IGST ITC → IGST first, then CGST, then SGST
-  // CGST ITC → CGST only; SGST ITC → SGST only
+  // 4. ITC available = INPUT GST LEDGER movements for the period.
+  // This is the legally claimable ITC — it includes input GST on PURCHASES *and*
+  // on expenses (rent, professional fees, telephone, repairs with GST), which are
+  // posted via Payment/Journal vouchers. Restricting ITC to purchase invoices
+  // alone understates the claim and causes a false books-vs-return mismatch.
+  const itcIgst = ledgerMv('2602', false);
+  const itcCgst = ledgerMv('2600', false);
+  const itcSgst = ledgerMv('2601', false);
+  // Invoice-only ITC (PUR/DBN vouchers) — for the data-quality reconciliation below
+  const signP = v => v.type==='DBN' ? -1 : 1;
+  const itcCgstInv = purchases.reduce((s,v)=>s+signP(v)*(v.cgst||0),0);
+  const itcSgstInv = purchases.reduce((s,v)=>s+signP(v)*(v.sgst||0),0);
+  const itcIgstInv = purchases.reduce((s,v)=>s+signP(v)*(v.igst||0),0);
+
+  // ITC set-off order per Rule 88A / Sec 49A & 49B (IGST credit fully first, then
+  // CGST/SGST against own head, then IGST):
+  //   IGST ITC → IGST liab, then CGST, then SGST
+  //   CGST ITC → CGST liab, then IGST · SGST ITC → SGST liab, then IGST
   let liabIgst=Math.max(0,outIgst), liabCgst=Math.max(0,outCgst), liabSgst=Math.max(0,outSgst);
   let remIgst=itcIgst, remCgst=itcCgst, remSgst=itcSgst;
 
@@ -8638,29 +8740,34 @@ function GSTR3B({data, balances}){
   let r;
   r=use(liabIgst,remIgst); const igstFromIgst=r.used; liabIgst=r.liabLeft; remIgst=r.rem;
   r=use(liabCgst,remIgst); const cgstFromIgst=r.used; liabCgst=r.liabLeft; remIgst=r.rem;
-  r=use(liabSgst,remIgst); const sgstFromIgst=r.used; liabSgst=r.liabLeft;
-  r=use(liabCgst,remCgst); const cgstFromCgst=r.used; liabCgst=r.liabLeft;
-  r=use(liabSgst,remSgst); const sgstFromSgst=r.used; liabSgst=r.liabLeft;
+  r=use(liabSgst,remIgst); const sgstFromIgst=r.used; liabSgst=r.liabLeft; remIgst=r.rem;
+  r=use(liabCgst,remCgst); const cgstFromCgst=r.used; liabCgst=r.liabLeft; remCgst=r.rem;
+  r=use(liabIgst,remCgst); const igstFromCgst=r.used; liabIgst=r.liabLeft; remCgst=r.rem;
+  r=use(liabSgst,remSgst); const sgstFromSgst=r.used; liabSgst=r.liabLeft; remSgst=r.rem;
+  r=use(liabIgst,remSgst); const igstFromSgst=r.used; liabIgst=r.liabLeft; remSgst=r.rem;
 
   const cashIgst=liabIgst, cashCgst=liabCgst, cashSgst=liabSgst;
   const totalCash=cashIgst+cashCgst+cashSgst;
-  const itcUsedIgst=igstFromIgst, itcUsedCgst=cgstFromIgst+cgstFromCgst, itcUsedSgst=sgstFromIgst+sgstFromSgst;
+  const itcUsedIgst=igstFromIgst+igstFromCgst+igstFromSgst, itcUsedCgst=cgstFromIgst+cgstFromCgst, itcUsedSgst=sgstFromIgst+sgstFromSgst;
+  const itcBalIgst=remIgst, itcBalCgst=remCgst, itcBalSgst=remSgst;   // carry-forward credit
 
-  // ── Return vs Books reconciliation (ledger movements for the same period) ──
-  const periodStart = activePeriods[0] + '-01';
-  const lastP = activePeriods[activePeriods.length-1];
-  const periodEnd = lastP + '-' + String(new Date(parseInt(lastP.slice(0,4)), parseInt(lastP.slice(5,7)), 0).getDate()).padStart(2,'0');
-  const pbLedger = useMemo(() => computePeriodBals(data, periodStart, periodEnd), [data, periodStart, periodEnd]);
-  const ledgerMv = (id, isOutput) => isOutput ? -(pbLedger.period[id]||0) : (pbLedger.period[id]||0);
+  // ── Books reconciliation: invoices vs ledger ──
+  // Output: invoice tax must equal output-GST ledger (else a sale was posted as JV).
+  // ITC: ledger ≥ purchase-invoice ITC is NORMAL (the excess is expense ITC).
   const reconRows = [
-    {label:'Output CGST', books:ledgerMv('1310',true), ret:Math.max(0,outCgst)},
-    {label:'Output SGST', books:ledgerMv('1311',true), ret:Math.max(0,outSgst)},
-    {label:'Output IGST', books:ledgerMv('1312',true), ret:Math.max(0,outIgst)},
-    {label:'ITC  CGST Input', books:ledgerMv('2600',false), ret:itcCgst},
-    {label:'ITC  SGST Input', books:ledgerMv('2601',false), ret:itcSgst},
-    {label:'ITC  IGST Input', books:ledgerMv('2602',false), ret:itcIgst},
-  ].map(r => ({...r, diff:r.ret - r.books}));
-  const reconOk = reconRows.every(r => Math.abs(r.diff) < 1);
+    {label:'Output CGST', kind:'output', ledger:ledgerMv('1310',true), inv:Math.max(0,outCgst)},
+    {label:'Output SGST', kind:'output', ledger:ledgerMv('1311',true), inv:Math.max(0,outSgst)},
+    {label:'Output IGST', kind:'output', ledger:ledgerMv('1312',true), inv:Math.max(0,outIgst)},
+    {label:'ITC — CGST Input', kind:'itc', ledger:ledgerMv('2600',false), inv:itcCgstInv},
+    {label:'ITC — SGST Input', kind:'itc', ledger:ledgerMv('2601',false), inv:itcSgstInv},
+    {label:'ITC — IGST Input', kind:'itc', ledger:ledgerMv('2602',false), inv:itcIgstInv},
+  ].map(r => {
+    const diff = r.ledger - r.inv;   // +ve for ITC = expense ITC (good); for output should be 0
+    const isError = r.kind==='output' ? Math.abs(diff) >= 1 : diff < -1; // ITC: invoice exceeding ledger = error
+    return {...r, diff, isError, expenseITC: r.kind==='itc' && diff > 1 ? diff : 0};
+  });
+  const reconOk = reconRows.every(r => !r.isError);
+  const totalExpenseITC = reconRows.reduce((s,r)=>s+(r.expenseITC||0),0);
 
   const row3=(label,taxable,igst,cgst,sgst,cess=0)=>(
     <tr><td>{label}</td><td className="num">{fmt(taxable)}</td><td className="num">{fmt(igst)}</td><td className="num">{fmt(cgst)}</td><td className="num">{fmt(sgst)}</td><td className="num">{fmt(cess)}</td></tr>
@@ -8724,43 +8831,45 @@ function GSTR3B({data, balances}){
         <div className="stat stat-danger"><div className="stat-label">Net Cash to Pay</div><div className="stat-value rupee">₹{fmt(totalCash)}</div></div>
       </div>
 
-      {/* Return vs Books reconciliation */}
+      {/* Books reconciliation: invoices vs ledger */}
       <div className="card" style={{marginBottom:16}}>
         <div className="card-head" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
-          <h3 className="card-title">⚖ Return vs Books Reconciliation  {periodLabel}</h3>
+          <h3 className="card-title">⚖ GST Books Reconciliation — {periodLabel}</h3>
           {reconOk
-            ? <span className="badge badge-success">✓ Tallied</span>
-            : <span className="badge badge-danger">⚠ Mismatch found</span>}
+            ? <span className="badge badge-success">✓ Reconciled</span>
+            : <span className="badge badge-danger">⚠ Error — check entries</span>}
         </div>
         <div className="card-body" style={{padding:0,overflowX:'auto'}}>
           <table style={{width:'100%',borderCollapse:'collapse',fontSize:12.5}}>
             <thead><tr style={{background:'var(--surface-2)',borderBottom:'1px solid var(--line)'}}>
               <th style={{padding:'9px 16px',textAlign:'left'}}>Particulars</th>
-              <th style={{padding:'9px 16px',textAlign:'right',width:140}}>Per Return (₹)</th>
-              <th style={{padding:'9px 16px',textAlign:'right',width:140}}>Per Ledger (₹)</th>
-              <th style={{padding:'9px 16px',textAlign:'right',width:130}}>Difference (₹)</th>
+              <th style={{padding:'9px 16px',textAlign:'right',width:150}}>Per Invoices (₹)</th>
+              <th style={{padding:'9px 16px',textAlign:'right',width:150}}>Per Ledger (₹)</th>
+              <th style={{padding:'9px 16px',textAlign:'right',width:170}}>Difference (₹)</th>
             </tr></thead>
             <tbody>
               {reconRows.map(r=>(
                 <tr key={r.label} style={{borderBottom:'1px solid var(--line-2)',
-                  background:Math.abs(r.diff)>=1?'#fff8e1':'transparent'}}>
+                  background:r.isError?'#fdecea':r.expenseITC?'#e8f5e9':'transparent'}}>
                   <td style={{padding:'8px 16px'}}>{r.label}</td>
-                  <td style={{padding:'8px 16px',textAlign:'right',fontFamily:'var(--mono)'}}>{fmt(r.ret)}</td>
-                  <td style={{padding:'8px 16px',textAlign:'right',fontFamily:'var(--mono)'}}>{fmt(r.books)}</td>
+                  <td style={{padding:'8px 16px',textAlign:'right',fontFamily:'var(--mono)'}}>{fmt(r.inv)}</td>
+                  <td style={{padding:'8px 16px',textAlign:'right',fontFamily:'var(--mono)'}}>{fmt(r.ledger)}</td>
                   <td style={{padding:'8px 16px',textAlign:'right',fontFamily:'var(--mono)',fontWeight:600,
-                    color:Math.abs(r.diff)<1?'var(--primary)':'var(--danger)'}}>
-                    {Math.abs(r.diff)<1 ? '✓ 0.00' : fmt(r.diff)}
+                    color:r.isError?'var(--danger)':r.expenseITC?'var(--primary)':'var(--primary)'}}>
+                    {r.isError ? fmt(r.diff)
+                      : r.expenseITC ? '+'+fmt(r.expenseITC)+' ITC on expenses'
+                      : '✓ 0.00'}
                   </td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
-        {!reconOk && (
-          <div style={{padding:'8px 16px',fontSize:11,color:'var(--ink-3)',borderTop:'1px solid var(--line-2)'}}>
-            Differences usually mean a sales/purchase voucher was posted as a Journal (bypassing GST ledgers), or GST was posted manually without an invoice. Check the period's JV entries.
-          </div>
-        )}
+        <div style={{padding:'8px 16px',fontSize:11,color:'var(--ink-3)',borderTop:'1px solid var(--line-2)'}}>
+          {reconOk
+            ? <>✓ Output tax matches invoices.{totalExpenseITC>0 ? <> Ledger ITC is ₹{fmt(totalExpenseITC)} higher than purchase invoices — this is <b>input GST on expenses</b> (rent, professional fees, telephone, repairs), which is legitimately claimable.</> : ''}</>
+            : <>⚠ An <b>output-tax</b> difference means a sale was posted as a Journal (bypassing GST ledgers), or ITC in a purchase invoice did not hit the input-GST ledger. Check the period's JV entries.</>}
+        </div>
       </div>
 
       <div className="report">
@@ -9315,7 +9424,7 @@ function Forex({data, setData, showToast}){
                 const fxAmt = inr / (v.fxRate || 1);
                 return (
                   <tr key={v.id}>
-                    <td>{v.date}</td>
+                    <td>{fmtDate(v.date)}</td>
                     <td><span className="badge badge-info">{v.type}</span></td>
                     <td style={{fontFamily:'var(--mono)'}}>{v.number}</td>
                     <td>{v.partyName}</td>
@@ -11355,7 +11464,7 @@ function TDSReport({data}){
       <div className="page-head">
         <div>
           <h1 className="page-title">TDS Deducted Report</h1>
-          <div className="page-sub">All TDS deductions · Section-wise summary · {from} to {to}</div>
+          <div className="page-sub">All TDS deductions · Section-wise summary · {fmtDate(from)} to {fmtDate(to)}</div>
         </div>
         <div className="page-actions">
           <button className="btn" onClick={() => window.print()}>⎙ Print</button>
@@ -11528,7 +11637,7 @@ function TDSReport({data}){
                 const nature = v.tdsNature || secObj?.nature || '';
                 return (
                   <tr key={i}>
-                    <td>{v.date}</td>
+                    <td>{fmtDate(v.date)}</td>
                     <td style={{fontFamily:'var(--mono)', fontWeight:600, fontSize:11}}>{v.number}</td>
                     <td><span className={'badge '+(v.type==='PAYROLL'?'badge-gold':'badge-info')}>{v.type}</span></td>
                     <td><b>{v.partyName||''}</b>{party?.gstin && <div style={{fontSize:9, color:'var(--ink-3)', fontFamily:'var(--mono)'}}>{party.gstin}</div>}</td>
@@ -12322,7 +12431,7 @@ function LedgerStatement({data, balances}){
   const handleCSV = () => {
     const hdr = 'Date,Voucher No,Type,Narration,Debit,Credit,Balance\n';
     const body = tableRows.map(r =>
-      `${r.date},${r.vno},${r.type},"${r.narration}",${r.dr.toFixed(2)},${r.cr.toFixed(2)},${r.bal.toFixed(2)}`
+      `${fmtDate(r.date)},${r.vno},${r.type},"${r.narration}",${r.dr.toFixed(2)},${r.cr.toFixed(2)},${r.bal.toFixed(2)}`
     ).join('\n');
     const blob = new Blob([hdr + body], {type:'text/csv'});
     const url = URL.createObjectURL(blob);
@@ -12392,7 +12501,7 @@ function LedgerStatement({data, balances}){
                 )}
                 {tableRows.map((r,i) => (
                   <tr key={i}>
-                    <td style={{fontFamily:'var(--mono)',fontSize:12}}>{r.date}</td>
+                    <td style={{fontFamily:'var(--mono)',fontSize:12}}>{fmtDate(r.date)}</td>
                     <td style={{fontFamily:'var(--mono)',fontSize:12}}>{r.vno}</td>
                     <td><span style={{background:'var(--primary-soft)',color:'var(--primary)',padding:'1px 7px',borderRadius:10,fontSize:11,fontWeight:600}}>{r.type}</span></td>
                     <td style={{maxWidth:300,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{r.narration}</td>
@@ -12472,7 +12581,7 @@ function DebtorStatement({data}){
 
   const handleCSV = () => {
     const hdr = 'Date,Voucher No,Type,Narration,Debit,Credit,Balance\n';
-    const body = tableRows.map(r => `${r.date},${r.vno},${r.type},"${r.narration}",${r.dr.toFixed(2)},${r.cr.toFixed(2)},${r.bal.toFixed(2)}`).join('\n');
+    const body = tableRows.map(r => `${fmtDate(r.date)},${r.vno},${r.type},"${r.narration}",${r.dr.toFixed(2)},${r.cr.toFixed(2)},${r.bal.toFixed(2)}`).join('\n');
     const blob = new Blob([hdr+body],{type:'text/csv'});
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a'); a.href=url; a.download=`Debtor_${party?.name||partyId}_${from}_${to}.csv`; a.click();
@@ -12574,7 +12683,7 @@ function DebtorStatement({data}){
                 {tableRows.length===0 && <tr><td colSpan={7} style={{textAlign:'center',color:'var(--ink-3)',padding:20}}>No transactions in period</td></tr>}
                 {tableRows.map((r,i)=>(
                   <tr key={i}>
-                    <td style={{fontFamily:'var(--mono)',fontSize:12}}>{r.date}</td>
+                    <td style={{fontFamily:'var(--mono)',fontSize:12}}>{fmtDate(r.date)}</td>
                     <td style={{fontFamily:'var(--mono)',fontSize:12}}>{r.vno}</td>
                     <td><span style={{background:'var(--primary-soft)',color:'var(--primary)',padding:'1px 7px',borderRadius:10,fontSize:11,fontWeight:600}}>{r.type}</span></td>
                     <td>{r.narration}</td>
@@ -12688,7 +12797,7 @@ function VendorStatement({data}){
 
   const handleCSV = () => {
     const hdr = 'Date,Voucher No,Type,Narration,Debit,Credit,Balance\n';
-    const body = tableRows.map(r => `${r.date},${r.vno},${r.type},"${r.narration}",${r.dr.toFixed(2)},${r.cr.toFixed(2)},${r.bal.toFixed(2)}`).join('\n');
+    const body = tableRows.map(r => `${fmtDate(r.date)},${r.vno},${r.type},"${r.narration}",${r.dr.toFixed(2)},${r.cr.toFixed(2)},${r.bal.toFixed(2)}`).join('\n');
     const blob = new Blob([hdr+body],{type:'text/csv'});
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a'); a.href=url; a.download=`Vendor_${party?.name||partyId}_${from}_${to}.csv`; a.click();
@@ -12790,7 +12899,7 @@ function VendorStatement({data}){
                 {tableRows.length===0 && <tr><td colSpan={7} style={{textAlign:'center',color:'var(--ink-3)',padding:20}}>No transactions in period</td></tr>}
                 {tableRows.map((r,i)=>(
                   <tr key={i}>
-                    <td style={{fontFamily:'var(--mono)',fontSize:12}}>{r.date}</td>
+                    <td style={{fontFamily:'var(--mono)',fontSize:12}}>{fmtDate(r.date)}</td>
                     <td style={{fontFamily:'var(--mono)',fontSize:12}}>{r.vno}</td>
                     <td><span style={{background:'var(--accent-soft)',color:'var(--warning)',padding:'1px 7px',borderRadius:10,fontSize:11,fontWeight:600}}>{r.type}</span></td>
                     <td>{r.narration}</td>
@@ -13111,7 +13220,7 @@ function StockLedger({data}){
 
   const handleCSV = () => {
     const hdr = 'Date,Reference,Type,Narration,In,Out,Balance\n';
-    const body = tableRows.map(r=>`${r.date},${r.ref},${r.type},"${r.narration}",${r.in},${r.out},${r.balance}`).join('\n');
+    const body = tableRows.map(r=>`${fmtDate(r.date)},${r.ref},${r.type},"${r.narration}",${r.in},${r.out},${r.balance}`).join('\n');
     const blob = new Blob([hdr+body],{type:'text/csv'});
     const a = document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=`StockLedger_${item?.name||itemId}.csv`; a.click();
   };
@@ -13183,7 +13292,7 @@ function StockLedger({data}){
                   {tableRows.length===0 && <tr><td colSpan={7} style={{textAlign:'center',color:'var(--ink-3)',padding:20}}>No stock movements in period</td></tr>}
                   {tableRows.map((r,i)=>(
                     <tr key={i}>
-                      <td style={{fontFamily:'var(--mono)',fontSize:12}}>{r.date}</td>
+                      <td style={{fontFamily:'var(--mono)',fontSize:12}}>{fmtDate(r.date)}</td>
                       <td style={{fontFamily:'var(--mono)',fontSize:12}}>{r.ref}</td>
                       <td><span style={{fontSize:10,padding:'1px 6px',borderRadius:10,fontWeight:600,
                         background:r.in>0?'var(--primary-soft)':'var(--danger-soft)',
