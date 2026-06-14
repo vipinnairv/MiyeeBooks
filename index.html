@@ -6722,74 +6722,219 @@ function AdvanceTax({data}){
   const income  = data.coa.filter(a=>a.type==='Income').reduce((s,a)=>s+(-(pb.period[a.id]||0)),0);
   const expense = data.coa.filter(a=>a.type==='Expense').reduce((s,a)=>s+(pb.period[a.id]||0),0);
   const ytdPbt  = income - expense;
-
-  // Months elapsed in FY (Apr=1 … Mar=12)
   const m = parseInt(t.slice(5,7));
-  const monthsElapsed = m >= 4 ? m-3 : m+9;
-  const annualPbt = monthsElapsed>0 ? (ytdPbt/monthsElapsed)*12 : 0;
-  const estTax    = annualPbt>0 ? annualPbt*0.25 : 0;
-  const tdsCredit = pb.asOn['2700'] || 0;   // TDS Receivable ledger
-  const netTax    = Math.max(0, estTax - tdsCredit);
+  const monthsElapsed = m >= 4 ? m-3 : m+9;            // Apr=1 … Mar=12
+  const annualPbtAuto = monthsElapsed>0 ? Math.round((ytdPbt/monthsElapsed)*12) : 0;
+  const tdsLedgerBal  = Math.round(pb.asOn['2700'] || 0);   // TDS Receivable ledger
 
+  // ── Editable inputs ──
+  const RATE_PRESETS = [
+    {v:'25', rate:25, label:'Company — MSME / turnover ≤ ₹400 Cr · 25%'},
+    {v:'22', rate:22, label:'Company — Sec 115BAA concessional · 22%'},
+    {v:'15', rate:15, label:'Company — Sec 115BAB new manufacturing · 15%'},
+    {v:'30', rate:30, label:'Company (other) / Firm / LLP · 30%'},
+    {v:'custom', rate:null, label:'Custom rate…'},
+  ];
+  const [annualMode, setAnnualMode] = useState('annualised');  // annualised | ytd | manual
+  const [pbtManual, setPbtManual] = useState(annualPbtAuto);
+  const [addBacks, setAddBacks]   = useState(0);
+  const [deduct, setDeduct]       = useState(0);
+  const [ratePreset, setRatePreset] = useState('25');
+  const [rate, setRate]           = useState(25);
+  const [surcharge, setSurcharge] = useState(0);
+  const [cess, setCess]           = useState(4);
+  const [tds, setTds]             = useState(tdsLedgerBal);
+  const [paid, setPaid]           = useState(0);
+
+  const basePbt = annualMode==='annualised' ? annualPbtAuto
+                : annualMode==='ytd'        ? ytdPbt
+                : pbtManual;
+  const taxable   = Math.max(0, Math.round(basePbt + addBacks - deduct));
+  const grossTax  = Math.round(taxable * rate/100);
+  const surAmt    = Math.round(grossTax * surcharge/100);
+  const cessAmt   = Math.round((grossTax + surAmt) * cess/100);
+  const totalTax  = grossTax + surAmt + cessAmt;
+  const netLiability = Math.max(0, totalTax - tds);     // advance tax is on tax net of TDS
+  const remaining = Math.max(0, netLiability - paid);
+
+  // ── Instalment schedule (Sec 211 / 234C) ──
   const inst = [
-    {due:`${fyYear}-06-15`,   pct:15,  label:'1st  by 15 Jun'},
-    {due:`${fyYear}-09-15`,   pct:45,  label:'2nd  by 15 Sep'},
-    {due:`${fyYear}-12-15`,   pct:75,  label:'3rd  by 15 Dec'},
-    {due:`${fyYear+1}-03-15`, pct:100, label:'4th  by 15 Mar'},
+    {due:`${fyYear}-06-15`,   pct:15,  label:'1st — by 15 Jun'},
+    {due:`${fyYear}-09-15`,   pct:45,  label:'2nd — by 15 Sep'},
+    {due:`${fyYear}-12-15`,   pct:75,  label:'3rd — by 15 Dec'},
+    {due:`${fyYear+1}-03-15`, pct:100, label:'4th — by 15 Mar'},
   ].map((i,idx,arr)=>({...i,
-    cumAmt: netTax*i.pct/100,
-    instAmt: netTax*i.pct/100 - (idx>0 ? netTax*arr[idx-1].pct/100 : 0),
-    status: t > i.due ? 'past' : 'upcoming',
-  }));
+    cumAmt:  Math.round(netLiability*i.pct/100),
+    instAmt: Math.round(netLiability*i.pct/100) - (idx>0 ? Math.round(netLiability*arr[idx-1].pct/100) : 0),
+    paidCum: Math.min(paid, Math.round(netLiability*i.pct/100)),
+    status:  t > i.due ? 'past' : 'upcoming',
+  })).map(i=>({...i, shortfall: Math.max(0, i.cumAmt - paid)}));
+
+  const numIn = (val, setter, style={}) => (
+    <input type="number" value={val} onChange={e=>setter(parseFloat(e.target.value)||0)}
+      style={{width:'100%',textAlign:'right',padding:'6px 9px',border:'1px solid var(--line-2)',borderRadius:6,fontSize:13,fontFamily:'var(--mono)',...style}} />
+  );
+  const sumRow = (label, val, opts={}) => (
+    <tr style={{borderBottom:'1px solid var(--line-2)',...(opts.bold?{fontWeight:700,background:'var(--surface-2)'}:{})}}>
+      <td style={{padding:'9px 16px'}}>{label}</td>
+      <td style={{padding:'9px 16px',textAlign:'right',fontFamily:'var(--mono)',color:opts.color}}>{opts.neg?'(–) ':''}₹{fmt(Math.abs(val))}</td>
+    </tr>
+  );
+
+  const handleExcel = () => exportXLSX(`AdvanceTax_FY${fyYear}.xlsx`, [{name:'Advance Tax', rows:[
+    [`Advance Tax Computation — ${data.company.name} — FY ${fyYear}-${String(fyYear+1).slice(2)}`],[],
+    ['Estimated Annual Taxable Income (PBT basis)', basePbt],
+    ['Add: Disallowances / adjustments', addBacks],
+    ['Less: Deductions (Chapter VI-A etc.)', deduct],
+    ['Taxable Income', taxable],
+    [`Income Tax @ ${rate}%`, grossTax],
+    [`Surcharge @ ${surcharge}%`, surAmt],
+    [`Health & Education Cess @ ${cess}%`, cessAmt],
+    ['Total Tax Liability', totalTax],
+    ['Less: TDS / TCS Credit', tds],
+    ['Net Advance Tax Payable', netLiability],
+    ['Less: Advance Tax already paid', paid],
+    ['Balance Payable', remaining],[],
+    ['Instalment','Due Date','Cum %','Cumulative (₹)','This Instalment (₹)','Shortfall vs Paid (₹)'],
+    ...inst.map(i=>[i.label, i.due, i.pct+'%', i.cumAmt, i.instAmt, i.shortfall]),
+  ]}]);
 
   return (<>
     <div className="page-head">
       <div>
         <h1 className="page-title">Advance Tax Estimator</h1>
-        <div className="page-sub">FY {fyYear}–{String(fyYear+1).slice(2)} · Based on YTD profit annualised · 25% MSME rate</div>
+        <div className="page-sub">FY {fyYear}–{String(fyYear+1).slice(2)} · Editable computation · Sec 208/211 · Surcharge + 4% Cess</div>
       </div>
+      <div className="page-actions"><button className="btn btn-sm" onClick={handleExcel}>⬇ Excel</button></div>
     </div>
 
     <div className="stat-grid" style={{marginBottom:16}}>
-      <div className="stat"><div className="stat-label">YTD PBT ({monthsElapsed} months)</div><div className="stat-value rupee">₹{fmt(ytdPbt)}</div></div>
-      <div className="stat stat-info"><div className="stat-label">Annualised PBT</div><div className="stat-value rupee">₹{fmt(annualPbt)}</div></div>
-      <div className="stat stat-gold"><div className="stat-label">Estimated Tax @25%</div><div className="stat-value rupee">₹{fmt(estTax)}</div></div>
-      <div className="stat"><div className="stat-label">Less: TDS Credit</div><div className="stat-value rupee">₹{fmt(tdsCredit)}</div></div>
-      <div className="stat stat-danger"><div className="stat-label">Net Advance Tax</div><div className="stat-value rupee">₹{fmt(netTax)}</div></div>
+      <div className="stat"><div className="stat-label">YTD PBT ({monthsElapsed} mo · books)</div><div className="stat-value rupee">₹{fmt(ytdPbt)}</div></div>
+      <div className="stat stat-info"><div className="stat-label">Taxable Income</div><div className="stat-value rupee">₹{fmt(taxable)}</div></div>
+      <div className="stat stat-gold"><div className="stat-label">Total Tax Liability</div><div className="stat-value rupee">₹{fmt(totalTax)}</div></div>
+      <div className="stat"><div className="stat-label">Net Advance Tax</div><div className="stat-value rupee">₹{fmt(netLiability)}</div></div>
+      <div className="stat stat-danger"><div className="stat-label">Balance Payable</div><div className="stat-value rupee">₹{fmt(remaining)}</div></div>
     </div>
 
-    <div className="card">
-      <div className="card-body" style={{padding:0}}>
-        <table style={{width:'100%',borderCollapse:'collapse',fontSize:13}}>
-          <thead><tr style={{background:'var(--surface-2)',borderBottom:'1px solid var(--line)'}}>
-            <th style={{padding:'10px 16px',textAlign:'left'}}>Instalment</th>
-            <th style={{padding:'10px 16px',textAlign:'left',width:110}}>Due Date</th>
-            <th style={{padding:'10px 16px',textAlign:'right',width:90}}>Cumulative %</th>
-            <th style={{padding:'10px 16px',textAlign:'right',width:140}}>Cumulative (₹)</th>
-            <th style={{padding:'10px 16px',textAlign:'right',width:140}}>This Instalment (₹)</th>
-            <th style={{padding:'10px 16px',textAlign:'center',width:100}}>Status</th>
-          </tr></thead>
-          <tbody>
-            {inst.map(i=>(
-              <tr key={i.due} style={{borderBottom:'1px solid var(--line-2)'}}>
-                <td style={{padding:'10px 16px',fontWeight:500}}>{i.label}</td>
-                <td style={{padding:'10px 16px',fontSize:12}}>{i.due}</td>
-                <td style={{padding:'10px 16px',textAlign:'right'}}>{i.pct}%</td>
-                <td style={{padding:'10px 16px',textAlign:'right',fontFamily:'var(--mono)'}}>{fmt(i.cumAmt)}</td>
-                <td style={{padding:'10px 16px',textAlign:'right',fontFamily:'var(--mono)',fontWeight:700}}>{fmt(i.instAmt)}</td>
-                <td style={{padding:'10px 16px',textAlign:'center'}}>
-                  <span className={'badge '+(i.status==='past'?'badge-danger':'badge-info')} style={{fontSize:10}}>
-                    {i.status==='past'?'Due passed':'Upcoming'}
-                  </span>
+    <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:18,alignItems:'start'}}>
+      {/* ── Editable computation ── */}
+      <div className="card">
+        <div className="card-head"><h3 className="card-title">Tax Computation — adjust any figure</h3></div>
+        <div className="card-body" style={{padding:0}}>
+          <table style={{width:'100%',borderCollapse:'collapse',fontSize:13}}>
+            <tbody>
+              <tr style={{borderBottom:'1px solid var(--line-2)'}}>
+                <td style={{padding:'9px 16px'}}>Estimated Annual Profit (PBT)
+                  <div style={{display:'flex',gap:6,marginTop:5}}>
+                    {[['annualised','Annualise YTD'],['ytd','Use YTD only'],['manual','Enter manually']].map(([k,l])=>(
+                      <button key={k} className={'btn btn-sm'+(annualMode===k?' btn-primary':'')} style={{fontSize:10,padding:'3px 8px'}}
+                        onClick={()=>setAnnualMode(k)}>{l}</button>
+                    ))}
+                  </div>
+                </td>
+                <td style={{padding:'9px 16px',textAlign:'right',width:170}}>
+                  {annualMode==='manual'
+                    ? numIn(pbtManual, setPbtManual)
+                    : <span style={{fontFamily:'var(--mono)',fontWeight:600}}>₹{fmt(basePbt)}</span>}
                 </td>
               </tr>
-            ))}
-          </tbody>
-        </table>
+              <tr style={{borderBottom:'1px solid var(--line-2)'}}>
+                <td style={{padding:'9px 16px'}}>Add: Disallowances / adjustments
+                  <div style={{fontSize:10,color:'var(--ink-3)'}}>e.g. 30% expense u/s 40(a)(ia), depreciation diff., donations</div></td>
+                <td style={{padding:'9px 16px'}}>{numIn(addBacks, setAddBacks)}</td>
+              </tr>
+              <tr style={{borderBottom:'1px solid var(--line-2)'}}>
+                <td style={{padding:'9px 16px'}}>Less: Deductions (Chapter VI-A etc.)</td>
+                <td style={{padding:'9px 16px'}}>{numIn(deduct, setDeduct)}</td>
+              </tr>
+              {sumRow('Taxable Income', taxable, {bold:true})}
+              <tr style={{borderBottom:'1px solid var(--line-2)'}}>
+                <td style={{padding:'9px 16px'}}>Income Tax Rate
+                  <select value={ratePreset} onChange={e=>{ const p=RATE_PRESETS.find(x=>x.v===e.target.value); setRatePreset(e.target.value); if(p&&p.rate!=null) setRate(p.rate); }}
+                    style={{display:'block',marginTop:5,width:'100%',fontSize:11,padding:'5px 6px',border:'1px solid var(--line-2)',borderRadius:6}}>
+                    {RATE_PRESETS.map(p=><option key={p.v} value={p.v}>{p.label}</option>)}
+                  </select>
+                </td>
+                <td style={{padding:'9px 16px',verticalAlign:'bottom'}}>
+                  <div style={{display:'flex',alignItems:'center',gap:4,justifyContent:'flex-end'}}>{numIn(rate, v=>{setRate(v);setRatePreset('custom');}, {width:70})}<span>%</span></div>
+                </td>
+              </tr>
+              {sumRow(`Income Tax @ ${rate}%`, grossTax)}
+              <tr style={{borderBottom:'1px solid var(--line-2)'}}>
+                <td style={{padding:'9px 16px'}}>Surcharge
+                  <div style={{fontSize:10,color:'var(--ink-3)'}}>Co: 7% (₹1–10 Cr), 12% (&gt;10 Cr); 115BAA/BAB flat 10%; Firm 12% (&gt;1 Cr)</div></td>
+                <td style={{padding:'9px 16px'}}>
+                  <div style={{display:'flex',alignItems:'center',gap:4,justifyContent:'flex-end'}}>{numIn(surcharge, setSurcharge, {width:70})}<span>%</span></div>
+                </td>
+              </tr>
+              {surAmt>0 && sumRow(`Surcharge @ ${surcharge}%`, surAmt)}
+              <tr style={{borderBottom:'1px solid var(--line-2)'}}>
+                <td style={{padding:'9px 16px'}}>Health &amp; Education Cess</td>
+                <td style={{padding:'9px 16px'}}>
+                  <div style={{display:'flex',alignItems:'center',gap:4,justifyContent:'flex-end'}}>{numIn(cess, setCess, {width:70})}<span>%</span></div>
+                </td>
+              </tr>
+              {sumRow(`Cess @ ${cess}%`, cessAmt)}
+              {sumRow('Total Tax Liability', totalTax, {bold:true})}
+              <tr style={{borderBottom:'1px solid var(--line-2)'}}>
+                <td style={{padding:'9px 16px'}}>Less: TDS / TCS Credit
+                  <div style={{fontSize:10,color:'var(--ink-3)'}}>Auto from TDS Receivable ledger (₹{fmt(tdsLedgerBal)}) — editable</div></td>
+                <td style={{padding:'9px 16px'}}>{numIn(tds, setTds)}</td>
+              </tr>
+              {sumRow('Net Advance Tax Payable', netLiability, {bold:true, color:'var(--primary)'})}
+              <tr style={{borderBottom:'1px solid var(--line-2)'}}>
+                <td style={{padding:'9px 16px'}}>Less: Advance Tax already paid</td>
+                <td style={{padding:'9px 16px'}}>{numIn(paid, setPaid)}</td>
+              </tr>
+              {sumRow('Balance Payable', remaining, {bold:true, color:'var(--danger)'})}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* ── Instalment schedule ── */}
+      <div className="card">
+        <div className="card-head"><h3 className="card-title">Instalment Schedule (Sec 211)</h3></div>
+        <div className="card-body" style={{padding:0}}>
+          <table style={{width:'100%',borderCollapse:'collapse',fontSize:12.5}}>
+            <thead><tr style={{background:'var(--surface-2)',borderBottom:'1px solid var(--line)'}}>
+              <th style={{padding:'9px 12px',textAlign:'left'}}>Instalment</th>
+              <th style={{padding:'9px 12px',textAlign:'left',width:90}}>Due</th>
+              <th style={{padding:'9px 12px',textAlign:'right',width:50}}>%</th>
+              <th style={{padding:'9px 12px',textAlign:'right',width:110}}>Pay by date (₹)</th>
+              <th style={{padding:'9px 12px',textAlign:'right',width:110}}>Shortfall (₹)</th>
+            </tr></thead>
+            <tbody>
+              {inst.map(i=>(
+                <tr key={i.due} style={{borderBottom:'1px solid var(--line-2)'}}>
+                  <td style={{padding:'9px 12px',fontWeight:500}}>{i.label}
+                    <div><span className={'badge '+(i.status==='past'?'badge-danger':'badge-info')} style={{fontSize:9}}>{i.status==='past'?'Due passed':'Upcoming'}</span></div>
+                  </td>
+                  <td style={{padding:'9px 12px',fontSize:12}}>{fmtDate(i.due)}</td>
+                  <td style={{padding:'9px 12px',textAlign:'right'}}>{i.pct}%</td>
+                  <td style={{padding:'9px 12px',textAlign:'right',fontFamily:'var(--mono)',fontWeight:700}}>{fmt(i.cumAmt)}</td>
+                  <td style={{padding:'9px 12px',textAlign:'right',fontFamily:'var(--mono)',color:i.shortfall>0?'var(--danger)':'var(--primary)'}}>
+                    {i.shortfall>0 ? fmt(i.shortfall) : '✓ 0'}
+                  </td>
+                </tr>
+              ))}
+              <tr className="total">
+                <td colSpan="3" style={{padding:'9px 12px',textAlign:'right'}}>NET ADVANCE TAX</td>
+                <td style={{padding:'9px 12px',textAlign:'right',fontFamily:'var(--mono)'}}>₹{fmt(netLiability)}</td>
+                <td style={{padding:'9px 12px',textAlign:'right',fontFamily:'var(--mono)'}}>₹{fmt(remaining)}</td>
+              </tr>
+            </tbody>
+          </table>
+          <div style={{padding:'10px 14px',fontSize:11,color:'var(--ink-3)'}}>
+            "Pay by date" = cumulative advance tax due by that instalment. "Shortfall" = cumulative due less advance tax already paid.
+            <br/>Sec 234C interest @1%/month applies if an instalment is short; 234B @1%/month if total paid &lt; 90% by year-end.
+          </div>
+        </div>
       </div>
     </div>
+
     <div style={{marginTop:12,fontSize:11,color:'var(--ink-3)'}}>
-      ⚠ Estimate only  assumes uniform profit through the year and 25% rate. Interest u/s 234B/234C applies on shortfall. Consult your CA before payment.
+      ⚠ Working estimate — figures are editable and pre-filled from your books (profit annualised over {monthsElapsed} month{monthsElapsed!==1?'s':''}). Verify entity type, rate, surcharge slab and deductions with your CA before payment. Presumptive (44AD/44ADA) assessees pay 100% by 15 Mar.
     </div>
   </>);
 }
