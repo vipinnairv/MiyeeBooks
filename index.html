@@ -694,6 +694,26 @@ const computePeriodBals = (data, fromDate, toDate) => {
   return { opening, period, asOn };
 };
 
+// ── COA role resolver ────────────────────────────────────────────────────────
+// Reports historically hardcoded ledger ids ('2400','1300','1310','2600'…), which
+// break if a user restructures their chart. acctIds() resolves a logical role to
+// the matching account ids — by seed id if present, otherwise by type + name
+// heuristic — so reports keep working across custom charts.
+const ACCT_ROLE_DEFS = {
+  trade_receivable: { seeds:['2400'], type:'Asset',     re:/(sundry\s*debtor|trade\s*receivable|accounts?\s*receivable)/i },
+  trade_payable:    { seeds:['1300'], type:'Liability', re:/(sundry\s*creditor|trade\s*payable|accounts?\s*payable)/i },
+  gst_output:       { seeds:['1310','1311','1312'], type:'Liability', re:/(cgst|sgst|igst|utgst).*(payable|output)|output.*(cgst|sgst|igst)/i },
+  gst_input:        { seeds:['2600','2601','2602'], type:'Asset',     re:/(cgst|sgst|igst|utgst).*(input|credit|itc)|input.*(cgst|sgst|igst)/i },
+  cash:             { seeds:['2500'], type:'Asset',     re:/cash\s*in\s*hand/i },
+};
+const acctIds = (data, role) => {
+  const def = ACCT_ROLE_DEFS[role]; if(!def) return [];
+  const byId = (def.seeds||[]).filter(id => (data.coa||[]).some(a=>a.id===id));
+  if(byId.length) return byId;                       // seed accounts present → use them
+  return (data.coa||[]).filter(a => (!def.type||a.type===def.type) && def.re.test(a.name||'')).map(a=>a.id);
+};
+const acctIdSet = (data, ...roles) => new Set(roles.flatMap(r => acctIds(data, r)));
+
 // Open a standalone ledger page in a new browser tab for one or more account IDs
 const openLedgerTab = (accountIds, title, data, from, to) => {
   const ids = new Set(accountIds);
@@ -1072,6 +1092,42 @@ function generateInvoicePDF(voucher, appData){
   win.document.write(themed);
   win.document.close();
   win.focus();
+}
+
+// Generate the IRP e-invoice JSON (schema 1.1) for a sales invoice — upload to the
+// e-invoice portal / GePP, or pass to an IRN-generation API.
+function generateEInvoiceJSON(voucher, appData){
+  const co = appData.company;
+  const party = appData.parties.find(p => p.id === voucher.partyId) || {};
+  const inter = voucher.isInterState;
+  const items = (voucher.items||[]).map((it,i) => {
+    const ass = Math.round((it.qty||0)*(it.rate||0)*100)/100;
+    const tax = Math.round(ass*(it.gstRate||0)/100*100)/100;
+    return {
+      SlNo:String(i+1), PrdDesc:(it.description||'Item').slice(0,100), IsServc:(it.hsn||'').startsWith('99')?'Y':'N',
+      HsnCd:it.hsn||'', Qty:it.qty||0, Unit:'NOS', UnitPrice:it.rate||0, TotAmt:ass, AssAmt:ass,
+      GstRt:it.gstRate||0,
+      IgstAmt: inter?tax:0, CgstAmt: inter?0:Math.round(tax/2*100)/100, SgstAmt: inter?0:Math.round(tax/2*100)/100,
+      TotItemVal: Math.round((ass+tax)*100)/100,
+    };
+  });
+  const payload = {
+    Version:'1.1',
+    TranDtls:{ TaxSch:'GST', SupTyp:party.isForeign?'EXPWOP':'B2B', RegRev:'N', IgstOnIntra:'N' },
+    DocDtls:{ Typ: voucher.type==='CRN'?'CRN':voucher.type==='DBN'?'DBN':'INV', No: voucher.number||'', Dt: fmtDate(voucher.date).replace(/-/g,'/') },
+    SellerDtls:{ Gstin:co.gstin||'', LglNm:co.name||'', Addr1:(co.address||'').slice(0,100), Loc:co.state||'', Pin:Number((co.address||'').match(/\b(\d{6})\b/)?.[1]||0)||390001, Stcd:co.stateCode||'24' },
+    BuyerDtls:{ Gstin:party.gstin||'URP', LglNm:party.name||'', Pos:voucher.placeOfSupply||party.stateCode||'24', Addr1:(party.address||'').slice(0,100), Loc:party.state||'', Pin:380001, Stcd:party.stateCode||'24' },
+    ItemList: items,
+    ValDtls:{
+      AssVal: voucher.taxable||0,
+      CgstVal: voucher.cgst||0, SgstVal: voucher.sgst||0, IgstVal: voucher.igst||0, CesVal:0,
+      TotInvVal: voucher.total||voucher.amount||0,
+    },
+  };
+  const blob = new Blob([JSON.stringify([payload], null, 2)], {type:'application/json'});
+  const url = URL.createObjectURL(blob), a = document.createElement('a');
+  a.href = url; a.download = `einvoice_${(voucher.number||'INV').replace(/[^\w]/g,'_')}.json`; a.click();
+  URL.revokeObjectURL(url);
 }
 
 // ============================================================================
@@ -1568,6 +1624,7 @@ const buildDefaultData = (companyOverrides = {}) => ({
   allocations: [],
   bankRules: [],
   auditLog: [],
+  fixedAssets: [],
 });
 
 // ============================================================================
@@ -2630,6 +2687,7 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
       if(!saved.allocations) saved.allocations = [];
       if(!saved.bankRules)   saved.bankRules   = [];
       if(!saved.auditLog)    saved.auditLog    = [];
+      if(!saved.fixedAssets) saved.fixedAssets = [];
       if(saved.company.isPremium === undefined) saved.company.isPremium = false;
       if(!saved.company.premiumSince) saved.company.premiumSince = '';
       if(!saved.company.booksLockedUpto) saved.company.booksLockedUpto = '';
@@ -2669,6 +2727,7 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
       allocations: [],
       bankRules: [],
       auditLog: [],
+      fixedAssets: [],
     };
   });
   const [page, setPage] = useState('dashboard');
@@ -2740,6 +2799,7 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
         if(!cloudData.allocations)       cloudData.allocations = [];
         if(!cloudData.bankRules)         cloudData.bankRules   = [];
         if(!cloudData.auditLog)          cloudData.auditLog    = [];
+        if(!cloudData.fixedAssets)       cloudData.fixedAssets = [];
         if(cloudData.company.isPremium === undefined) cloudData.company.isPremium = false;
         if(!cloudData.company.premiumSince) cloudData.company.premiumSince = '';
         if(!cloudData.company.booksLockedUpto) cloudData.company.booksLockedUpto = '';
@@ -2870,6 +2930,7 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
         {id:'tds_sections', label:'TDS Sections', ico:'§'},
         {id:'tds_report', label:'TDS Deducted Report', ico:'⊞'},
       ] : []),
+      {id:'fixed_assets', label:'Fixed Asset Register', ico:'🏭'},
       {id:'adv_tax', label:'Advance Tax Estimator', ico:'₹'},
     ]},
     ...(mod.payroll===true ? [{section:'👥 HR & Payroll', items:[
@@ -3011,6 +3072,7 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
           {page==='bank_recon' && <BankReconciliation data={data} setData={canWrite?setData:()=>{}} showToast={showToast} />}
           {page==='pnl_trend' && <PnLTrend data={data} />}
           {page==='billwise' && <BillwiseAgeing data={data} />}
+          {page==='fixed_assets' && <FixedAssets data={data} setData={canWrite?setData:()=>{}} showToast={showToast} readOnly={isViewer} />}
           {page==='adv_tax' && <AdvanceTax data={data} />}
           {page==='health' && <HealthCheck data={data} setPage={setPage} />}
           {page==='audit_log' && <AuditLog data={data} />}
@@ -3957,6 +4019,11 @@ function Dashboard({data, balances, setPage, setData=()=>{}, showToast=()=>{}}){
     let income = 0, expense = 0, assets = 0, liab = 0;
     let cash = 0, bank = 0, debtors = 0, creditors = 0;
     let gstPay = 0, gstInput = 0;
+    // Role-resolved id sets (COA-agnostic — works even if account codes were changed)
+    const recvIds = acctIdSet(data, 'trade_receivable');
+    const payIds  = acctIdSet(data, 'trade_payable');
+    const outIds  = acctIdSet(data, 'gst_output');
+    const inpIds  = acctIdSet(data, 'gst_input');
     data.coa.forEach(a => {
       const b = balances[a.id] || 0;
       if(a.type === 'Income') income += -b;
@@ -3965,10 +4032,10 @@ function Dashboard({data, balances, setPage, setData=()=>{}, showToast=()=>{}}){
       if(a.type === 'Liability') liab += -b;
       if(a.name.toLowerCase().includes('cash in hand')) cash += b;
       if(a.isBank) bank += b;
-      if(a.id === '2400') debtors += b;
-      if(a.id === '1300') creditors += -b;
-      if(['1310','1311','1312'].includes(a.id)) gstPay += -b;
-      if(['2600','2601','2602'].includes(a.id)) gstInput += b;
+      if(recvIds.has(a.id)) debtors += b;
+      if(payIds.has(a.id))  creditors += -b;
+      if(outIds.has(a.id))  gstPay += -b;
+      if(inpIds.has(a.id))  gstInput += b;
     });
     return {income, expense, profit:income-expense, assets, liab, cash, bank, debtors, creditors, gstPay, gstInput, netGst:gstPay-gstInput};
   }, [data.coa, balances]);
@@ -5580,6 +5647,7 @@ function Vouchers({data, setData, showToast, readOnly=false}){
                 <td className="actions">
                   {!readOnly && <button className="btn btn-sm btn-ghost" onClick={() => { setEditing(v); setVtype(v.type); setShowModal(true); }}>{v.status==='Cancelled'?'View':'Edit'}</button>}
                   {['SAL','PUR','CRN','DBN'].includes(v.type) && v.status!=='Cancelled' && <button className="btn btn-sm btn-ghost" style={{color:'var(--primary)'}} onClick={() => generateInvoicePDF(v, data)}>⎙ PDF</button>}
+                  {['SAL','CRN','DBN'].includes(v.type) && v.status!=='Cancelled' && (v.items||[]).length>0 && <button className="btn btn-sm btn-ghost" style={{color:'var(--info)'}} title="Download e-invoice IRP JSON" onClick={() => generateEInvoiceJSON(v, data)}>⊕ e-Inv</button>}
                   {!readOnly && v.status!=='Cancelled' && <button className="btn btn-sm btn-danger" onClick={() => handleDelete(v)}>×</button>}
                 </td>
               </tr>
@@ -6361,9 +6429,10 @@ function VoucherModal({vtype, voucher, data, onSave, onClose, showToast}){
                             const matched = data.coa.find(a => a.name.toLowerCase().includes('tds payable'));
                             ledgerId = matched ? matched.id : '1313';
                           }
+                          const eff = f.tds206AB ? Math.max(sec.rate*2, 5) : sec.rate;
                           setF({...f, tdsSectionId:sec.id,
                             tdsSection: sec.section + (sec.oldSection ? ' (Old: '+sec.oldSection+')' : '') +'  '+sec.name,
-                            tdsRate: sec.rate, tdsAmount: tdsAmt,
+                            tdsBaseRate: sec.rate, tdsRate: eff, tdsAmount: Math.round(base*eff/100*100)/100,
                             tdsLedgerId: ledgerId,
                             tdsNature: sec.nature,
                             tdsThreshold: sec.threshold||0,
@@ -6385,6 +6454,14 @@ function VoucherModal({vtype, voucher, data, onSave, onClose, showToast}){
                       {f.tdsSectionId && f.tdsThreshold > 0 && (f.tdsBaseAmount||0) >= f.tdsThreshold && (
                         <div className="help" style={{color:'var(--primary)'}}>✓ Above ₹{fmt(f.tdsThreshold)} threshold  TDS applicable.</div>
                       )}
+                      <label style={{display:'flex',alignItems:'center',gap:6,fontSize:11,marginTop:6,cursor:'pointer',color:'var(--ink-2)'}}>
+                        <input type="checkbox" checked={!!f.tds206AB} onChange={e=>{
+                          const on=e.target.checked; const base=f.tdsBaseRate||f.tdsRate||0;
+                          const eff = on ? Math.max(base*2, 5) : base;
+                          setF({...f, tds206AB:on, tdsRate:eff, tdsAmount: Math.round((f.tdsBaseAmount||0)*eff/100*100)/100});
+                        }} />
+                        <span>206AB / 206CCA — deductee is a <b>non-filer / no PAN</b> → higher rate (2× or 5%, whichever higher{f.tds206AB?` = ${f.tdsRate}%`:''})</span>
+                      </label>
                     </div>
                     <div className="field required">
                       <label>TDS Deducted On (₹)</label>
@@ -6786,6 +6863,203 @@ function BillwiseAgeing({data}){
         </tbody>
       </table>
     </div>
+  </>);
+}
+
+// ============================================================================
+// FIXED ASSET REGISTER + DEPRECIATION (Companies Act Sch-II & Income Tax Sec 32)
+// ============================================================================
+const IT_BLOCK_RATES = [
+  {rate:5,  label:'Buildings — residential (5%)'},
+  {rate:10, label:'Buildings — others / Furniture & Fittings (10%)'},
+  {rate:15, label:'Plant & Machinery / Vehicles (15%)'},
+  {rate:25, label:'Intangibles — patents, know-how (25%)'},
+  {rate:30, label:'Vehicles — commercial hire (30%)'},
+  {rate:40, label:'Computers / Software / Books (40%)'},
+];
+function FixedAssets({data, setData, showToast, readOnly=false}){
+  const fyStart = data.company.fyStart || '2025-04-01';
+  const fyEnd   = data.company.fyEnd   || '2026-03-31';
+  const fyYear  = parseInt(fyStart.slice(0,4));
+  const assets  = data.fixedAssets || [];
+  const [showAdd, setShowAdd] = useState(false);
+  const [f, setF] = useState(null);
+
+  const blank = () => ({id:uid(), name:'', ledgerId:'2100', purchaseDate:fyStart, cost:0, openingWDV:0,
+    salvage:0, caMethod:'WDV', caRate:15, itRate:15, active:true});
+
+  const daysBetween = (a,b) => Math.round((new Date(b)-new Date(a))/86400000);
+
+  // Depreciation for the selected FY
+  const calc = (a) => {
+    const isAdd = a.purchaseDate >= fyStart && a.purchaseDate <= fyEnd;   // bought this FY
+    const heldFrom = isAdd ? a.purchaseDate : fyStart;
+    const daysHeld = Math.max(0, daysBetween(heldFrom, fyEnd) + 1);
+    const yearDays = daysBetween(fyStart, fyEnd) + 1;
+    const caBase = isAdd ? a.cost : (a.openingWDV || 0);
+    // Companies Act
+    let caDep;
+    if(a.caMethod === 'SLM') caDep = (a.cost - (a.salvage||0)) * (a.caRate||0)/100;
+    else                     caDep = caBase * (a.caRate||0)/100;
+    if(isAdd) caDep = caDep * daysHeld / yearDays;       // pro-rate additions by days
+    caDep = Math.round(Math.max(0, Math.min(caDep, caBase - (a.salvage||0))));
+    const caClose = Math.round(caBase - caDep);
+    // Income Tax (block WDV, 180-day half rule)
+    const itBase = isAdd ? a.cost : (a.openingWDV || 0);
+    const halfRate = isAdd && daysHeld < 180;
+    const itDep = Math.round(itBase * (a.itRate||0)/100 / (halfRate?2:1));
+    const itClose = Math.round(itBase - itDep);
+    return {isAdd, daysHeld, caBase, caDep, caClose, itBase, itDep, itClose, halfRate};
+  };
+
+  const rows = assets.filter(a=>a.active!==false).map(a => ({...a, ...calc(a)}));
+  const totals = rows.reduce((t,r)=>({
+    cost:t.cost+ (r.cost||0), caBase:t.caBase+r.caBase, caDep:t.caDep+r.caDep, caClose:t.caClose+r.caClose,
+    itBase:t.itBase+r.itBase, itDep:t.itDep+r.itDep, itClose:t.itClose+r.itClose,
+  }), {cost:0,caBase:0,caDep:0,caClose:0,itBase:0,itDep:0,itClose:0});
+
+  const ledgerName = id => data.coa.find(a=>a.id===id)?.name || id;
+
+  const saveAsset = () => {
+    if(!f.name.trim()) return showToast('Asset name required','error');
+    if(!(f.cost>0))    return showToast('Cost must be greater than 0','error');
+    const exists = assets.find(a=>a.id===f.id);
+    setData({...data, fixedAssets: exists ? assets.map(a=>a.id===f.id?f:a) : [...assets, f]});
+    showToast(exists?'Asset updated':'Asset added');
+    setShowAdd(false); setF(null);
+  };
+  const delAsset = (id) => { if(!confirm('Delete this asset from the register?')) return;
+    setData({...data, fixedAssets: assets.filter(a=>a.id!==id)}); showToast('Asset removed'); };
+
+  const postDeprJV = () => {
+    if(totals.caDep<=0) return showToast('No depreciation to post','error');
+    if(isDateLocked(data.company, fyEnd)) return showToast('Books are locked for this period','error');
+    if(!confirm(`Post Companies Act depreciation JV for FY ${fyYear}-${String(fyYear+1).slice(2)}?\n\nDr Depreciation ₹${fmt(totals.caDep)}\n   Cr Accumulated Depreciation ₹${fmt(totals.caDep)}`)) return;
+    const typeCount = (data.vouchers||[]).filter(x=>x.type==='JV').length;
+    const num = 'JV/'+String(typeCount+1).padStart(4,'0');
+    const v = {id:uid(), type:'JV', date:fyEnd, number:num, partyName:'', reference:'Depreciation',
+      narration:`Depreciation for FY ${fyYear}-${String(fyYear+1).slice(2)} (Companies Act, per Fixed Asset Register)`,
+      lines:[{id:uid(),accountId:'4400',debit:totals.caDep,credit:0,narration:'Depreciation'},
+             {id:uid(),accountId:'2130',debit:0,credit:totals.caDep,narration:'Accumulated Depreciation'}],
+      amount:totals.caDep, status:'Posted', createdAt:new Date().toISOString()};
+    setData({...data, vouchers:[...(data.vouchers||[]), v],
+      auditLog:[...(data.auditLog||[]), auditEntry('CREATE', `${num} (JV) Depreciation ₹${fmt(totals.caDep)} from Fixed Asset Register`)]});
+    showToast(`✓ Depreciation JV ${num} posted ₹${fmt(totals.caDep)}`);
+  };
+
+  const handleExcel = () => exportXLSX(`FixedAssetRegister_FY${fyYear}.xlsx`, [{name:'FA Register', rows:[
+    [`Fixed Asset Register & Depreciation — ${data.company.name} — FY ${fyYear}-${String(fyYear+1).slice(2)}`],[],
+    ['Asset','Ledger','Purchase Date','Cost','Opening WDV','CA Method','CA Rate %','CA Depreciation','CA Closing WDV','IT Rate %','IT Depreciation','IT Closing WDV'],
+    ...rows.map(r=>[r.name, ledgerName(r.ledgerId), r.purchaseDate, r.cost, r.openingWDV, r.caMethod, r.caRate, r.caDep, r.caClose, r.itRate, r.itDep, r.itClose]),
+    [],['','','TOTAL', totals.cost,'','','', totals.caDep, totals.caClose,'', totals.itDep, totals.itClose],
+  ]}]);
+
+  return (<>
+    <div className="page-head">
+      <div>
+        <h1 className="page-title">Fixed Asset Register</h1>
+        <div className="page-sub">FY {fyYear}–{String(fyYear+1).slice(2)} · Depreciation under Companies Act Sch-II &amp; Income-Tax Sec 32 (block WDV)</div>
+      </div>
+      <div className="page-actions">
+        <button className="btn btn-sm" onClick={handleExcel}>⬇ Excel</button>
+        {!readOnly && <button className="btn btn-sm" onClick={postDeprJV}>⊕ Post Depreciation JV</button>}
+        {!readOnly && <button className="btn btn-sm btn-primary" onClick={()=>{setF(blank());setShowAdd(true);}}>+ Add Asset</button>}
+      </div>
+    </div>
+
+    <div className="stat-grid" style={{marginBottom:16}}>
+      <div className="stat"><div className="stat-label">Assets</div><div className="stat-value">{rows.length}</div></div>
+      <div className="stat stat-info"><div className="stat-label">Total Cost</div><div className="stat-value rupee">₹{fmt(totals.cost)}</div></div>
+      <div className="stat stat-gold"><div className="stat-label">Depreciation (Companies Act)</div><div className="stat-value rupee">₹{fmt(totals.caDep)}</div></div>
+      <div className="stat"><div className="stat-label">Depreciation (Income Tax)</div><div className="stat-value rupee">₹{fmt(totals.itDep)}</div></div>
+    </div>
+
+    <div className="table-wrap">
+      <table style={{fontSize:12.5}}>
+        <thead><tr>
+          <th>Asset</th><th style={{width:90}}>Purchase</th>
+          <th className="num" style={{width:100}}>Cost</th><th className="num" style={{width:100}}>Opening WDV</th>
+          <th style={{width:60}}>CA Mtd</th><th className="num" style={{width:55}}>CA %</th>
+          <th className="num" style={{width:110}}>CA Depr.</th><th className="num" style={{width:110}}>CA Closing</th>
+          <th className="num" style={{width:55}}>IT %</th><th className="num" style={{width:110}}>IT Depr.</th><th className="num" style={{width:110}}>IT Closing</th>
+          {!readOnly && <th style={{width:70}}></th>}
+        </tr></thead>
+        <tbody>
+          {rows.length===0 ? (
+            <tr><td colSpan={readOnly?11:12}><div className="empty"><div className="empty-ico">🏭</div>
+              <div>No fixed assets yet. Add Plant &amp; Machinery, Computers, Furniture, Vehicles to compute depreciation.</div></div></td></tr>
+          ) : rows.map(r=>(
+            <tr key={r.id}>
+              <td><b>{r.name}</b><div style={{fontSize:10,color:'var(--ink-3)'}}>{ledgerName(r.ledgerId)}{r.isAdd?' · added this FY'+(r.halfRate?' (<180d, half IT rate)':''):''}</div></td>
+              <td style={{fontSize:12}}>{fmtDate(r.purchaseDate)}</td>
+              <td className="num">{fmt(r.cost)}</td><td className="num">{fmt(r.openingWDV)}</td>
+              <td>{r.caMethod}</td><td className="num">{r.caRate}%</td>
+              <td className="num" style={{fontWeight:600,color:'var(--primary)'}}>{fmt(r.caDep)}</td><td className="num">{fmt(r.caClose)}</td>
+              <td className="num">{r.itRate}%</td><td className="num" style={{fontWeight:600,color:'var(--info)'}}>{fmt(r.itDep)}</td><td className="num">{fmt(r.itClose)}</td>
+              {!readOnly && <td className="actions">
+                <button className="btn btn-sm btn-ghost" onClick={()=>{setF({...r});setShowAdd(true);}}>Edit</button>
+                <button className="btn btn-sm btn-danger" onClick={()=>delAsset(r.id)}>×</button>
+              </td>}
+            </tr>
+          ))}
+          {rows.length>0 && (
+            <tr className="total">
+              <td colSpan="2" style={{textAlign:'right'}}>TOTAL</td>
+              <td className="num">₹{fmt(totals.cost)}</td><td className="num">₹{fmt(totals.caBase)}</td>
+              <td colSpan="2"></td>
+              <td className="num">₹{fmt(totals.caDep)}</td><td className="num">₹{fmt(totals.caClose)}</td>
+              <td></td><td className="num">₹{fmt(totals.itDep)}</td><td className="num">₹{fmt(totals.itClose)}</td>
+              {!readOnly && <td></td>}
+            </tr>
+          )}
+        </tbody>
+      </table>
+    </div>
+    <div style={{marginTop:12,fontSize:11,color:'var(--ink-3)'}}>
+      Companies Act (Sch-II): WDV or SLM at your rate; additions pro-rated by days held. Income Tax (Sec 32): block-WDV at prescribed rate, additions held &lt;180 days get half rate.
+      "Opening WDV" is the written-down value at the start of this FY — set it equal to cost for assets bought this year. Post the Companies Act depreciation as a JV (Dr Depreciation / Cr Accumulated Depreciation).
+    </div>
+
+    {showAdd && f && (
+      <div className="modal-overlay" onClick={()=>{setShowAdd(false);setF(null);}}>
+        <div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:560}}>
+          <div className="modal-head"><h2 className="modal-title">{assets.find(a=>a.id===f.id)?'Edit':'Add'} Fixed Asset</h2>
+            <button className="btn btn-ghost btn-sm" onClick={()=>{setShowAdd(false);setF(null);}}>✕</button></div>
+          <div className="modal-body">
+            <div className="form-grid">
+              <div className="field required" style={{gridColumn:'1/3'}}><label>Asset Name</label>
+                <input value={f.name} onChange={e=>setF({...f,name:e.target.value})} placeholder="e.g. Dell Server, Toyota Innova" /></div>
+              <div className="field"><label>Asset Ledger (COA)</label>
+                <select value={f.ledgerId} onChange={e=>setF({...f,ledgerId:e.target.value})}>
+                  {data.coa.filter(a=>a.type==='Asset'&&(a.group==='Fixed Assets'||a.schedule==='PPE')&&!a.contra).map(a=><option key={a.id} value={a.id}>{a.id} · {a.name}</option>)}
+                </select></div>
+              <div className="field"><label>Purchase Date</label>
+                <input type="date" value={f.purchaseDate} onChange={e=>setF({...f,purchaseDate:e.target.value})} /></div>
+              <div className="field required"><label>Cost (₹)</label>
+                <input type="number" value={f.cost} onChange={e=>setF({...f,cost:parseFloat(e.target.value)||0})} /></div>
+              <div className="field"><label>Opening WDV (₹) — start of FY</label>
+                <input type="number" value={f.openingWDV} onChange={e=>setF({...f,openingWDV:parseFloat(e.target.value)||0})} placeholder="= cost if bought this year" /></div>
+              <div className="field"><label>Salvage / Residual (₹)</label>
+                <input type="number" value={f.salvage} onChange={e=>setF({...f,salvage:parseFloat(e.target.value)||0})} /></div>
+              <div className="field"><label>Companies Act Method</label>
+                <select value={f.caMethod} onChange={e=>setF({...f,caMethod:e.target.value})}>
+                  <option value="WDV">WDV (Written Down Value)</option><option value="SLM">SLM (Straight Line)</option>
+                </select></div>
+              <div className="field"><label>Companies Act Rate (%)</label>
+                <input type="number" step="0.01" value={f.caRate} onChange={e=>setF({...f,caRate:parseFloat(e.target.value)||0})} /></div>
+              <div className="field" style={{gridColumn:'1/3'}}><label>Income-Tax Block Rate (%)</label>
+                <select value={f.itRate} onChange={e=>setF({...f,itRate:parseFloat(e.target.value)||0})}>
+                  {IT_BLOCK_RATES.map(b=><option key={b.rate} value={b.rate}>{b.label}</option>)}
+                </select></div>
+            </div>
+          </div>
+          <div className="modal-foot">
+            <button className="btn" onClick={()=>{setShowAdd(false);setF(null);}}>Cancel</button>
+            <button className="btn btn-primary" onClick={saveAsset}>Save Asset</button>
+          </div>
+        </div>
+      </div>
+    )}
   </>);
 }
 
@@ -11865,6 +12139,20 @@ function TDSReport({data}){
                   deductees26.reduce((s,d)=>s+d.base,0), deductees26.reduce((s,d)=>s+d.tds,0)],
               ]}]);
             }}>⬇ Excel (26Q)</button>
+            <button className="btn btn-sm" title="Pipe-delimited deductee schedule for the e-TDS return preparer / FVU" onClick={()=>{
+              const T = deductees26;
+              const head = [
+                `# Form 26Q — Deductee Annexure (working file) | ${data.company.name}`,
+                `# Quarter: ${q26} FY ${fy26}-${String(fy26+1).slice(2)} | Deductor PAN: ${data.company.pan||''} | TAN: ____________`,
+                `# Fields (^ delimited): SrNo^DeducteePAN^DeducteeName^Section(OldRef)^TotalAmountPaid^TDSDeducted^NoOfTxns`,
+                `# NOTE: This is a data file for your return-preparation / FVU software — it is NOT the certified .fvu output. Validate via NSDL RPU/FVU before filing.`,
+              ].join('\n');
+              const body = T.map((d,i)=>[i+1, d.pan||'PANNOTAVBL', (d.party||'').toUpperCase(), d.section, d.base, d.tds, d.count].join('^')).join('\n');
+              const totals = `# TOTAL^^^^${T.reduce((s,d)=>s+d.base,0)}^${T.reduce((s,d)=>s+d.tds,0)}^${T.reduce((s,d)=>s+d.count,0)}`;
+              const blob = new Blob([head+'\n'+body+'\n'+totals], {type:'text/plain'});
+              const url=URL.createObjectURL(blob), a=document.createElement('a');
+              a.href=url; a.download=`Form26Q_${q26}_FY${fy26}_annexure.txt`; a.click(); URL.revokeObjectURL(url);
+            }}>⬇ 26Q Text (FVU prep)</button>
           </div>
         </div>
         <div style={{overflow:'auto'}}>
