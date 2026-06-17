@@ -31,9 +31,11 @@
 <meta name="twitter:creator"     content="@vipinnairv" />
 <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-<!-- Pinned to Babel 7 (classic JSX runtime). Babel 8's preset-react defaults to the
-     automatic runtime, which injects an ES `import` that breaks this classic script. -->
-<script src="https://unpkg.com/@babel/standalone@7.26.4/babel.min.js"></script>
+<!-- Fast in-browser JSX transform: esbuild-wasm transforms the app in <1s (vs ~60-90s
+     for Babel on this ~940KB file). Babel 7 is lazy-loaded ONLY as a fallback if esbuild
+     fails to load — so worst case is identical to the old behaviour, never a blank page.
+     (Babel must stay v7: Babel 8's preset-react injects an ES import that breaks classic scripts.) -->
+<script src="https://unpkg.com/esbuild-wasm@0.21.5/lib/browser.min.js"></script>
 <!-- Firebase SDKs (compat v10  works without ES modules / build step) -->
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
@@ -291,8 +293,8 @@
 </head>
 <body>
 <div id="root"></div>
-<script>window.addEventListener('error',function(e){try{document.title='BOOTERR: '+(e.message||'');localStorage.setItem('__bootErr',(e.message||'')+' | '+((e.error&&e.error.stack)||'').split('\n').slice(0,3).join(' >> '));}catch(_){}}, true);</script>
-<script type="text/babel">
+
+<script type="text/plain" id="appsrc">
 const { useState, useEffect, useMemo, useRef } = React;
 
 // ============================================================================
@@ -3003,10 +3005,13 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
         {id:'gstr1', label:'GSTR-1', ico:'◐'},
         {id:'gstr3b', label:'GSTR-3B', ico:'◑'},
         {id:'gstr2b', label:'GSTR-2B Recon.', ico:'◓'},
+        {id:'gstr9', label:'GSTR-9 Annual', ico:'◍'},
         {id:'sp_register', label:'Sales / Purchase Register', ico:'📑'},
         {id:'hsn_finder', label:'HSN / SAC Rate Finder', ico:'🔍'},
       ] : []),
+      ...(mod.tds===true ? [{id:'tds_certs', label:'Form 16A & 26AS', ico:'§'}] : []),
       {id:'compliance', label:'Compliance Calendar', ico:'📅'},
+      {id:'period_close', label:'Period Close', ico:'🔄'},
       ...(mod.tds===true ? [
         {id:'tds_sections', label:'TDS Sections', ico:'§'},
         {id:'tds_report', label:'TDS Deducted Report', ico:'⊞'},
@@ -3142,6 +3147,9 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
           {page==='budget' && <BudgetVsActual data={data} setData={canWrite?setData:()=>{}} showToast={showToast} readOnly={isViewer} />}
           {page==='profitability' && <ProfitabilityReport data={data} />}
           {page==='sp_register' && <SalesPurchaseRegister data={data} />}
+          {page==='gstr9' && <GSTR9 data={data} />}
+          {page==='tds_certs' && <TDSCertificates data={data} />}
+          {page==='period_close' && <PeriodClose data={data} setData={canWrite?setData:()=>{}} showToast={showToast} setPage={setPage} readOnly={isViewer} />}
           {page==='compliance' && <ComplianceCalendar data={data} />}
           {page==='hsn_finder' && <HSNFinder data={data} />}
           {page==='forex' && <Forex data={data} setData={setData} showToast={showToast} />}
@@ -9180,6 +9188,358 @@ function CashFlow({data, balances}){
 }
 
 // ============================================================================
+// GSTR-9 ANNUAL RETURN (summary)
+// ============================================================================
+function GSTR9({data}){
+  const fyStart = data.company.fyStart || '2025-04-01';
+  const fyEnd   = data.company.fyEnd   || '2026-03-31';
+  const fyYear  = parseInt(fyStart.slice(0,4));
+  const inFY = v => v.status!=='Cancelled' && v.date>=fyStart && v.date<=fyEnd;
+  const sales = data.vouchers.filter(v=>inFY(v) && (v.type==='SAL'||v.type==='CRN'));
+  const sgn = v => v.type==='CRN' ? -1 : 1;
+  const sumS = k => sales.reduce((s,v)=>s+sgn(v)*(v[k]||0),0);
+  const isForeign = v => { const p=data.parties.find(x=>x.id===v.partyId); return p&&p.isForeign; };
+  const isB2B = v => { const p=data.parties.find(x=>x.id===v.partyId); return p&&p.gstin&&!p.isForeign; };
+
+  const totTaxable = sumS('taxable'), outCgst=sumS('cgst'), outSgst=sumS('sgst'), outIgst=sumS('igst');
+  const totTax = outCgst+outSgst+outIgst;
+  const zeroRated = sales.filter(isForeign).reduce((s,v)=>s+sgn(v)*(v.taxable||0),0);
+  const b2bTaxable = sales.filter(isB2B).reduce((s,v)=>s+sgn(v)*(v.taxable||0),0);
+  const b2cTaxable = Math.max(0, totTaxable - b2bTaxable - zeroRated);
+  const creditNotes = sales.filter(v=>v.type==='CRN').reduce((s,v)=>s+(v.taxable||0),0);
+
+  const pb = useMemo(()=>computePeriodBals(data, fyStart, fyEnd).period, [data, fyStart, fyEnd]);
+  const itcCgst = pb['2600']||0, itcSgst = pb['2601']||0, itcIgst = pb['2602']||0;
+  const totItc = itcCgst+itcSgst+itcIgst;
+  const netCash = Math.max(0, totTax - totItc);
+
+  const r3 = (label,a,b,c,d)=>(
+    <tr><td style={{padding:'8px 16px'}}>{label}</td><td style={{padding:'8px 16px',textAlign:'right',fontFamily:'var(--mono)'}}>{fmt(a)}</td>
+      <td style={{padding:'8px 16px',textAlign:'right',fontFamily:'var(--mono)'}}>{fmt(b)}</td>
+      <td style={{padding:'8px 16px',textAlign:'right',fontFamily:'var(--mono)'}}>{fmt(c)}</td>
+      <td style={{padding:'8px 16px',textAlign:'right',fontFamily:'var(--mono)'}}>{fmt(d)}</td></tr>
+  );
+  const handleExcel = () => exportXLSX(`GSTR9_FY${fyYear}.xlsx`, [{name:`GSTR-9 ${fyYear}`, rows:[
+    [`GSTR-9 Annual Return (working) — ${data.company.name} — FY ${fyYear}-${String(fyYear+1).slice(2)}`],[`GSTIN: ${data.company.gstin||''}`],[],
+    ['Pt II — Outward supplies','Taxable','CGST','SGST/IGST'],
+    ['4A B2B supplies', b2bTaxable, '', ''],
+    ['4 B2C supplies', b2cTaxable, '', ''],
+    ['5 Zero-rated/Export', zeroRated, '', ''],
+    ['Less: Credit notes', creditNotes, '', ''],
+    ['Total outward taxable', totTaxable, outCgst+outSgst, outIgst],
+    [],['Pt III — ITC availed','CGST','SGST','IGST'],
+    ['6 ITC on inward supplies', itcCgst, itcSgst, itcIgst],
+    [],['Pt IV — Tax','Output','ITC','Net payable (cash)'],
+    ['9 Tax payable', totTax, totItc, netCash],
+  ]}]);
+
+  return (<>
+    <div className="page-head">
+      <div>
+        <h1 className="page-title">GSTR-9 — Annual Return</h1>
+        <div className="page-sub">FY {fyYear}–{String(fyYear+1).slice(2)} · annual summary from your books · GSTIN: {data.company.gstin}</div>
+      </div>
+      <div className="page-actions"><button className="btn btn-sm" onClick={handleExcel}>⬇ Excel</button>
+        <button className="btn btn-sm btn-primary" onClick={()=>window.print()}>⎙ Print</button></div>
+    </div>
+
+    <div className="stat-grid" style={{marginBottom:16}}>
+      <div className="stat stat-info"><div className="stat-label">Total Outward Taxable</div><div className="stat-value rupee">₹{fmt(totTaxable)}</div></div>
+      <div className="stat stat-gold"><div className="stat-label">Total Output Tax</div><div className="stat-value rupee">₹{fmt(totTax)}</div></div>
+      <div className="stat"><div className="stat-label">Total ITC Availed</div><div className="stat-value rupee">₹{fmt(totItc)}</div></div>
+      <div className="stat stat-danger"><div className="stat-label">Net Tax (Cash)</div><div className="stat-value rupee">₹{fmt(netCash)}</div></div>
+    </div>
+
+    <div className="card" style={{marginBottom:16}}>
+      <div className="card-head"><h3 className="card-title">Part II — Outward &amp; Inward Supplies (Tables 4 &amp; 5)</h3></div>
+      <div className="card-body" style={{padding:0,overflowX:'auto'}}>
+        <table style={{width:'100%',borderCollapse:'collapse',fontSize:12.5}}>
+          <thead><tr style={{background:'var(--surface-2)',borderBottom:'1px solid var(--line)'}}>
+            <th style={{padding:'8px 16px',textAlign:'left'}}>Nature of Supply</th>
+            <th style={{padding:'8px 16px',textAlign:'right'}}>Taxable (₹)</th><th style={{padding:'8px 16px',textAlign:'right'}}>CGST</th>
+            <th style={{padding:'8px 16px',textAlign:'right'}}>SGST</th><th style={{padding:'8px 16px',textAlign:'right'}}>IGST</th>
+          </tr></thead>
+          <tbody>
+            {r3('4A · Supplies to registered (B2B)', b2bTaxable, '', '', '')}
+            {r3('4A · Supplies to unregistered (B2C)', b2cTaxable, '', '', '')}
+            {r3('5 · Zero-rated / Export supplies', zeroRated, 0, 0, 0)}
+            {r3('Less: Credit notes issued', -creditNotes, '', '', '')}
+            <tr className="total"><td style={{padding:'9px 16px'}}>Total Outward Taxable Supplies</td>
+              <td style={{padding:'9px 16px',textAlign:'right'}}>₹{fmt(totTaxable)}</td>
+              <td style={{padding:'9px 16px',textAlign:'right'}}>₹{fmt(outCgst)}</td>
+              <td style={{padding:'9px 16px',textAlign:'right'}}>₹{fmt(outSgst)}</td>
+              <td style={{padding:'9px 16px',textAlign:'right'}}>₹{fmt(outIgst)}</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div className="card" style={{marginBottom:16}}>
+      <div className="card-head"><h3 className="card-title">Part III — Input Tax Credit (Table 6)</h3></div>
+      <div className="card-body" style={{padding:0}}>
+        <table style={{width:'100%',borderCollapse:'collapse',fontSize:12.5}}>
+          <thead><tr style={{background:'var(--surface-2)',borderBottom:'1px solid var(--line)'}}>
+            <th style={{padding:'8px 16px',textAlign:'left'}}>ITC Availed</th>
+            <th style={{padding:'8px 16px',textAlign:'right'}}>CGST</th><th style={{padding:'8px 16px',textAlign:'right'}}>SGST</th><th style={{padding:'8px 16px',textAlign:'right'}}>IGST</th>
+          </tr></thead>
+          <tbody>
+            <tr><td style={{padding:'8px 16px'}}>6 · ITC on inward supplies (inputs, services, capital goods)</td>
+              <td style={{padding:'8px 16px',textAlign:'right',fontFamily:'var(--mono)'}}>{fmt(itcCgst)}</td>
+              <td style={{padding:'8px 16px',textAlign:'right',fontFamily:'var(--mono)'}}>{fmt(itcSgst)}</td>
+              <td style={{padding:'8px 16px',textAlign:'right',fontFamily:'var(--mono)'}}>{fmt(itcIgst)}</td></tr>
+            <tr className="total"><td style={{padding:'9px 16px'}}>Total ITC Availed</td>
+              <td style={{padding:'9px 16px',textAlign:'right'}} colSpan="3">₹{fmt(totItc)}</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div className="card">
+      <div className="card-head"><h3 className="card-title">Part IV — Tax Payable &amp; Paid (Table 9)</h3></div>
+      <div className="card-body">
+        <div style={{display:'flex',gap:16,flexWrap:'wrap',fontSize:13}}>
+          <div>Output Tax: <b>₹{fmt(totTax)}</b></div>
+          <div>Less ITC: <b>₹{fmt(totItc)}</b></div>
+          <div>Net Tax payable in cash: <b style={{color:'var(--danger)'}}>₹{fmt(netCash)}</b></div>
+        </div>
+      </div>
+    </div>
+    <div style={{marginTop:12,fontSize:11,color:'var(--ink-3)'}}>Working summary aggregated from your sales vouchers and GST ledgers for the year. Reconcile with the sum of your monthly GSTR-3B filings and GSTR-1 before filing GSTR-9. Tables 7/8/10-18 (reversals, demands, HSN, late fee) require manual review.</div>
+  </>);
+}
+
+// Form 16A TDS certificate (printable window) for a deductee/quarter
+function generateForm16A(d, data, qLabel){
+  const co = data.company;
+  const rows = d.txns.map((t,i)=>'<tr><td style="text-align:center">'+(i+1)+'</td><td>'+fmtDate(t.date)+'</td><td>'+(t.voucherNo||'')+'</td><td>'+(t.section||'')+'</td><td style="text-align:right">'+fmt(t.base)+'</td><td style="text-align:right">'+fmt(t.tds)+'</td></tr>').join('');
+  const html = '<!DOCTYPE html><html><head><meta charset="utf-8"><title>Form 16A '+(d.name||'')+'</title>'+
+    '<style>body{font-family:Arial,sans-serif;max-width:780px;margin:20px auto;color:#1a1a2e;font-size:13px}'+
+    'h1{font-size:18px;text-align:center;color:#0b6b4f;margin:0 0 2px}.sub{text-align:center;color:#666;font-size:11px;margin-bottom:16px}'+
+    '.box{border:1px solid #ccc;border-radius:6px;padding:12px 14px;margin-bottom:12px}.box b{color:#0b6b4f}'+
+    'table{width:100%;border-collapse:collapse;font-size:12px;margin-top:8px}th{background:#0b6b4f;color:#fff;padding:7px 9px;text-align:left}'+
+    'td{padding:6px 9px;border-bottom:1px solid #eee}.total td{font-weight:700;background:#f0fdf4;border-top:2px solid #0b6b4f}'+
+    '@media print{button{display:none}}</style></head><body>'+
+    '<h1>FORM 16A</h1><div class="sub">Certificate under Section 203 of the Income-Tax Act for TDS — '+qLabel+'</div>'+
+    '<div class="box"><b>Deductor:</b> '+(co.name||'')+'<br>PAN: '+(co.pan||'____')+' &nbsp; TAN: ____________ &nbsp; GSTIN: '+(co.gstin||'')+'<br>'+(co.address||'')+'</div>'+
+    '<div class="box"><b>Deductee:</b> '+(d.name||'')+'<br>PAN: '+(d.pan||'PAN NOT AVAILABLE')+'</div>'+
+    '<table><thead><tr><th style="width:6%">#</th><th>Date of Payment</th><th>Voucher</th><th>Section</th><th style="text-align:right">Amount Paid (₹)</th><th style="text-align:right">TDS Deducted (₹)</th></tr></thead>'+
+    '<tbody>'+rows+'<tr class="total"><td colspan="4">TOTAL</td><td style="text-align:right">'+fmt(d.base)+'</td><td style="text-align:right">'+fmt(d.tds)+'</td></tr></tbody></table>'+
+    '<p style="font-size:11px;color:#666;margin-top:14px">Certified that a sum of ₹'+fmt(d.tds)+' has been deducted at source and is being / has been deposited to the credit of the Central Government. Verify challan &amp; CIN details before issuing the final certificate via TRACES.</p>'+
+    '<div style="margin-top:30px;text-align:right">For <b>'+(co.name||'')+'</b><br><br>Authorised Signatory</div>'+
+    '<div style="text-align:center;margin-top:20px"><button onclick="window.print()" style="padding:10px 26px;background:#0b6b4f;color:#fff;border:none;border-radius:6px;font-weight:600;cursor:pointer">⎙ Print / Save PDF</button></div>'+
+    '</body></html>';
+  const w = window.open('', '_blank', 'width=820,height=950');
+  if(!w){ alert('Allow pop-ups to view the certificate.'); return; }
+  w.document.write(html); w.document.close(); w.focus();
+}
+
+// ============================================================================
+// TDS CERTIFICATES (Form 16A) & 26AS RECONCILIATION
+// ============================================================================
+function TDSCertificates({data}){
+  const fyYear = parseInt((data.company.fyStart||'2025-04-01').slice(0,4));
+  const [q,setQ] = useState('Q1');
+  const ranges = {Q1:[`${fyYear}-04-01`,`${fyYear}-06-30`],Q2:[`${fyYear}-07-01`,`${fyYear}-09-30`],
+    Q3:[`${fyYear}-10-01`,`${fyYear}-12-31`],Q4:[`${fyYear+1}-01-01`,`${fyYear+1}-03-31`]};
+  const [qs,qe] = ranges[q];
+  const qLabel = `${q} FY ${fyYear}-${String(fyYear+1).slice(2)}`;
+
+  const deductees = useMemo(()=>{
+    const map={};
+    data.vouchers.filter(v=>(v.status==='Posted'||v.status==='Draft')&&v.tdsApplicable&&(v.tdsAmount||0)>0
+      &&v.date>=qs&&v.date<=qe&&!(v.tdsSection||'').startsWith('192')).forEach(v=>{
+      const party=data.parties.find(p=>p.id===v.partyId);
+      const pan=party?.pan||(party?.gstin?party.gstin.slice(2,12):'');
+      const key=v.partyName||'—';
+      if(!map[key]) map[key]={name:key,pan,txns:[],tds:0,base:0};
+      map[key].txns.push({date:v.date,section:(v.tdsSection||'').split('—')[0].trim(),base:v.tdsBaseAmount||v.amount||v.total||0,tds:v.tdsAmount||0,voucherNo:v.number});
+      map[key].tds+=v.tdsAmount||0; map[key].base+=v.tdsBaseAmount||v.amount||v.total||0;
+    });
+    return Object.values(map).sort((a,b)=>b.tds-a.tds);
+  },[data.vouchers,q]);
+
+  const pbAsOn = useMemo(()=>computePeriodBals(data,data.company.fyStart||'',today()).asOn,[data]);
+  const tdsRecvBooks = pbAsOn['2700']||0;
+  const [as26,setAs26] = useState(0);
+  const recDiff = Math.round((tdsRecvBooks - as26)*100)/100;
+
+  return (<>
+    <div className="page-head">
+      <div>
+        <h1 className="page-title">TDS Certificates (Form 16A) &amp; 26AS</h1>
+        <div className="page-sub">Issue Form 16A to deductees · reconcile TDS-on-income (26AS) with your books</div>
+      </div>
+      <div className="page-actions">
+        <select value={q} onChange={e=>setQ(e.target.value)} className="btn" style={{padding:'5px 10px',fontSize:12}}>
+          <option value="Q1">Q1 (Apr–Jun)</option><option value="Q2">Q2 (Jul–Sep)</option>
+          <option value="Q3">Q3 (Oct–Dec)</option><option value="Q4">Q4 (Jan–Mar)</option>
+        </select>
+      </div>
+    </div>
+
+    <div className="card" style={{marginBottom:18}}>
+      <div className="card-head"><h3 className="card-title">Form 16A — Deductees ({qLabel})</h3></div>
+      <div className="card-body" style={{padding:0}}>
+        <table style={{width:'100%',borderCollapse:'collapse',fontSize:13}}>
+          <thead><tr style={{background:'var(--surface-2)',borderBottom:'1px solid var(--line)'}}>
+            <th style={{padding:'9px 16px',textAlign:'left'}}>Deductee</th><th style={{padding:'9px 16px',textAlign:'left',width:120}}>PAN</th>
+            <th style={{padding:'9px 16px',textAlign:'right',width:90}}>Txns</th>
+            <th style={{padding:'9px 16px',textAlign:'right',width:130}}>Amount Paid (₹)</th>
+            <th style={{padding:'9px 16px',textAlign:'right',width:130}}>TDS (₹)</th><th style={{padding:'9px 16px',width:130}}></th>
+          </tr></thead>
+          <tbody>
+            {deductees.length===0 ? (
+              <tr><td colSpan="6" style={{padding:24,textAlign:'center',color:'var(--ink-3)'}}>No non-salary TDS deductions in {q}.</td></tr>
+            ) : deductees.map((d,i)=>(
+              <tr key={i} style={{borderBottom:'1px solid var(--line-2)'}}>
+                <td style={{padding:'8px 16px',fontWeight:600}}>{d.name}</td>
+                <td style={{padding:'8px 16px',fontFamily:'var(--mono)',fontSize:11,color:d.pan?'var(--ink)':'var(--danger)'}}>{d.pan||'NO PAN'}</td>
+                <td style={{padding:'8px 16px',textAlign:'right'}}>{d.txns.length}</td>
+                <td style={{padding:'8px 16px',textAlign:'right',fontFamily:'var(--mono)'}}>{fmt(d.base)}</td>
+                <td style={{padding:'8px 16px',textAlign:'right',fontFamily:'var(--mono)',fontWeight:600}}>{fmt(d.tds)}</td>
+                <td style={{padding:'8px 16px',textAlign:'right'}}><button className="btn btn-sm btn-primary" onClick={()=>generateForm16A(d,data,qLabel)}>⎙ Form 16A</button></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div className="card">
+      <div className="card-head"><h3 className="card-title">26AS Reconciliation — TDS on your income</h3></div>
+      <div className="card-body">
+        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:14,maxWidth:680}}>
+          <div className="field"><label>Per Books — TDS Receivable ledger (as on today)</label>
+            <input value={fmt(tdsRecvBooks)} readOnly style={{fontFamily:'var(--mono)',background:'var(--surface-2)'}} /></div>
+          <div className="field"><label>Per 26AS / Form 16A received (enter)</label>
+            <input type="number" value={as26} onChange={e=>setAs26(parseFloat(e.target.value)||0)} /></div>
+          <div className="field"><label>Difference</label>
+            <input value={fmt(recDiff)} readOnly style={{fontFamily:'var(--mono)',color:Math.abs(recDiff)<1?'var(--primary)':'var(--danger)',background:'var(--surface-2)'}} /></div>
+        </div>
+        <div style={{marginTop:10,fontSize:11,color:'var(--ink-3)'}}>
+          Enter the total TDS reflected in your Form 26AS / AIS. A difference means TDS deducted by a customer isn't booked in your "TDS Receivable" ledger (or vice-versa) — chase the missing certificate or pass the entry.
+        </div>
+      </div>
+    </div>
+  </>);
+}
+
+// ============================================================================
+// PERIOD-CLOSE — month/quarter-end checklist + GST set-off JV
+// ============================================================================
+function PeriodClose({data, setData, showToast, setPage, readOnly=false}){
+  const [month,setMonth] = useState(today().slice(0,7));
+  const last = new Date(parseInt(month.slice(0,4)),parseInt(month.slice(5,7)),0).getDate();
+  const pStart = month+'-01', pEnd = month+'-'+String(last).padStart(2,'0');
+  const pb = useMemo(()=>computePeriodBals(data,pStart,pEnd).period,[data,month]);
+
+  const heads = [
+    {name:'CGST', out:'1310', inp:'2600'},
+    {name:'SGST', out:'1311', inp:'2601'},
+    {name:'IGST', out:'1312', inp:'2602'},
+  ].map(h=>{
+    const output = Math.max(0, -(pb[h.out]||0));
+    const input  = Math.max(0,  (pb[h.inp]||0));
+    const setoff = Math.min(output, input);
+    return {...h, output, input, setoff, net: output-setoff};
+  });
+  const totSetoff = heads.reduce((s,h)=>s+h.setoff,0);
+  const totNet    = heads.reduce((s,h)=>s+h.net,0);
+
+  const postSetoff = () => {
+    if(totSetoff<=0) return showToast('No ITC set-off available for this period','error');
+    if(isDateLocked(data.company,pEnd)) return showToast('Period is locked','error');
+    const lines=[];
+    heads.forEach(h=>{ if(h.setoff>0){
+      lines.push({id:uid(),accountId:h.out,debit:Math.round(h.setoff),credit:0,narration:'Set-off output '+h.name});
+      lines.push({id:uid(),accountId:h.inp,debit:0,credit:Math.round(h.setoff),narration:'Set-off input '+h.name});
+    }});
+    if(!confirm(`Post GST ITC set-off JV for ${month}?\n\nSets off ₹${fmt(totSetoff)} of input credit against output liability (head-wise). Net cash payable after set-off: ₹${fmt(totNet)}.`)) return;
+    const num = nextVoucherNumber(data,'JV');
+    const v={id:uid(),type:'JV',date:pEnd,number:num,partyName:'',reference:'GST Set-off',
+      narration:`GST ITC set-off for ${month} (head-wise)`,lines,amount:Math.round(totSetoff),status:'Posted',createdAt:new Date().toISOString()};
+    setData({...data,vouchers:[...(data.vouchers||[]),v],
+      auditLog:[...(data.auditLog||[]),auditEntry('CREATE',`${num} (JV) GST set-off ${month} ₹${fmt(totSetoff)}`)]});
+    showToast(`✓ GST set-off JV ${num} posted ₹${fmt(totSetoff)}`);
+  };
+
+  const checklist = [
+    {label:'Depreciation posted for the period', detail:'Use the Fixed Asset Register to compute & post depreciation.', page:'fixed_assets'},
+    {label:'Prepaid / accrual amortization run', detail:'Post this month’s prepaid portions.', page:'amortization'},
+    {label:'Bank accounts reconciled', detail:'Match the bank statement and clear unreconciled items.', page:'bank_recon'},
+    {label:'GST set-off posted & GSTR-3B filed', detail:'Set off ITC (below) and file the return.', page:'gstr3b'},
+    {label:'TDS deducted, deposited & 26Q ready', detail:'Check the TDS register and challans.', page:'tds_report'},
+    {label:'Statutory dues (PF/ESIC/PT) paid', detail:'See the Compliance Calendar for due dates.', page:'compliance'},
+    {label:'Provisions & closing stock entries passed', detail:'Pass month-end provisions and value closing stock.', page:'vouchers'},
+  ];
+
+  return (<>
+    <div className="page-head">
+      <div>
+        <h1 className="page-title">Period Close</h1>
+        <div className="page-sub">Month / quarter-end checklist &amp; GST ITC set-off · {month}</div>
+      </div>
+      <div className="page-actions">
+        <input type="month" value={month} onChange={e=>setMonth(e.target.value)} className="btn" style={{padding:'6px 10px'}} />
+      </div>
+    </div>
+
+    <div className="card" style={{marginBottom:18}}>
+      <div className="card-head" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+        <h3 className="card-title">GST ITC Set-off — {month}</h3>
+        {!readOnly && totSetoff>0 && <button className="btn btn-sm btn-primary" onClick={postSetoff}>⊕ Post Set-off JV (₹{fmt(totSetoff)})</button>}
+      </div>
+      <div className="card-body" style={{padding:0,overflowX:'auto'}}>
+        <table style={{width:'100%',borderCollapse:'collapse',fontSize:12.5}}>
+          <thead><tr style={{background:'var(--surface-2)',borderBottom:'1px solid var(--line)'}}>
+            <th style={{padding:'8px 16px',textAlign:'left'}}>Head</th>
+            <th style={{padding:'8px 16px',textAlign:'right'}}>Output Liability</th>
+            <th style={{padding:'8px 16px',textAlign:'right'}}>Input Credit</th>
+            <th style={{padding:'8px 16px',textAlign:'right'}}>Set-off</th>
+            <th style={{padding:'8px 16px',textAlign:'right'}}>Net Payable</th>
+          </tr></thead>
+          <tbody>
+            {heads.map(h=>(
+              <tr key={h.name} style={{borderBottom:'1px solid var(--line-2)'}}>
+                <td style={{padding:'8px 16px',fontWeight:600}}>{h.name}</td>
+                <td style={{padding:'8px 16px',textAlign:'right',fontFamily:'var(--mono)'}}>{fmt(h.output)}</td>
+                <td style={{padding:'8px 16px',textAlign:'right',fontFamily:'var(--mono)'}}>{fmt(h.input)}</td>
+                <td style={{padding:'8px 16px',textAlign:'right',fontFamily:'var(--mono)',color:'var(--primary)'}}>{fmt(h.setoff)}</td>
+                <td style={{padding:'8px 16px',textAlign:'right',fontFamily:'var(--mono)',fontWeight:600,color:h.net>0?'var(--danger)':'var(--primary)'}}>{fmt(h.net)}</td>
+              </tr>
+            ))}
+            <tr className="total"><td style={{padding:'9px 16px'}}>TOTAL</td>
+              <td style={{padding:'9px 16px',textAlign:'right'}}>₹{fmt(heads.reduce((s,h)=>s+h.output,0))}</td>
+              <td style={{padding:'9px 16px',textAlign:'right'}}>₹{fmt(heads.reduce((s,h)=>s+h.input,0))}</td>
+              <td style={{padding:'9px 16px',textAlign:'right'}}>₹{fmt(totSetoff)}</td>
+              <td style={{padding:'9px 16px',textAlign:'right'}}>₹{fmt(totNet)}</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div style={{padding:'8px 16px',fontSize:11,color:'var(--ink-3)'}}>
+        Head-wise set-off (CGST↔CGST, SGST↔SGST, IGST↔IGST). The JV clears input against output per head; "Net Payable" is the cash GST for the month. IGST surplus cross-utilisation against CGST/SGST is left for manual review to stay safe.
+      </div>
+    </div>
+
+    <div className="card">
+      <div className="card-head"><h3 className="card-title">Period-Close Checklist</h3></div>
+      <div className="card-body" style={{padding:0}}>
+        {checklist.map((c,i)=>(
+          <div key={i} style={{display:'flex',alignItems:'center',gap:14,padding:'12px 18px',borderBottom:i<checklist.length-1?'1px solid var(--line-2)':'none'}}>
+            <span style={{fontSize:16,color:'var(--ink-3)'}}>☐</span>
+            <div style={{flex:1}}>
+              <div style={{fontWeight:600,fontSize:13}}>{c.label}</div>
+              <div style={{fontSize:11.5,color:'var(--ink-3)'}}>{c.detail}</div>
+            </div>
+            <button className="btn btn-sm" onClick={()=>setPage && c.page && setPage(c.page)}>Open</button>
+          </div>
+        ))}
+      </div>
+    </div>
+  </>);
+}
+
+// ============================================================================
 // PROFITABILITY ANALYSIS (by Item / Customer / HSN)
 // ============================================================================
 function ProfitabilityReport({data}){
@@ -15168,6 +15528,34 @@ function InventoryMovements({data}){
 // MOUNT
 // ============================================================================
 ReactDOM.createRoot(document.getElementById('root')).render(<AuthGate />);
+</script>
+
+<!-- Bootstrap: compile the app JSX (esbuild-wasm; Babel-7 fallback) then run it -->
+<script>
+(function(){
+  var srcEl = document.getElementById('appsrc');
+  var src   = srcEl ? srcEl.textContent : '';
+  var root  = document.getElementById('root');
+  function run(code){ (0, eval)(code); }
+  function fail(msg){ if(root) root.innerHTML = '<div style="padding:48px;font-family:sans-serif;color:#555;max-width:560px;margin:40px auto;text-align:center"><h2 style="color:#0b6b4f">MiyeeBooks</h2><p>'+msg+'</p></div>'; }
+  function babelFallback(){
+    var s = document.createElement('script');
+    s.src = 'https://unpkg.com/@babel/standalone@7.26.4/babel.min.js';
+    s.onload  = function(){ try { run(Babel.transform(src, {presets:['react']}).code); } catch(e){ fail('Could not start: ' + e.message); } };
+    s.onerror = function(){ fail('Could not load the JSX compiler. Please check your internet connection and reload.'); };
+    document.head.appendChild(s);
+  }
+  try {
+    if(window.esbuild && window.esbuild.initialize){
+      window.esbuild.initialize({ wasmURL: 'https://unpkg.com/esbuild-wasm@0.21.5/esbuild.wasm' })
+        .then(function(){ return window.esbuild.transform(src, { loader:'jsx', jsx:'transform', jsxFactory:'React.createElement', jsxFragment:'React.Fragment', target:'es2019' }); })
+        .then(function(r){ run(r.code); })
+        .catch(function(e){ console.warn('esbuild transform failed; using Babel fallback:', e); babelFallback(); });
+    } else {
+      babelFallback();
+    }
+  } catch(e){ babelFallback(); }
+})();
 </script>
 </body>
 </html>
