@@ -13282,6 +13282,8 @@ function HelpGuide({setPage}){
     {id:'coa',       title:'Chart of Accounts'},
     {id:'parties',   title:'Customers & Vendors'},
     {id:'vouchers',  title:'Vouchers & Entries'},
+    {id:'advanced',  title:'Advanced & New Features'},
+    {id:'compliance',title:'Compliance & Tax Tools'},
     {id:'registers', title:'Registers'},
     {id:'inventory', title:'Inventory Module'},
     {id:'factory',   title:'Factory Module'},
@@ -13395,9 +13397,63 @@ function HelpGuide({setPage}){
         ]},
         {type:'heading', text:'TDS in Vouchers'},
         {type:'text', text:'When posting Purchase, JV, or Payment vouchers, check "<b>Apply TDS</b>" at the bottom. Select the TDS section  rate and amount auto-calculate. The TDS amount credits the linked TDS Payable ledger. Net payable = Invoice amount − TDS.'},
-        {type:'heading', text:'Printing Invoices'},
-        {type:'text', text:'Click <b>⎙ PDF</b> on any Sales/Purchase/CN/DN row, or the <b>Print GST Invoice PDF</b> button inside the voucher view. A new window opens with the formatted invoice  click Print or Ctrl+P to save as PDF.'},
-        {type:'tip', text:'The system checks Dr = Cr before posting. If your entry is unbalanced, fix it before posting.'},
+        {type:'heading', text:'Printing & Sharing Invoices'},
+        {type:'text', text:'Click <b>⎙ PDF</b> on any Sales/Purchase/CN/DN row. The invoice opens in a new window with <b>💬 WhatsApp</b> and <b>📧 Email</b> buttons (pre-filled message  attach the saved PDF) plus Print/Save-as-PDF. Choose your invoice design under Company Settings → GST Invoice Template. Use <b>⊕ e-Inv</b> to download the IRP e-invoice JSON.'},
+        {type:'heading', text:'Time-savers'},
+        {type:'steps', items:[
+          '<b>⧉ Copy</b>  duplicate any voucher into a new one, pre-filled, so you only change what differs. Great for repeat invoices/payments.',
+          '<b>🔁 Recurring monthly</b>  tick this on a voucher (rent, salary, AMC, subscription invoices). The Dashboard then reminds you each month and re-posts it with one click.',
+          '<b>Search & filter</b>  the Vouchers list has a search box (number, party, narration, reference) and pages 50 at a time.',
+          '<b>Configurable numbering</b>  set a custom prefix / FY / digit format per voucher type in Company Settings → Voucher Numbering Series.',
+        ]},
+        {type:'tip', text:'The system checks Dr = Cr before posting. If your entry is unbalanced, fix it before posting. Closed/locked periods (Year-End) block back-dated entries.'},
+      ]
+    },
+    advanced: {
+      title:'Advanced & New Features',
+      body: [
+        {type:'text', text:'Beyond core accounting, MiyeeBooks includes analysis and automation tools to save time and add insight.'},
+        {type:'heading', text:'Analysis Reports (Account Manager)'},
+        {type:'steps', items:[
+          '<b>Budget vs Actual</b>  set an annual budget per P&L account; the report pro-rates it to the period and shows favourable/adverse variance. Click Save Budgets to keep them.',
+          '<b>Profitability Analysis</b>  revenue and gross margin by Item, Customer, or HSN. COGS is estimated from your average purchase rate per HSN/item.',
+          '<b>P&L Monthly Trend</b> & <b>Compare PY</b>  see month-by-month P&L and prior-year comparison.',
+        ]},
+        {type:'heading', text:'Fixed Assets & Period-End (Cost Accountant)'},
+        {type:'steps', items:[
+          '<b>Fixed Asset Register</b>  record assets and compute depreciation under both Companies Act (WDV/SLM, day-prorated) and Income-Tax (block WDV, 180-day half rule). One click posts the depreciation JV.',
+          '<b>Prepaid Amortization</b>  spread a prepaid expense (insurance/AMC/rent) over N months; "Post N due" auto-posts each month\'s Dr-expense / Cr-prepaid JV.',
+        ]},
+        {type:'heading', text:'Data Health & Closing (Auditor)'},
+        {type:'steps', items:[
+          '<b>Data Health Check</b>  live checks: Trial Balance tallies, no unbalanced/orphan/empty vouchers, no duplicate numbers, GST posted to GST ledgers, negative cash, data size. Run it before filing or year-end.',
+          '<b>Audit Trail</b>  every create/edit/cancel/import logged with user & timestamp.',
+          '<b>Year-End Closing</b>  locks the FY, carries balances forward, downloads a backup.',
+        ]},
+        {type:'tip', text:'Reports always tally: Trial Balance, Balance Sheet and Cash Flow derive totals from account TYPES (not fixed codes), so they stay correct even if you restructure your chart of accounts.'},
+      ]
+    },
+    compliance: {
+      title:'Compliance & Tax Tools',
+      body: [
+        {type:'heading', text:'Compliance Calendar'},
+        {type:'text', text:'Shows your <b>upcoming and recent filing/payment deadlines</b> (next 90 / last 45 days)  GSTR-1, GSTR-3B + GST payment, TDS challan, PF/ESIC ECR, Professional Tax, TDS returns, advance tax, GSTR-9. Each row carries <b>that period\'s liability</b> (not a cumulative figure) with days-to-due colour coding and an Open shortcut. The Dashboard also surfaces the nearest dues.'},
+        {type:'heading', text:'Period Close'},
+        {type:'text', text:'Month/quarter-end helper: computes the <b>GST ITC set-off</b> head-wise (CGST/SGST/IGST) and posts the set-off JV with one click, plus a close checklist that jumps you to depreciation, amortization, bank reco, GSTR-3B, TDS and statutory dues.'},
+        {type:'heading', text:'Advance Tax Estimator'},
+        {type:'steps', items:[
+          '<b>How the income is derived:</b> YTD Income − Expenses from your books (Apr → today) = profit for the months elapsed, then <b>annualised</b> (× 12 ÷ months) to project the full year. You can switch to "Use YTD only" or "Enter manually".',
+          '<b>Add extra estimated income</b> and <b>deduct extra estimated expenses</b> for the rest of the year to fine-tune the projection.',
+          'Pick the entity rate (25% MSME, 22% 115BAA, 15% 115BAB, 30% firm/other, or custom), add surcharge and 4% cess, less TDS credit and advance tax already paid  the instalment schedule (15 Jun/Sep/Dec/Mar) shows what to pay by each date.',
+        ]},
+        {type:'heading', text:'GST & TDS Returns'},
+        {type:'steps', items:[
+          '<b>GSTR-1 / GSTR-3B</b>  generate the returns and export the GSTN portal JSON. GSTR-3B shows a books-vs-return reconciliation and the correct ITC set-off order (Rule 88A).',
+          '<b>GSTR-2B Recon.</b>  upload the portal 2B; match against your purchases and auto-book missing entries.',
+          '<b>GSTR-9 Annual</b>  yearly outward / ITC / tax summary.',
+          '<b>TDS</b>  apply TDS on vouchers (with the 206AB higher-rate toggle for non-filers), and the TDS Report gives the deducted register + Form 26Q working.',
+          '<b>HSN / SAC Rate Finder</b>  search GST 2.0 rates; the rate auto-fills when you type an HSN on an invoice line.',
+        ]},
       ]
     },
     registers: {
