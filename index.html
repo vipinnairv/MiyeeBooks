@@ -3009,7 +3009,6 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
         {id:'sp_register', label:'Sales / Purchase Register', ico:'📑'},
         {id:'hsn_finder', label:'HSN / SAC Rate Finder', ico:'🔍'},
       ] : []),
-      ...(mod.tds===true ? [{id:'tds_certs', label:'Form 16A & 26AS', ico:'§'}] : []),
       {id:'compliance', label:'Compliance Calendar', ico:'📅'},
       {id:'period_close', label:'Period Close', ico:'🔄'},
       ...(mod.tds===true ? [
@@ -3148,9 +3147,8 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
           {page==='profitability' && <ProfitabilityReport data={data} />}
           {page==='sp_register' && <SalesPurchaseRegister data={data} />}
           {page==='gstr9' && <GSTR9 data={data} />}
-          {page==='tds_certs' && <TDSCertificates data={data} />}
           {page==='period_close' && <PeriodClose data={data} setData={canWrite?setData:()=>{}} showToast={showToast} setPage={setPage} readOnly={isViewer} />}
-          {page==='compliance' && <ComplianceCalendar data={data} />}
+          {page==='compliance' && <ComplianceCalendar data={data} setPage={setPage} />}
           {page==='hsn_finder' && <HSNFinder data={data} />}
           {page==='forex' && <Forex data={data} setData={setData} showToast={showToast} />}
           {page==='mis' && <MISDashboard data={data} balances={ledgerBalances} setPage={setPage} />}
@@ -3196,13 +3194,6 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
           )}
           <div className="credit">
             <div><b>Miyee<span style={{color:'var(--accent)'}}>·</span>Books</b> &nbsp;·&nbsp; MSME Accounting Suite &nbsp;·&nbsp; Built by <b>Vipin Nair</b> &nbsp;·&nbsp; MYeeCFO Series</div>
-            <div className="contact-row">
-              <span style={{fontSize:10.5,letterSpacing:'.8px',textTransform:'uppercase',color:'var(--ink-3)',fontWeight:600}}>Implementation &amp; Onboarding</span>
-              <span className="contact-sep">|</span>
-              <a href="mailto:audit.vipin@gmail.com">📧 audit.vipin@gmail.com</a>
-              <span className="contact-sep">|</span>
-              <a href="tel:+918160203197">📱 +91 81602 03197</a>
-            </div>
           </div>
         </main>
       </div>
@@ -5515,9 +5506,22 @@ function CompanySettings({data, setData, showToast, readOnly=false}){
 // ============================================================================
 function Vouchers({data, setData, showToast, readOnly=false}){
   const [editing, setEditing] = useState(null);
+  const [dup, setDup] = useState(null);          // duplicate-source prefill (new voucher)
   const [showModal, setShowModal] = useState(false);
   const [showImport, setShowImport] = useState(false);
   const [showUpgradeGate, setShowUpgradeGate] = useState(false);
+
+  // Open a NEW voucher pre-filled from an existing one (saves re-typing)
+  const duplicate = (v) => {
+    if(isAtLimit){ setShowUpgradeGate(true); return; }
+    setDup({
+      ...v, id:undefined, number:'', date:today(), status:'Posted',
+      reference:'', irn:'', ackNo:'', ackDate:'', billTags:[], isAdvance:false, recurringMonthly:false,
+      lines:(v.lines||[]).map(l=>({...l, id:uid()})),
+      items:(v.items||[]).map(it=>({...it, id:uid()})),
+    });
+    setEditing(null); setVtype(v.type); setShowModal(true);
+  };
 
   // Free tier check
   const prem = isPremiumActive(data.company);
@@ -5806,6 +5810,7 @@ function Vouchers({data, setData, showToast, readOnly=false}){
                 <td><span className={'badge ' + (v.status==='Cancelled'?'badge-danger':'badge-success')}>{v.status||'Posted'}</span></td>
                 <td className="actions">
                   {!readOnly && <button className="btn btn-sm btn-ghost" onClick={() => { setEditing(v); setVtype(v.type); setShowModal(true); }}>{v.status==='Cancelled'?'View':'Edit'}</button>}
+                  {!readOnly && <button className="btn btn-sm btn-ghost" style={{color:'var(--ink-2)'}} title="Create a new voucher pre-filled from this one" onClick={() => duplicate(v)}>⧉ Copy</button>}
                   {['SAL','PUR','CRN','DBN'].includes(v.type) && v.status!=='Cancelled' && <button className="btn btn-sm btn-ghost" style={{color:'var(--primary)'}} onClick={() => generateInvoicePDF(v, data)}>⎙ PDF</button>}
                   {['SAL','CRN','DBN'].includes(v.type) && v.status!=='Cancelled' && (v.items||[]).length>0 && <button className="btn btn-sm btn-ghost" style={{color:'var(--info)'}} title="Download e-invoice IRP JSON" onClick={() => generateEInvoiceJSON(v, data)}>⊕ e-Inv</button>}
                   {!readOnly && v.status!=='Cancelled' && <button className="btn btn-sm btn-danger" onClick={() => handleDelete(v)}>×</button>}
@@ -5827,7 +5832,7 @@ function Vouchers({data, setData, showToast, readOnly=false}){
         </div>
       )}
 
-      {showModal && <VoucherModal vtype={vtype} voucher={editing} data={data} onSave={handleSave} onClose={() => { setShowModal(false); setEditing(null); }} showToast={showToast} />}
+      {showModal && <VoucherModal vtype={vtype} voucher={editing} prefill={dup} data={data} onSave={handleSave} onClose={() => { setShowModal(false); setEditing(null); setDup(null); }} showToast={showToast} />}
       {showImport && <CsvImportModal title="Bulk Import Vouchers" sampleHeaders={VCHR_SAMPLE_HEADERS} sampleRows={VCHR_SAMPLE_ROWS} sampleFilename="vouchers_import_template.csv" onImport={handleImportVouchers} onClose={() => setShowImport(false)} />}
       {showUpgradeGate && (
         <UpgradeModal data={data} setData={setData} showToast={showToast}
@@ -5883,9 +5888,9 @@ function SearchableSelect({options, value, onChange, placeholder, style}){
   );
 }
 
-function VoucherModal({vtype, voucher, data, onSave, onClose, showToast}){
+function VoucherModal({vtype, voucher, prefill, data, onSave, onClose, showToast}){
   const vt = VOUCHER_TYPES.find(x => x.code === vtype);
-  const [f, setF] = useState(voucher || {
+  const [f, setF] = useState(voucher || prefill || {
     type: vtype,
     date: today(),
     number: '',
@@ -7386,6 +7391,8 @@ function AdvanceTax({data}){
   ];
   const [annualMode, setAnnualMode] = useState('annualised');  // annualised | ytd | manual
   const [pbtManual, setPbtManual] = useState(annualPbtAuto);
+  const [extraIncome, setExtraIncome]   = useState(0);   // expected additional income for rest of FY
+  const [extraExpense, setExtraExpense] = useState(0);   // expected additional expenses for rest of FY
   const [addBacks, setAddBacks]   = useState(0);
   const [deduct, setDeduct]       = useState(0);
   const [ratePreset, setRatePreset] = useState('25');
@@ -7398,7 +7405,8 @@ function AdvanceTax({data}){
   const basePbt = annualMode==='annualised' ? annualPbtAuto
                 : annualMode==='ytd'        ? ytdPbt
                 : pbtManual;
-  const taxable   = Math.max(0, Math.round(basePbt + addBacks - deduct));
+  const projectedPbt = basePbt + extraIncome - extraExpense;
+  const taxable   = Math.max(0, Math.round(projectedPbt + addBacks - deduct));
   const grossTax  = Math.round(taxable * rate/100);
   const surAmt    = Math.round(grossTax * surcharge/100);
   const cessAmt   = Math.round((grossTax + surAmt) * cess/100);
@@ -7432,7 +7440,10 @@ function AdvanceTax({data}){
 
   const handleExcel = () => exportXLSX(`AdvanceTax_FY${fyYear}.xlsx`, [{name:'Advance Tax', rows:[
     [`Advance Tax Computation — ${data.company.name} — FY ${fyYear}-${String(fyYear+1).slice(2)}`],[],
-    ['Estimated Annual Taxable Income (PBT basis)', basePbt],
+    ['Estimated Annual Profit (PBT basis)', basePbt],
+    ['Add: Extra estimated income (rest of year)', extraIncome],
+    ['Less: Extra estimated expenses (rest of year)', extraExpense],
+    ['Projected Annual Profit', projectedPbt],
     ['Add: Disallowances / adjustments', addBacks],
     ['Less: Deductions (Chapter VI-A etc.)', deduct],
     ['Taxable Income', taxable],
@@ -7487,6 +7498,25 @@ function AdvanceTax({data}){
                     : <span style={{fontFamily:'var(--mono)',fontWeight:600}}>₹{fmt(basePbt)}</span>}
                 </td>
               </tr>
+              <tr style={{borderBottom:'1px solid var(--line-2)',background:'var(--surface-2)'}}>
+                <td colSpan="2" style={{padding:'7px 16px',fontSize:11,color:'var(--ink-3)'}}>
+                  ℹ How this is derived: YTD Income ₹{fmt(income)} − Expenses ₹{fmt(expense)} = <b>₹{fmt(ytdPbt)}</b> profit over {monthsElapsed} month{monthsElapsed!==1?'s':''} (Apr→today).
+                  {annualMode==='annualised' && <> × 12/{monthsElapsed} = <b>₹{fmt(annualPbtAuto)}</b> projected for the full year.</>}
+                  {annualMode==='ytd' && <> Using YTD profit as-is (no annualising).</>}
+                  {annualMode==='manual' && <> Using your manual figure.</>}
+                </td>
+              </tr>
+              <tr style={{borderBottom:'1px solid var(--line-2)'}}>
+                <td style={{padding:'9px 16px'}}>Add: Extra estimated income (rest of year)
+                  <div style={{fontSize:10,color:'var(--ink-3)'}}>one-off / expected income not in the books yet</div></td>
+                <td style={{padding:'9px 16px'}}>{numIn(extraIncome, setExtraIncome)}</td>
+              </tr>
+              <tr style={{borderBottom:'1px solid var(--line-2)'}}>
+                <td style={{padding:'9px 16px'}}>Less: Extra estimated expenses (rest of year)
+                  <div style={{fontSize:10,color:'var(--ink-3)'}}>planned spends / bonuses not yet booked</div></td>
+                <td style={{padding:'9px 16px'}}>{numIn(extraExpense, setExtraExpense)}</td>
+              </tr>
+              {(extraIncome>0||extraExpense>0) && sumRow('Projected Annual Profit', projectedPbt, {bold:true})}
               <tr style={{borderBottom:'1px solid var(--line-2)'}}>
                 <td style={{padding:'9px 16px'}}>Add: Disallowances / adjustments
                   <div style={{fontSize:10,color:'var(--ink-3)'}}>e.g. 30% expense u/s 40(a)(ia), depreciation diff., donations</div></td>
@@ -9308,122 +9338,6 @@ function GSTR9({data}){
   </>);
 }
 
-// Form 16A TDS certificate (printable window) for a deductee/quarter
-function generateForm16A(d, data, qLabel){
-  const co = data.company;
-  const rows = d.txns.map((t,i)=>'<tr><td style="text-align:center">'+(i+1)+'</td><td>'+fmtDate(t.date)+'</td><td>'+(t.voucherNo||'')+'</td><td>'+(t.section||'')+'</td><td style="text-align:right">'+fmt(t.base)+'</td><td style="text-align:right">'+fmt(t.tds)+'</td></tr>').join('');
-  const html = '<!DOCTYPE html><html><head><meta charset="utf-8"><title>Form 16A '+(d.name||'')+'</title>'+
-    '<style>body{font-family:Arial,sans-serif;max-width:780px;margin:20px auto;color:#1a1a2e;font-size:13px}'+
-    'h1{font-size:18px;text-align:center;color:#0b6b4f;margin:0 0 2px}.sub{text-align:center;color:#666;font-size:11px;margin-bottom:16px}'+
-    '.box{border:1px solid #ccc;border-radius:6px;padding:12px 14px;margin-bottom:12px}.box b{color:#0b6b4f}'+
-    'table{width:100%;border-collapse:collapse;font-size:12px;margin-top:8px}th{background:#0b6b4f;color:#fff;padding:7px 9px;text-align:left}'+
-    'td{padding:6px 9px;border-bottom:1px solid #eee}.total td{font-weight:700;background:#f0fdf4;border-top:2px solid #0b6b4f}'+
-    '@media print{button{display:none}}</style></head><body>'+
-    '<h1>FORM 16A</h1><div class="sub">Certificate under Section 203 of the Income-Tax Act for TDS — '+qLabel+'</div>'+
-    '<div class="box"><b>Deductor:</b> '+(co.name||'')+'<br>PAN: '+(co.pan||'____')+' &nbsp; TAN: ____________ &nbsp; GSTIN: '+(co.gstin||'')+'<br>'+(co.address||'')+'</div>'+
-    '<div class="box"><b>Deductee:</b> '+(d.name||'')+'<br>PAN: '+(d.pan||'PAN NOT AVAILABLE')+'</div>'+
-    '<table><thead><tr><th style="width:6%">#</th><th>Date of Payment</th><th>Voucher</th><th>Section</th><th style="text-align:right">Amount Paid (₹)</th><th style="text-align:right">TDS Deducted (₹)</th></tr></thead>'+
-    '<tbody>'+rows+'<tr class="total"><td colspan="4">TOTAL</td><td style="text-align:right">'+fmt(d.base)+'</td><td style="text-align:right">'+fmt(d.tds)+'</td></tr></tbody></table>'+
-    '<p style="font-size:11px;color:#666;margin-top:14px">Certified that a sum of ₹'+fmt(d.tds)+' has been deducted at source and is being / has been deposited to the credit of the Central Government. Verify challan &amp; CIN details before issuing the final certificate via TRACES.</p>'+
-    '<div style="margin-top:30px;text-align:right">For <b>'+(co.name||'')+'</b><br><br>Authorised Signatory</div>'+
-    '<div style="text-align:center;margin-top:20px"><button onclick="window.print()" style="padding:10px 26px;background:#0b6b4f;color:#fff;border:none;border-radius:6px;font-weight:600;cursor:pointer">⎙ Print / Save PDF</button></div>'+
-    '</body></html>';
-  const w = window.open('', '_blank', 'width=820,height=950');
-  if(!w){ alert('Allow pop-ups to view the certificate.'); return; }
-  w.document.write(html); w.document.close(); w.focus();
-}
-
-// ============================================================================
-// TDS CERTIFICATES (Form 16A) & 26AS RECONCILIATION
-// ============================================================================
-function TDSCertificates({data}){
-  const fyYear = parseInt((data.company.fyStart||'2025-04-01').slice(0,4));
-  const [q,setQ] = useState('Q1');
-  const ranges = {Q1:[`${fyYear}-04-01`,`${fyYear}-06-30`],Q2:[`${fyYear}-07-01`,`${fyYear}-09-30`],
-    Q3:[`${fyYear}-10-01`,`${fyYear}-12-31`],Q4:[`${fyYear+1}-01-01`,`${fyYear+1}-03-31`]};
-  const [qs,qe] = ranges[q];
-  const qLabel = `${q} FY ${fyYear}-${String(fyYear+1).slice(2)}`;
-
-  const deductees = useMemo(()=>{
-    const map={};
-    data.vouchers.filter(v=>(v.status==='Posted'||v.status==='Draft')&&v.tdsApplicable&&(v.tdsAmount||0)>0
-      &&v.date>=qs&&v.date<=qe&&!(v.tdsSection||'').startsWith('192')).forEach(v=>{
-      const party=data.parties.find(p=>p.id===v.partyId);
-      const pan=party?.pan||(party?.gstin?party.gstin.slice(2,12):'');
-      const key=v.partyName||'—';
-      if(!map[key]) map[key]={name:key,pan,txns:[],tds:0,base:0};
-      map[key].txns.push({date:v.date,section:(v.tdsSection||'').split('—')[0].trim(),base:v.tdsBaseAmount||v.amount||v.total||0,tds:v.tdsAmount||0,voucherNo:v.number});
-      map[key].tds+=v.tdsAmount||0; map[key].base+=v.tdsBaseAmount||v.amount||v.total||0;
-    });
-    return Object.values(map).sort((a,b)=>b.tds-a.tds);
-  },[data.vouchers,q]);
-
-  const pbAsOn = useMemo(()=>computePeriodBals(data,data.company.fyStart||'',today()).asOn,[data]);
-  const tdsRecvBooks = pbAsOn['2700']||0;
-  const [as26,setAs26] = useState(0);
-  const recDiff = Math.round((tdsRecvBooks - as26)*100)/100;
-
-  return (<>
-    <div className="page-head">
-      <div>
-        <h1 className="page-title">TDS Certificates (Form 16A) &amp; 26AS</h1>
-        <div className="page-sub">Issue Form 16A to deductees · reconcile TDS-on-income (26AS) with your books</div>
-      </div>
-      <div className="page-actions">
-        <select value={q} onChange={e=>setQ(e.target.value)} className="btn" style={{padding:'5px 10px',fontSize:12}}>
-          <option value="Q1">Q1 (Apr–Jun)</option><option value="Q2">Q2 (Jul–Sep)</option>
-          <option value="Q3">Q3 (Oct–Dec)</option><option value="Q4">Q4 (Jan–Mar)</option>
-        </select>
-      </div>
-    </div>
-
-    <div className="card" style={{marginBottom:18}}>
-      <div className="card-head"><h3 className="card-title">Form 16A — Deductees ({qLabel})</h3></div>
-      <div className="card-body" style={{padding:0}}>
-        <table style={{width:'100%',borderCollapse:'collapse',fontSize:13}}>
-          <thead><tr style={{background:'var(--surface-2)',borderBottom:'1px solid var(--line)'}}>
-            <th style={{padding:'9px 16px',textAlign:'left'}}>Deductee</th><th style={{padding:'9px 16px',textAlign:'left',width:120}}>PAN</th>
-            <th style={{padding:'9px 16px',textAlign:'right',width:90}}>Txns</th>
-            <th style={{padding:'9px 16px',textAlign:'right',width:130}}>Amount Paid (₹)</th>
-            <th style={{padding:'9px 16px',textAlign:'right',width:130}}>TDS (₹)</th><th style={{padding:'9px 16px',width:130}}></th>
-          </tr></thead>
-          <tbody>
-            {deductees.length===0 ? (
-              <tr><td colSpan="6" style={{padding:24,textAlign:'center',color:'var(--ink-3)'}}>No non-salary TDS deductions in {q}.</td></tr>
-            ) : deductees.map((d,i)=>(
-              <tr key={i} style={{borderBottom:'1px solid var(--line-2)'}}>
-                <td style={{padding:'8px 16px',fontWeight:600}}>{d.name}</td>
-                <td style={{padding:'8px 16px',fontFamily:'var(--mono)',fontSize:11,color:d.pan?'var(--ink)':'var(--danger)'}}>{d.pan||'NO PAN'}</td>
-                <td style={{padding:'8px 16px',textAlign:'right'}}>{d.txns.length}</td>
-                <td style={{padding:'8px 16px',textAlign:'right',fontFamily:'var(--mono)'}}>{fmt(d.base)}</td>
-                <td style={{padding:'8px 16px',textAlign:'right',fontFamily:'var(--mono)',fontWeight:600}}>{fmt(d.tds)}</td>
-                <td style={{padding:'8px 16px',textAlign:'right'}}><button className="btn btn-sm btn-primary" onClick={()=>generateForm16A(d,data,qLabel)}>⎙ Form 16A</button></td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </div>
-
-    <div className="card">
-      <div className="card-head"><h3 className="card-title">26AS Reconciliation — TDS on your income</h3></div>
-      <div className="card-body">
-        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:14,maxWidth:680}}>
-          <div className="field"><label>Per Books — TDS Receivable ledger (as on today)</label>
-            <input value={fmt(tdsRecvBooks)} readOnly style={{fontFamily:'var(--mono)',background:'var(--surface-2)'}} /></div>
-          <div className="field"><label>Per 26AS / Form 16A received (enter)</label>
-            <input type="number" value={as26} onChange={e=>setAs26(parseFloat(e.target.value)||0)} /></div>
-          <div className="field"><label>Difference</label>
-            <input value={fmt(recDiff)} readOnly style={{fontFamily:'var(--mono)',color:Math.abs(recDiff)<1?'var(--primary)':'var(--danger)',background:'var(--surface-2)'}} /></div>
-        </div>
-        <div style={{marginTop:10,fontSize:11,color:'var(--ink-3)'}}>
-          Enter the total TDS reflected in your Form 26AS / AIS. A difference means TDS deducted by a customer isn't booked in your "TDS Receivable" ledger (or vice-versa) — chase the missing certificate or pass the entry.
-        </div>
-      </div>
-    </div>
-  </>);
-}
-
 // ============================================================================
 // PERIOD-CLOSE — month/quarter-end checklist + GST set-off JV
 // ============================================================================
@@ -9831,119 +9745,112 @@ function SalesPurchaseRegister({data}){
 // ============================================================================
 // COMPLIANCE CALENDAR & STATUTORY DUES
 // ============================================================================
-function ComplianceCalendar({data}){
+function ComplianceCalendar({data, setPage}){
   const fyStart = data.company.fyStart || '2025-04-01';
   const fyYear  = parseInt(fyStart.slice(0,4));
   const t = today();
+  const base = new Date(t+'T00:00:00');
 
-  const dues = useMemo(() => complianceDues(data), [data]);
-  const totalDue = dues.reduce((s,d)=>s+d.amount,0);
-
-  // Month-wise calendar: each month's accrued liability + statutory due date
-  const calendar = useMemo(() => {
-    const months = Array.from({length:12},(_,i)=>{
-      const m=((3+i)%12)+1, y=m>=4?fyYear:fyYear+1;
-      return `${y}-${String(m).padStart(2,'0')}`;
-    });
+  // Build the actual filing/payment deadlines around today, each carrying that
+  // PERIOD'S liability (not a misleading cumulative figure).
+  const deadlines = useMemo(() => {
     const outIds=[...acctIdSet(data,'gst_output')], inIds=[...acctIdSet(data,'gst_input')];
     const tdsIds=(data.coa||[]).filter(a=>/tds\s*payable/i.test(a.name||'')).map(a=>a.id);
+    const pfId=(data.coa||[]).find(a=>/pf\s*payable|provident/i.test(a.name||''))?.id||'1322';
+    const esicId=(data.coa||[]).find(a=>/esic/i.test(a.name||''))?.id||'1323';
+    const ptId=(data.coa||[]).find(a=>/professional\s*tax/i.test(a.name||''))?.id||'1324';
     const rows=[];
-    months.forEach(mo => {
-      const last = new Date(parseInt(mo.slice(0,4)), parseInt(mo.slice(5,7)), 0).getDate();
+    for(let off=-3; off<=2; off++){               // period months around now
+      const d  = new Date(base.getFullYear(), base.getMonth()+off, 1);
+      const mo = d.toISOString().slice(0,7);
+      const last = new Date(d.getFullYear(), d.getMonth()+1, 0).getDate();
       const pb = computePeriodBals(data, mo+'-01', mo+'-'+String(last).padStart(2,'0')).period;
       const sm = (ids,sg)=>ids.reduce((s,id)=>s+sg*(pb[id]||0),0);
-      const gst = Math.max(0, sm(outIds,-1)-sm(inIds,1));
-      const tds = sm(tdsIds,-1);
-      const pf  = -(pb['1322']||0), esic=-(pb['1323']||0), pt=-(pb['1324']||0);
-      const next = (day)=>{ const d=new Date(parseInt(mo.slice(0,4)), parseInt(mo.slice(5,7)), day); return d.toISOString().slice(0,10); };
-      [['TDS Payment',tds,next(7)],['PF / ESIC',pf+esic,next(15)],['GSTR-3B + GST',gst,next(20)],['Professional Tax',pt,next(21)]]
-        .forEach(([head,amt,due])=>{ if(amt>0.5) rows.push({mo, head, amt:Math.round(amt), due, overdue: t>due}); });
-    });
-    return rows;
-  }, [data, fyYear, t]);
+      const gst = Math.round(Math.max(0, sm(outIds,-1)-sm(inIds,1)));
+      const tds = Math.round(sm(tdsIds,-1));
+      const pf  = Math.round(-(pb[pfId]||0)-(pb[esicId]||0));
+      const pt  = Math.round(-(pb[ptId]||0));
+      const fileM = new Date(d.getFullYear(), d.getMonth()+1, 1);   // filed next month
+      const dd = day => new Date(fileM.getFullYear(), fileM.getMonth(), day).toISOString().slice(0,10);
+      rows.push({form:'TDS Payment — Challan ITNS-281', period:mo, due:dd(7),  amount:tds, page:'tds_report'});
+      rows.push({form:'GSTR-1 — Outward supplies',       period:mo, due:dd(11), amount:null, always:true, page:'gstr1'});
+      rows.push({form:'PF & ESIC — ECR upload',          period:mo, due:dd(15), amount:pf,  page:null});
+      rows.push({form:'GSTR-3B + GST payment',           period:mo, due:dd(20), amount:gst, always:true, page:'gstr3b'});
+      rows.push({form:'Professional Tax payment',        period:mo, due:dd(21), amount:pt,  page:null});
+    }
+    // Quarterly TDS return (26Q) + Advance tax
+    const qEnds=[[`${fyYear}-07-31`,'Q1'],[`${fyYear}-10-31`,'Q2'],[`${fyYear+1}-01-31`,'Q3'],[`${fyYear+1}-05-31`,'Q4']];
+    qEnds.forEach(([due,q])=>rows.push({form:`TDS Return — Form 26Q (${q})`, period:q, due, amount:null, page:'tds_report'}));
+    [['06-15','1st · 15%'],['09-15','2nd · 45%'],['12-15','3rd · 75%']].forEach(([md,l])=>
+      rows.push({form:`Advance Tax — ${l}`, period:`FY${fyYear}`, due:`${fyYear}-${md}`, amount:null, page:'adv_tax'}));
+    rows.push({form:'Advance Tax — 4th · 100%', period:`FY${fyYear}`, due:`${fyYear+1}-03-15`, amount:null, page:'adv_tax'});
+    rows.push({form:'GSTR-9 — Annual Return', period:`FY${fyYear}`, due:`${fyYear+1}-12-31`, amount:null, page:'gstr9'});
 
-  // Advance tax instalment dates
-  const advDates = [
-    {label:'Advance Tax — 1st (15%)', due:`${fyYear}-06-15`},
-    {label:'Advance Tax — 2nd (45%)', due:`${fyYear}-09-15`},
-    {label:'Advance Tax — 3rd (75%)', due:`${fyYear}-12-15`},
-    {label:'Advance Tax — 4th (100%)',due:`${fyYear+1}-03-15`},
-  ].map(a=>({...a, overdue:t>a.due}));
+    const lo=new Date(base); lo.setDate(lo.getDate()-45);
+    const hi=new Date(base); hi.setDate(hi.getDate()+90);
+    return rows
+      .filter(x => { const dt=new Date(x.due); return dt>=lo && dt<=hi; })
+      .filter(x => x.always || x.amount===null || x.amount>0.5)
+      .map(x => ({...x, days: Math.round((new Date(x.due)-base)/86400000)}))
+      .sort((a,b)=>a.due.localeCompare(b.due));
+  }, [data, t]);
+
+  const overdue = deadlines.filter(d=>d.days<0 && (d.amount===null?false:d.amount>0));
+  const dueSoon = deadlines.filter(d=>d.days>=0 && d.days<=10);
+  const totalUpcoming = deadlines.filter(d=>d.days>=0 && d.amount).reduce((s,d)=>s+d.amount,0);
+
+  const statusBadge = (d) => {
+    if(d.days<0) return <span className="badge badge-danger" style={{fontSize:10}}>{-d.days}d overdue</span>;
+    if(d.days<=7) return <span className="badge" style={{fontSize:10,background:'#fff3e0',color:'#e65100'}}>due in {d.days}d</span>;
+    return <span className="badge badge-info" style={{fontSize:10}}>in {d.days}d</span>;
+  };
 
   return (<>
     <div className="page-head">
       <div>
-        <h1 className="page-title">Compliance Calendar &amp; Statutory Dues</h1>
-        <div className="page-sub">FY {fyYear}–{String(fyYear+1).slice(2)} · GST · TDS · PF/ESIC/PT · Advance Tax due dates &amp; outstanding</div>
+        <h1 className="page-title">Compliance Calendar</h1>
+        <div className="page-sub">FY {fyYear}–{String(fyYear+1).slice(2)} · upcoming GST · TDS · PF/ESIC/PT · Advance-tax deadlines with the amount due</div>
       </div>
     </div>
 
-    {/* Current outstanding */}
-    <div style={{fontWeight:700,fontSize:12,color:'var(--ink-3)',textTransform:'uppercase',letterSpacing:'.5px',marginBottom:8}}>Outstanding now (per books)</div>
     <div className="stat-grid" style={{marginBottom:18}}>
-      {dues.length===0
-        ? <div className="stat"><div className="stat-label">All statutory ledgers</div><div className="stat-value" style={{color:'var(--primary)'}}>✓ Nil</div></div>
-        : dues.map(d=>(
-          <div key={d.key} className="stat" style={{borderTop:`3px solid ${d.color}`}}>
-            <div className="stat-label">{d.label}</div>
-            <div className="stat-value rupee">₹{fmt(d.amount)}</div>
-            <div className="stat-delta" style={{color:d.days<0?'var(--danger)':d.days<=7?'#e65100':'var(--ink-3)'}}>
-              Due {fmtDate(d.due)} · {d.days<0?`${-d.days}d overdue`:`in ${d.days}d`}
-            </div>
-          </div>
-        ))}
-      <div className="stat stat-danger"><div className="stat-label">Total Outstanding</div><div className="stat-value rupee">₹{fmt(totalDue)}</div></div>
+      <div className={'stat '+(overdue.length?'stat-danger':'')}><div className="stat-label">Overdue</div>
+        <div className="stat-value" style={{color:overdue.length?'var(--danger)':'var(--primary)'}}>{overdue.length?overdue.length:'✓ 0'}</div></div>
+      <div className="stat stat-gold"><div className="stat-label">Due within 10 days</div><div className="stat-value">{dueSoon.length}</div></div>
+      <div className="stat stat-info"><div className="stat-label">Upcoming payable (est.)</div><div className="stat-value rupee">₹{fmt(totalUpcoming)}</div></div>
     </div>
 
-    {/* Month-wise calendar */}
-    <div className="card" style={{marginBottom:18}}>
-      <div className="card-head"><h3 className="card-title">Month-wise Compliance Calendar</h3></div>
+    <div className="card">
+      <div className="card-head"><h3 className="card-title">Upcoming &amp; Recent Deadlines</h3>
+        <span style={{fontSize:11,color:'var(--ink-3)'}}>next 90 days · last 45 days</span></div>
       <div className="card-body" style={{padding:0,overflowX:'auto'}}>
         <table style={{width:'100%',borderCollapse:'collapse',fontSize:12.5}}>
           <thead><tr style={{background:'var(--surface-2)',borderBottom:'1px solid var(--line)'}}>
+            <th style={{padding:'9px 16px',textAlign:'left'}}>Return / Payment</th>
             <th style={{padding:'9px 16px',textAlign:'left',width:90}}>Period</th>
-            <th style={{padding:'9px 16px',textAlign:'left'}}>Compliance</th>
+            <th style={{padding:'9px 16px',textAlign:'left',width:110}}>Due Date</th>
             <th style={{padding:'9px 16px',textAlign:'right',width:140}}>Amount (₹)</th>
-            <th style={{padding:'9px 16px',textAlign:'left',width:120}}>Due Date</th>
-            <th style={{padding:'9px 16px',textAlign:'center',width:110}}>Status</th>
+            <th style={{padding:'9px 16px',textAlign:'center',width:120}}>Status</th>
+            <th style={{padding:'9px 16px',width:60}}></th>
           </tr></thead>
           <tbody>
-            {calendar.length===0 ? (
-              <tr><td colSpan="5" style={{padding:24,textAlign:'center',color:'var(--ink-3)'}}>No statutory liabilities accrued yet this FY.</td></tr>
-            ) : calendar.map((r,i)=>(
-              <tr key={i} style={{borderBottom:'1px solid var(--line-2)'}}>
-                <td style={{padding:'8px 16px',fontSize:12}}>{r.mo}</td>
-                <td style={{padding:'8px 16px'}}>{r.head}</td>
-                <td style={{padding:'8px 16px',textAlign:'right',fontFamily:'var(--mono)',fontWeight:600}}>{fmt(r.amt)}</td>
-                <td style={{padding:'8px 16px'}}>{fmtDate(r.due)}</td>
-                <td style={{padding:'8px 16px',textAlign:'center'}}>
-                  <span className={'badge '+(r.overdue?'badge-danger':'badge-info')} style={{fontSize:10}}>{r.overdue?'Due passed':'Upcoming'}</span>
-                </td>
+            {deadlines.length===0 ? (
+              <tr><td colSpan="6" style={{padding:24,textAlign:'center',color:'var(--ink-3)'}}>No deadlines in this window.</td></tr>
+            ) : deadlines.map((d,i)=>(
+              <tr key={i} style={{borderBottom:'1px solid var(--line-2)', background:d.days<0&&d.amount?'#fdecea':d.days>=0&&d.days<=7?'#fff8e1':'transparent'}}>
+                <td style={{padding:'8px 16px',fontWeight:500}}>{d.form}</td>
+                <td style={{padding:'8px 16px',fontSize:12,color:'var(--ink-3)'}}>{d.period}</td>
+                <td style={{padding:'8px 16px',whiteSpace:'nowrap'}}>{fmtDate(d.due)}</td>
+                <td style={{padding:'8px 16px',textAlign:'right',fontFamily:'var(--mono)',fontWeight:600}}>{d.amount===null?'—':d.amount>0?fmt(d.amount):'Nil'}</td>
+                <td style={{padding:'8px 16px',textAlign:'center'}}>{statusBadge(d)}</td>
+                <td style={{padding:'8px 16px',textAlign:'center'}}>{d.page && setPage && <button className="btn btn-sm btn-ghost" style={{fontSize:11}} onClick={()=>setPage(d.page)}>Open</button>}</td>
               </tr>
             ))}
           </tbody>
         </table>
       </div>
-      <div style={{padding:'8px 16px',fontSize:11,color:'var(--ink-3)'}}>"Amount" is the liability accrued in that month from your ledgers. "Due passed" flags dates before today — verify the challan was actually paid; cleared ledgers show ₹0 in "Outstanding now" above.</div>
-    </div>
-
-    {/* Advance tax */}
-    <div className="card">
-      <div className="card-head"><h3 className="card-title">Income-Tax — Advance Tax Instalments</h3></div>
-      <div className="card-body" style={{padding:0}}>
-        <table style={{width:'100%',borderCollapse:'collapse',fontSize:13}}>
-          <tbody>
-            {advDates.map((a,i)=>(
-              <tr key={i} style={{borderBottom:i<advDates.length-1?'1px solid var(--line-2)':'none'}}>
-                <td style={{padding:'10px 16px'}}>{a.label}</td>
-                <td style={{padding:'10px 16px'}}>{fmtDate(a.due)}</td>
-                <td style={{padding:'10px 16px',textAlign:'center',width:120}}>
-                  <span className={'badge '+(a.overdue?'badge-danger':'badge-info')} style={{fontSize:10}}>{a.overdue?'Due passed':'Upcoming'}</span>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+      <div style={{padding:'8px 16px',fontSize:11,color:'var(--ink-3)'}}>
+        "Amount" is that period's liability from your ledgers (—  = filing only, Nil = nothing payable). GST = net output tax after ITC. Always verify the challan/return was actually filed; this is a reminder, not a confirmation of filing.
       </div>
     </div>
   </>);
