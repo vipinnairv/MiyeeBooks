@@ -1384,7 +1384,8 @@ const VOUCHER_TYPES = [
 ];
 
 // ── PREMIUM / FREEMIUM ───────────────────────────────────────────────────────
-const FREE_VOUCHER_LIMIT  = 100;         // max active vouchers in free tier
+const SUBSCRIPTION_ENABLED = false;      // master switch: false = no limits, no upgrade UI
+const FREE_VOUCHER_LIMIT  = 100;         // max active vouchers in free tier (only when subscription enabled)
 const PREMIUM_PRICE_INR   = 1500;        // ₹1500 / month
 const PREMIUM_CONTACT     = 'audit.vipin@gmail.com';
 const PREMIUM_PHONE       = '+91 81602 03197';
@@ -1720,23 +1721,60 @@ const buildSampleData = () => {
 
   // ---- Parties (fixed ids for bill-tag references) ----
   const P = {
-    reliance:'sp_rel', tcs:'sp_tcs', acme:'sp_acme', global:'sp_glob',
-    birla:'sp_birla', mahesh:'sp_mahesh', jio:'sp_jio', landlord:'sp_land',
-    sharma:'sp_sharma', buildwell:'sp_build',
+    reliance:'sp_rel', acme:'sp_acme', mahindra:'sp_mah', patel:'sp_patel', global:'sp_glob',
+    steelco:'sp_steel', motorworld:'sp_motor', birla:'sp_birla', mahesh:'sp_mahesh',
+    jio:'sp_jio', landlord:'sp_land', sharma:'sp_sharma', buildwell:'sp_build',
   };
   const parties = [
     {id:P.reliance, name:'Reliance Industries Ltd', type:'Customer', gstin:'27AAACR5055K1Z7', state:'Maharashtra', stateCode:'27', address:'Maker Chambers IV, Mumbai', email:'ap@ril.com', phone:'+91 22 3555 5000', currency:'INR', balance:0},
-    {id:P.tcs, name:'Tata Consultancy Services', type:'Customer', gstin:'27AAACT2727Q1ZW', state:'Maharashtra', stateCode:'27', address:'TCS House, Mumbai', email:'vendor@tcs.com', phone:'+91 22 6778 9999', currency:'INR', balance:0},
-    {id:P.acme, name:'Acme Trading Co.', type:'Customer', gstin:'24AABCA1234Z1Z5', state:'Gujarat', stateCode:'24', address:'Ahmedabad', email:'info@acme.in', phone:'+91 79 2658 0000', currency:'INR', balance:0},
+    {id:P.acme, name:'Acme Engineering Co.', type:'Customer', gstin:'24AABCA1234Z1Z5', state:'Gujarat', stateCode:'24', address:'Ahmedabad', email:'info@acme.in', phone:'+91 79 2658 0000', currency:'INR', balance:0},
+    {id:P.mahindra, name:'Mahindra & Mahindra Ltd', type:'Customer', gstin:'27AAACM3025E1ZA', state:'Maharashtra', stateCode:'27', address:'Worli, Mumbai', email:'purchase@mahindra.com', phone:'+91 22 2490 0000', currency:'INR', balance:0},
+    {id:P.patel, name:'Patel Hardware Traders', type:'Customer', gstin:'24AAEPP8765R1Z3', state:'Gujarat', stateCode:'24', address:'Rajkot', email:'patel@hardware.in', phone:'+91 281 245 6000', currency:'INR', balance:0},
     {id:P.global, name:'GlobalCorp Inc. (USA)', type:'Customer', gstin:'', state:'Outside India', stateCode:'97', address:'Delaware, USA', email:'ap@globalcorp.com', phone:'+1 302 555 0100', currency:'USD', balance:0, isForeign:true},
+    {id:P.steelco, name:'Gujarat Steel Suppliers', type:'Vendor', gstin:'24AADCS5566F1Z8', state:'Gujarat', stateCode:'24', address:'Bhavnagar', email:'sales@gjsteel.in', phone:'+91 278 220 1000', currency:'INR', balance:0},
+    {id:P.motorworld, name:'Motor World Pvt Ltd', type:'Vendor', gstin:'27AABCM7788H1Z4', state:'Maharashtra', stateCode:'27', address:'Pune', email:'sales@motorworld.in', phone:'+91 20 2567 8000', currency:'INR', balance:0},
     {id:P.birla, name:'Aditya Birla Supplies', type:'Vendor', gstin:'24AABCA9999B1Z2', state:'Gujarat', stateCode:'24', address:'Surat', email:'sales@absupplies.in', phone:'+91 261 234 5000', currency:'INR', balance:0},
     {id:P.mahesh, name:'Mahesh Stationers', type:'Vendor', gstin:'24BBCDM4321A1Z0', state:'Gujarat', stateCode:'24', address:'Ahmedabad', email:'mahesh@stat.in', phone:'+91 98765 12345', currency:'INR', balance:0},
     {id:P.jio, name:'Reliance Jio (Telecom)', type:'Vendor', gstin:'27AAACR5055K2Z6', state:'Maharashtra', stateCode:'27', address:'Mumbai', email:'support@jio.com', phone:'1800 889 9999', currency:'INR', balance:0},
-    {id:P.landlord, name:'Office Landlord  Mr. Patel', type:'Vendor', gstin:'', state:'Gujarat', stateCode:'24', address:'Ahmedabad', email:'patel@landlord.in', phone:'+91 99999 11111', currency:'INR', balance:0, unregistered:true},
+    {id:P.landlord, name:'Factory Landlord  Mr. Patel', type:'Vendor', gstin:'', state:'Gujarat', stateCode:'24', address:'Ahmedabad', email:'patel@landlord.in', phone:'+91 99999 11111', currency:'INR', balance:0, unregistered:true},
     {id:P.sharma, name:'Sharma & Associates (CA)', type:'Vendor', gstin:'24AAFFS1234K1ZP', state:'Gujarat', stateCode:'24', address:'Ahmedabad', email:'ca@sharma.in', phone:'+91 79 4000 1111', currency:'INR', balance:0, pan:'AAFFS1234K'},
     {id:P.buildwell, name:'BuildWell Contractors Pvt Ltd', type:'Vendor', gstin:'24AABCB7777C1Z9', state:'Gujarat', stateCode:'24', address:'Gandhinagar', email:'works@buildwell.in', phone:'+91 79 5000 2222', currency:'INR', balance:0, pan:'AABCB7777C'},
   ];
   const partyOf = id => parties.find(p => p.id === id);
+
+  // ---- Factory: Stock Items, BOMs ----
+  const SI = {steel:'si_steel', motor:'si_motor', bolt:'si_bolt', paint:'si_paint', box:'si_box', pump:'si_pump', fan:'si_fan'};
+  const stockItems = [
+    {id:SI.steel, code:'RM-STEEL', name:'Steel Sheet', unit:'Kg', category:'Raw Material', hsn:'7208', gstRate:18, openingQty:500, openingValue:40000, reorderLevel:150, active:true},
+    {id:SI.motor, code:'RM-MOTOR', name:'Electric Motor 1HP', unit:'Nos', category:'Raw Material', hsn:'8501', gstRate:18, openingQty:50, openingValue:50000, reorderLevel:20, active:true},
+    {id:SI.bolt, code:'RM-BOLT', name:'Bolts & Fasteners', unit:'Nos', category:'Raw Material', hsn:'7318', gstRate:18, openingQty:2000, openingValue:10000, reorderLevel:500, active:true},
+    {id:SI.paint, code:'RM-PAINT', name:'Industrial Paint', unit:'Lt', category:'Raw Material', hsn:'3208', gstRate:18, openingQty:100, openingValue:15000, reorderLevel:30, active:true},
+    {id:SI.box, code:'PK-BOX', name:'Packing Box', unit:'Nos', category:'Packing Material', hsn:'4819', gstRate:12, openingQty:300, openingValue:6000, reorderLevel:100, active:true},
+    {id:SI.pump, code:'FG-PUMP', name:'Water Pump 1HP', unit:'Nos', category:'Finished Goods', hsn:'8413', gstRate:18, openingQty:20, openingValue:60000, reorderLevel:10, active:true},
+    {id:SI.fan, code:'FG-FAN', name:'Industrial Fan', unit:'Nos', category:'Finished Goods', hsn:'8414', gstRate:18, openingQty:15, openingValue:37500, reorderLevel:8, active:true},
+  ];
+  const siOf = id => stockItems.find(s=>s.id===id);
+  const boms = [
+    {id:'bom_pump', fgItemId:SI.pump, name:'Water Pump 1HP', description:'Standard pump assembly', yieldQty:1, components:[
+      {itemId:SI.steel, qty:5,   uom:'Kg',  itemName:'Steel Sheet'},
+      {itemId:SI.motor, qty:1,   uom:'Nos', itemName:'Electric Motor 1HP'},
+      {itemId:SI.bolt,  qty:12,  uom:'Nos', itemName:'Bolts & Fasteners'},
+      {itemId:SI.paint, qty:0.5, uom:'Lt',  itemName:'Industrial Paint'},
+      {itemId:SI.box,   qty:1,   uom:'Nos', itemName:'Packing Box'},
+    ]},
+    {id:'bom_fan', fgItemId:SI.fan, name:'Industrial Fan', description:'Fan assembly', yieldQty:1, components:[
+      {itemId:SI.steel, qty:3,   uom:'Kg',  itemName:'Steel Sheet'},
+      {itemId:SI.motor, qty:1,   uom:'Nos', itemName:'Electric Motor 1HP'},
+      {itemId:SI.bolt,  qty:8,   uom:'Nos', itemName:'Bolts & Fasteners'},
+      {itemId:SI.paint, qty:0.3, uom:'Lt',  itemName:'Industrial Paint'},
+      {itemId:SI.box,   qty:1,   uom:'Nos', itemName:'Packing Box'},
+    ]},
+  ];
+  const scaleBOM = (bomId, qty) => {
+    const b = boms.find(x=>x.id===bomId); const ratio = qty/(b.yieldQty||1);
+    return b.components.map(c=>({itemId:c.itemId, itemName:c.itemName, qty:+(c.qty*ratio).toFixed(4), uom:c.uom}));
+  };
+  const productionOrders = [];
 
   // ---- Cost Centres & Departments ----
   const CC = {a:'sc_a', b:'sc_b'};
@@ -1919,75 +1957,86 @@ const buildSampleData = () => {
   const TDS_I = {tdsRate:10, tdsSection:'194I  Rent', tdsLedger:'1317', tdsNature:'Rent', noGst:true};
   const TDS_C = {tdsRate:2,  tdsSection:'194C  Contractor', tdsLedger:'1315', tdsNature:'Contractor Payments'};
 
+  // ---- Stock-linked sale/purchase builders (carry itemId for inventory) ----
+  const mkSaleFG = (date, pid, si, qty, unitRate, gstRate, {inter=false, exp=false, cc='', dept=D.sales}={}) => {
+    const taxable=r2(qty*unitRate);
+    const g = exp?{cgst:0,sgst:0,igst:0}:gst(taxable, gstRate, inter);
+    const total=r2(taxable+g.cgst+g.sgst+g.igst); const p=partyOf(pid);
+    const lines=[{id:uid(), accountId:'2400', debit:total, credit:0, narration:'To '+p.name, partyId:pid}];
+    lines.push({id:uid(), accountId:'3100', debit:0, credit:taxable, narration:'Sale of '+si.name, costCentreId:cc, departmentId:dept});
+    if(g.igst) lines.push({id:uid(), accountId:'1312', debit:0, credit:g.igst, narration:'IGST Output'});
+    if(g.cgst) lines.push({id:uid(), accountId:'1310', debit:0, credit:g.cgst, narration:'CGST Output'});
+    if(g.sgst) lines.push({id:uid(), accountId:'1311', debit:0, credit:g.sgst, narration:'SGST Output'});
+    const v={id:uid(), type:'SAL', date, number:vnum('SAL'), partyId:pid, partyName:p.name,
+      narration:'Sale of '+si.name+' to '+p.name, reference:'', placeOfSupply:p.stateCode,
+      items:[{id:uid(), itemId:si.id, description:si.name, hsn:si.hsn, qty, rate:unitRate, gstRate:exp?0:gstRate, accountId:'3100'}],
+      taxable, cgst:g.cgst, sgst:g.sgst, igst:g.igst, total, amount:total, isInterState:inter, isExport:exp,
+      costCentreId:cc, departmentId:dept, lines, status:'Posted', createdAt:stamp};
+    vouchers.push(v); return v;
+  };
+  const mkPurchaseRM = (date, pid, si, qty, unitRate, gstRate, {inter=false, cc=CC.a, dept=D.prod}={}) => {
+    const taxable=r2(qty*unitRate);
+    const g=gst(taxable, gstRate, inter); const total=r2(taxable+g.cgst+g.sgst+g.igst); const p=partyOf(pid);
+    const lines=[{id:uid(), accountId:'4100', debit:taxable, credit:0, narration:'Purchase of '+si.name, costCentreId:cc, departmentId:dept}];
+    if(g.igst) lines.push({id:uid(), accountId:'2602', debit:g.igst, credit:0, narration:'IGST Input'});
+    if(g.cgst) lines.push({id:uid(), accountId:'2600', debit:g.cgst, credit:0, narration:'CGST Input'});
+    if(g.sgst) lines.push({id:uid(), accountId:'2601', debit:g.sgst, credit:0, narration:'SGST Input'});
+    lines.push({id:uid(), accountId:'1300', debit:0, credit:total, narration:'To '+p.name, partyId:pid});
+    const v={id:uid(), type:'PUR', date, number:vnum('PUR'), partyId:pid, partyName:p.name,
+      narration:'Purchase of '+si.name+' from '+p.name, reference:'', placeOfSupply:p.stateCode,
+      items:[{id:uid(), itemId:si.id, description:si.name, hsn:si.hsn, qty, rate:unitRate, gstRate, accountId:'4100'}],
+      taxable, cgst:g.cgst, sgst:g.sgst, igst:g.igst, total, amount:total, isInterState:inter,
+      costCentreId:cc, departmentId:dept, lines, status:'Posted', createdAt:stamp};
+    vouchers.push(v); return v;
+  };
+
   // ================= TRANSACTIONS (FY 2025-26) =================
-  // ---- April ----
-  const s1 = mkSale('2025-04-03', P.acme, '3100', 100000, 18, {cc:CC.a});
-  const s2 = mkSale('2025-04-08', P.reliance, '3100', 200000, 18, {inter:true, cc:CC.a});
-  const pu1 = mkPurchase('2025-04-05', P.birla, '4100', 80000, 18, {cc:CC.a});
-  mkPurchase('2025-04-10', P.mahesh, '4540', 15000, 18, {cc:CC.b, dept:D.admin});
-  mkExpTDS('2025-04-12', P.landlord, '4500', 50000, {...TDS_I, dept:D.admin});
-  mkReceipt('2025-04-20', P.acme, s1.total, s1.id);
-  mkPayVendor('2025-04-25', P.birla, pu1.total, pu1.id);
-  mkContra('2025-04-28', '2500', '2510', 20000, 'Cash deposited to Kotak bank');
-  runPayroll('2025-04');
-  // ---- May ----
-  const s3 = mkSale('2025-05-05', P.tcs, '3110', 150000, 18, {inter:true});
-  mkSale('2025-05-12', P.global, '3120', 300000, 0, {exp:true});
-  mkPurchase('2025-05-08', P.birla, '4110', 120000, 18, {cc:CC.b});
-  mkExpTDS('2025-05-15', P.sharma, '4550', 40000, {...TDS_J, dept:D.admin});
-  mkPay('2025-05-18', '4520', 9440, 'Telephone & Internet  Jio', {dept:D.admin});
-  mkReceipt('2025-05-22', P.reliance, s2.total, s2.id);
-  mkJV('2025-05-25', [{accountId:'4400', debit:15000}, {accountId:'2130', credit:15000}], 'Depreciation for April-May');
-  runPayroll('2025-05');
-  // ---- June ----
-  const s5 = mkSale('2025-06-04', P.acme, '3100', 90000, 18, {cc:CC.a});
-  const pu4 = mkPurchase('2025-06-07', P.birla, '4100', 60000, 18, {cc:CC.a});
-  mkExpTDS('2025-06-10', P.buildwell, '4505', 100000, {...TDS_C, cc:CC.b, dept:D.prod});
-  mkReceipt('2025-06-15', P.tcs, s3.total, s3.id);
-  mkContra('2025-06-20', '2510', '2511', 100000, 'Fund transfer Kotak → HDFC');
-  mkJV('2025-06-28', [{accountId:'4555', debit:25000}, {accountId:'1330', credit:25000}], 'Provision for audit fees');
-  runPayroll('2025-06');
-  // ---- July ----
-  const s6 = mkSale('2025-07-03', P.acme, '3110', 120000, 18, {cc:CC.b});
-  mkPurchase('2025-07-09', P.mahesh, '4540', 12000, 18, {cc:CC.b, dept:D.admin});
-  mkPay('2025-07-12', '4510', 18000, 'Electricity charges', {dept:D.admin});
-  mkPay('2025-07-15', '4300', 8000, 'Interest on bank loan', {dept:D.admin});
-  mkReceipt('2025-07-20', P.acme, s5.total, s5.id);
-  mkJV('2025-07-25', [{accountId:'4400', debit:15000}, {accountId:'2130', credit:15000}], 'Depreciation for June-July');
-  runPayroll('2025-07');
-  // ---- August ----
-  const s7 = mkSale('2025-08-05', P.reliance, '3100', 250000, 18, {inter:true, cc:CC.a});
-  const pu6 = mkPurchase('2025-08-08', P.birla, '4100', 100000, 18, {cc:CC.a});
-  mkExpTDS('2025-08-14', P.sharma, '4555', 30000, {...TDS_J, dept:D.admin});
-  mkPayVendor('2025-08-20', P.birla, pu6.total, pu6.id);
-  mkReceipt('2025-08-25', P.reliance, s7.total, s7.id);
-  // ---- September ----
-  mkSale('2025-09-04', P.global, '3120', 350000, 0, {exp:true});
-  mkPurchase('2025-09-10', P.birla, '4110', 140000, 18, {cc:CC.b});
-  mkExpTDS('2025-09-15', P.buildwell, '4505', 80000, {...TDS_C, cc:CC.b, dept:D.prod});
-  mkCRN('2025-09-18', P.acme, '3100', 20000, 18, {cc:CC.a});
-  mkJV('2025-09-25', [{accountId:'4400', debit:15000}, {accountId:'2130', credit:15000}], 'Depreciation for Aug-Sep');
-  // ---- October ----
-  const s9 = mkSale('2025-10-06', P.tcs, '3110', 180000, 18, {inter:true});
-  mkPurchase('2025-10-09', P.mahesh, '4540', 10000, 18, {cc:CC.b, dept:D.admin});
-  mkDBN('2025-10-12', P.birla, '4100', 15000, 18, {cc:CC.a});
-  mkPay('2025-10-18', '4310', 2500, 'Bank charges', {dept:D.admin});
-  mkReceipt('2025-10-22', P.tcs, s9.total, s9.id);
-  // ---- November ----
-  mkSale('2025-11-05', P.acme, '3100', 110000, 18, {cc:CC.a});
-  mkPurchase('2025-11-08', P.birla, '4100', 70000, 18, {cc:CC.a});
-  mkExpTDS('2025-11-15', P.landlord, '4500', 50000, {...TDS_I, dept:D.admin});
-  mkJV('2025-11-25', [{accountId:'4400', debit:15000}, {accountId:'2130', credit:15000}], 'Depreciation for Oct-Nov');
+  const MONTHS = [['2025-04',30],['2025-05',31],['2025-06',30],['2025-07',31],['2025-08',31],['2025-09',30],['2025-10',31],['2025-11',30],['2025-12',31],['2026-01',31],['2026-02',28],['2026-03',31]];
+  const openSales=[], openPurch=[];
+  let poNum=0;
+  MONTHS.forEach(([mo,ld],i)=>{
+    const d = day => `${mo}-${String(day).padStart(2,'0')}`;
+    openPurch.push(mkPurchaseRM(d(3), P.steelco, siOf(SI.steel), 200+i*5, 80, 18, {cc:CC.a}));
+    openPurch.push(mkPurchaseRM(d(5), P.motorworld, siOf(SI.motor), 20+(i%3)*5, 1000, 18, {inter:true, cc:CC.a}));
+    if(i%2===0) openPurch.push(mkPurchaseRM(d(6), P.steelco, siOf(SI.paint), 30, 150, 18, {cc:CC.b}));
+    if(i%2===1) mkPurchase(d(7), P.mahesh, '4540', 8000+i*400, 18, {cc:CC.b, dept:D.admin});
+    poNum++; productionOrders.push({id:uid(), poNo:'PO-'+String(poNum).padStart(4,'0'), date:d(8), fgItemId:SI.pump, bomId:'bom_pump', fgQty:20, consumptions:scaleBOM('bom_pump',20), notes:'Monthly pump batch', status:'Posted', fgCost:1555, fgName:'Water Pump 1HP'});
+    poNum++; productionOrders.push({id:uid(), poNo:'PO-'+String(poNum).padStart(4,'0'), date:d(9), fgItemId:SI.fan, bomId:'bom_fan', fgQty:15, consumptions:scaleBOM('bom_fan',15), notes:'Monthly fan batch', status:'Posted', fgCost:1345, fgName:'Industrial Fan'});
+    openSales.push(mkSaleFG(d(10), P.acme, siOf(SI.pump), 12+(i%4), 3500, 18, {cc:CC.a}));
+    openSales.push(mkSaleFG(d(13), P.mahindra, siOf(SI.fan), 10+(i%3), 2800, 18, {inter:true, cc:CC.b}));
+    if(i%3===0) openSales.push(mkSaleFG(d(15), P.patel, siOf(SI.pump), 8, 3450, 18, {cc:CC.a}));
+    if(i%4===2) mkSaleFG(d(16), P.global, siOf(SI.pump), 30, 3600, 0, {exp:true});
+    if(openSales.length>3){ const s=openSales.shift(); mkReceipt(d(20), s.partyId, s.total, s.id); }
+    if(openSales.length>3){ const s=openSales.shift(); mkReceipt(d(21), s.partyId, s.total, s.id); }
+    if(openPurch.length>3){ const pu=openPurch.shift(); mkPayVendor(d(23), pu.partyId, pu.total, pu.id); }
+    if(openPurch.length>3){ const pu=openPurch.shift(); mkPayVendor(d(24), pu.partyId, pu.total, pu.id); }
+    const tt=i%4;
+    if(tt===0) mkExpTDS(d(12), P.landlord, '4500', 50000, {...TDS_I, dept:D.admin});
+    else if(tt===1) mkExpTDS(d(12), P.sharma, '4550', 40000, {...TDS_J, dept:D.admin});
+    else if(tt===2) mkExpTDS(d(12), P.buildwell, '4505', 80000, {...TDS_C, cc:CC.a, dept:D.prod});
+    else mkExpTDS(d(12), P.sharma, '4555', 30000, {...TDS_J, dept:D.admin});
+    mkPay(d(18), '4510', 12000+i*300, 'Factory electricity', {dept:D.prod, cc:CC.a});
+    if(i%3===0) mkPay(d(19), '4520', 9440, 'Telephone & Internet', {dept:D.admin});
+    if(i%6===4) mkPay(d(17), '4310', 2500, 'Bank charges', {dept:D.admin});
+    mkJV(d(28), [{accountId:'4400', debit:8000}, {accountId:'2130', credit:8000}], 'Depreciation for '+mo);
+    if(i===5) mkCRN(d(25), P.acme, '3100', 21000, 18, {cc:CC.a});
+    if(i===8) mkDBN(d(25), P.steelco, '4100', 16000, 18, {cc:CC.a});
+    if(i%3===1) mkContra(d(26), '2500', '2510', 25000, 'Cash deposited to bank');
+    if(i===11) mkJV(d(27), [{accountId:'4555', debit:30000},{accountId:'1330', credit:30000}], 'Year-end provision for audit fees');
+    runPayroll(mo);
+  });
 
   return {
-    company: {...DEFAULT_COMPANY, name:'Demo MSME Industries Pvt Ltd'},
+    company: {...DEFAULT_COMPANY, name:'Demo Manufacturing Co Pvt Ltd',
+      modules:{gst:true, tds:true, payroll:true, factory:true, trader:true, service:false}},
     coa, parties, vouchers,
     forexRates: FOREX_RATES, gstr2bData: [],
     employees, payrollRuns,
     tdsSections: SEED_TDS_SECTIONS.map(s => ({...s, id: uid()})),
-    stockItems: [], boms: [], productionOrders: [],
+    stockItems, boms, productionOrders,
     costCentres, departments, bankRecon: [], allocations: [], bankRules: [],
-    auditLog: [auditEntry('SAMPLE_DATA', `Loaded sample dataset · ${vouchers.length} vouchers · FY 2025-26`)],
+    fixedAssets: [], budgets: {}, amortizations: [],
+    auditLog: [auditEntry('SAMPLE_DATA', `Loaded factory sample dataset · ${vouchers.length} vouchers · FY 2025-26`)],
   };
 };
 
@@ -3035,7 +3084,7 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
       {id:'company', label:'Company Settings', ico:'⚙'},
       ...(FB_CONFIGURED && user ? [{id:'team', label:'Team Members', ico:'👥'}] : []),
       {id:'gdrive', label:'Google Drive Sync', ico:'☁'},
-      {id:'upgrade', label: isPrem ? '✦ Premium Active' : '🚀 Upgrade to Premium', ico: isPrem ? '✦' : '⚡'},
+      ...(SUBSCRIPTION_ENABLED ? [{id:'upgrade', label: isPrem ? '✦ Premium Active' : '🚀 Upgrade to Premium', ico: isPrem ? '✦' : '⚡'}] : []),
       {id:'help', label:'Help & Guide', ico:'?'},
     ]},
   ];
@@ -3065,14 +3114,14 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
               </span>
             )}
             {isViewer && <span style={{fontSize:10,fontWeight:700,padding:'2px 8px',borderRadius:20,background:'#f5f5f5',color:'#757575'}}>👁 Read-Only</span>}
-          {isPrem
+          {SUBSCRIPTION_ENABLED && (isPrem
             ? <span style={{fontSize:10,fontWeight:700,padding:'2px 10px',borderRadius:20,background:'linear-gradient(90deg,#c9a227,#e6be4e)',color:'#5a3e00',cursor:'pointer',whiteSpace:'nowrap'}}
                 onClick={()=>triggerUpgrade('manage')} title="Premium active  click to view plan">✦ Premium</span>
             : <span style={{fontSize:10,fontWeight:700,padding:'2px 10px',borderRadius:20,background:'#fff3e0',color:'#e65100',cursor:'pointer',border:'1px solid #ffcc80',whiteSpace:'nowrap'}}
                 onClick={()=>triggerUpgrade('topbar')} title={`Free plan · ${activeVoucherCount}/${FREE_VOUCHER_LIMIT} entries used`}>
                 ⚡ Free {activeVoucherCount}/{FREE_VOUCHER_LIMIT}
               </span>
-          }
+          )}
             <span style={{fontSize:11,color:'var(--ink-3)',maxWidth:140,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}} title={user.email}>
               {user.displayName || user.email}
             </span>
@@ -3101,7 +3150,7 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
             </div>
           ))}
           {/* Premium status card at sidebar bottom */}
-          <div style={{padding:'10px 12px 14px',marginTop:'auto'}}>
+          {SUBSCRIPTION_ENABLED && <div style={{padding:'10px 12px 14px',marginTop:'auto'}}>
             {isPrem ? (
               <div onClick={()=>triggerUpgrade('manage')} style={{background:'linear-gradient(135deg,#c9a227,#e6be4e)',borderRadius:10,padding:'11px 14px',cursor:'pointer',boxShadow:'0 2px 8px #c9a22730'}}>
                 <div style={{fontWeight:800,fontSize:12,color:'#3d2c00',letterSpacing:'.3px'}}>✦ PREMIUM ACTIVE</div>
@@ -3122,7 +3171,7 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
                 </div>
               </div>
             )}
-          </div>
+          </div>}
         </aside>
         <main className="main">
           {page==='dashboard' && <Dashboard data={data} balances={ledgerBalances} setPage={setPage} setData={canWrite?setData:()=>{}} showToast={showToast} />}
@@ -5526,7 +5575,7 @@ function Vouchers({data, setData, showToast, readOnly=false}){
   // Free tier check
   const prem = isPremiumActive(data.company);
   const activeCount = useMemo(() => (data.vouchers||[]).filter(v=>v.status!=='Cancelled').length, [data.vouchers]);
-  const isAtLimit = !prem && activeCount >= FREE_VOUCHER_LIMIT;
+  const isAtLimit = SUBSCRIPTION_ENABLED && !prem && activeCount >= FREE_VOUCHER_LIMIT;
   const [vtype, setVtype] = useState('JV');
   const [filter, setFilter] = useState('All');
   const [search, setSearch] = useState('');
@@ -5733,7 +5782,7 @@ function Vouchers({data, setData, showToast, readOnly=false}){
       </div>}
 
       {/* Free tier usage banner */}
-      {!prem && !readOnly && (
+      {SUBSCRIPTION_ENABLED && !prem && !readOnly && (
         <div style={{
           background: isAtLimit ? 'linear-gradient(90deg,#c62828,#e53935)' : activeCount >= FREE_VOUCHER_LIMIT - 2 ? 'linear-gradient(90deg,#e65100,#f57c00)' : 'linear-gradient(90deg,#0b6b4f,#1a9a72)',
           color:'#fff', borderRadius:10, padding:'12px 18px', marginBottom:16,
