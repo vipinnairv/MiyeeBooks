@@ -1731,10 +1731,10 @@ const buildSampleData = () => {
     {id:P.mahindra, name:'Mahindra & Mahindra Ltd', type:'Customer', gstin:'27AAACM3025E1ZA', state:'Maharashtra', stateCode:'27', address:'Worli, Mumbai', email:'purchase@mahindra.com', phone:'+91 22 2490 0000', currency:'INR', balance:0},
     {id:P.patel, name:'Patel Hardware Traders', type:'Customer', gstin:'24AAEPP8765R1Z3', state:'Gujarat', stateCode:'24', address:'Rajkot', email:'patel@hardware.in', phone:'+91 281 245 6000', currency:'INR', balance:0},
     {id:P.global, name:'GlobalCorp Inc. (USA)', type:'Customer', gstin:'', state:'Outside India', stateCode:'97', address:'Delaware, USA', email:'ap@globalcorp.com', phone:'+1 302 555 0100', currency:'USD', balance:0, isForeign:true},
-    {id:P.steelco, name:'Gujarat Steel Suppliers', type:'Vendor', gstin:'24AADCS5566F1Z8', state:'Gujarat', stateCode:'24', address:'Bhavnagar', email:'sales@gjsteel.in', phone:'+91 278 220 1000', currency:'INR', balance:0},
+    {id:P.steelco, name:'Gujarat Steel Suppliers', type:'Vendor', gstin:'24AADCS5566F1Z8', state:'Gujarat', stateCode:'24', address:'Bhavnagar', email:'sales@gjsteel.in', phone:'+91 278 220 1000', currency:'INR', balance:0, msmeReg:'UDYAM-GJ-01-0012345'},
     {id:P.motorworld, name:'Motor World Pvt Ltd', type:'Vendor', gstin:'27AABCM7788H1Z4', state:'Maharashtra', stateCode:'27', address:'Pune', email:'sales@motorworld.in', phone:'+91 20 2567 8000', currency:'INR', balance:0},
     {id:P.birla, name:'Aditya Birla Supplies', type:'Vendor', gstin:'24AABCA9999B1Z2', state:'Gujarat', stateCode:'24', address:'Surat', email:'sales@absupplies.in', phone:'+91 261 234 5000', currency:'INR', balance:0},
-    {id:P.mahesh, name:'Mahesh Stationers', type:'Vendor', gstin:'24BBCDM4321A1Z0', state:'Gujarat', stateCode:'24', address:'Ahmedabad', email:'mahesh@stat.in', phone:'+91 98765 12345', currency:'INR', balance:0},
+    {id:P.mahesh, name:'Mahesh Stationers', type:'Vendor', gstin:'24BBCDM4321A1Z0', state:'Gujarat', stateCode:'24', address:'Ahmedabad', email:'mahesh@stat.in', phone:'+91 98765 12345', currency:'INR', balance:0, msmeReg:'UDYAM-GJ-01-0067890'},
     {id:P.jio, name:'Reliance Jio (Telecom)', type:'Vendor', gstin:'27AAACR5055K2Z6', state:'Maharashtra', stateCode:'27', address:'Mumbai', email:'support@jio.com', phone:'1800 889 9999', currency:'INR', balance:0},
     {id:P.landlord, name:'Factory Landlord  Mr. Patel', type:'Vendor', gstin:'', state:'Gujarat', stateCode:'24', address:'Ahmedabad', email:'patel@landlord.in', phone:'+91 99999 11111', currency:'INR', balance:0, unregistered:true},
     {id:P.sharma, name:'Sharma & Associates (CA)', type:'Vendor', gstin:'24AAFFS1234K1ZP', state:'Gujarat', stateCode:'24', address:'Ahmedabad', email:'ca@sharma.in', phone:'+91 79 4000 1111', currency:'INR', balance:0, pan:'AAFFS1234K'},
@@ -3064,9 +3064,11 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
         {id:'tds_sections', label:'TDS Sections', ico:'§'},
         {id:'tds_report', label:'TDS Deducted Report', ico:'⊞'},
       ] : []),
+      {id:'msme_dues', label:'MSME Dues — 43B(h)', ico:'⏱'},
       {id:'fixed_assets', label:'Fixed Asset Register', ico:'🏭'},
       {id:'amortization', label:'Prepaid Amortization', ico:'🗓'},
       {id:'adv_tax', label:'Advance Tax Estimator', ico:'₹'},
+      {id:'startup', label:'Startup Reliefs & ROC', ico:'🚀'},
     ]},
     ...(mod.payroll===true ? [{section:'👥 HR & Payroll', items:[
       {id:'hr_employees', label:'Employee Master', ico:'☺'},
@@ -3216,6 +3218,8 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
           {page==='fixed_assets' && <FixedAssets data={data} setData={canWrite?setData:()=>{}} showToast={showToast} readOnly={isViewer} />}
           {page==='amortization' && <PrepaidAmortization data={data} setData={canWrite?setData:()=>{}} showToast={showToast} readOnly={isViewer} />}
           {page==='adv_tax' && <AdvanceTax data={data} />}
+          {page==='msme_dues' && <MSMEDues data={data} />}
+          {page==='startup' && <StartupReliefs data={data} setData={canWrite?setData:()=>{}} showToast={showToast} readOnly={isViewer} />}
           {page==='health' && <HealthCheck data={data} setPage={setPage} />}
           {page==='audit_log' && <AuditLog data={data} />}
           {page==='year_end' && <YearEndClose data={data} setData={canWrite?setData:()=>{}} showToast={showToast} />}
@@ -6096,6 +6100,10 @@ function VoucherModal({vtype, voucher, prefill, data, onSave, onClose, showToast
   const totalDr = f.lines.reduce((s,l) => s + (l.debit||0), 0);
   const totalCr = f.lines.reduce((s,l) => s + (l.credit||0), 0);
   const balanced = Math.abs(totalDr - totalCr) < 0.01;
+  // Warn if another live voucher of the same type already uses this number
+  const dupNumber = !!(f.number||'').trim() && (data.vouchers||[]).some(v =>
+    v.id !== f.id && v.type === f.type && v.status !== 'Cancelled' &&
+    (v.number||'').trim().toLowerCase() === (f.number||'').trim().toLowerCase());
 
   // ── Bill Tagging (PAY / REC) ─────────────────────────────────────────────
   const isBillType = ['PAY','REC'].includes(vtype);
@@ -6293,7 +6301,7 @@ function VoucherModal({vtype, voucher, prefill, data, onSave, onClose, showToast
         <div className="modal-body">
           <div className="form-grid" style={{marginBottom:14}}>
             <div className="field required"><label>Date</label><input type="date" value={f.date} onChange={e => setF({...f, date:e.target.value})} /></div>
-            <div className="field"><label>Voucher No.</label><input value={f.number} onChange={e => setF({...f, number:e.target.value})} placeholder="Auto-generated" /></div>
+            <div className="field"><label>Voucher No. {dupNumber && <span style={{color:'var(--danger)',fontWeight:700,fontSize:10}} title="Another voucher of this type already uses this number">⚠ Duplicate</span>}</label><input value={f.number} onChange={e => setF({...f, number:e.target.value})} placeholder="Auto-generated" style={dupNumber?{borderColor:'var(--danger)',boxShadow:'0 0 0 2px var(--danger-soft)'}:{}} /></div>
             <div className="field"><label>Reference</label><input value={f.reference} onChange={e => setF({...f, reference:e.target.value})} placeholder="PO#, Bill#, Chq#..." /></div>
             {(isGstVoucher || ['PAY','REC'].includes(vtype)) && (
               <div className="field">
@@ -11082,6 +11090,258 @@ function Forex({data, setData, showToast}){
 }
 
 // ============================================================================
+// MSME 45-DAY DUES  Sec 43B(h) of the Income-tax Act
+// Payments to Micro & Small Enterprises unpaid beyond the MSMED-Act limit
+// (45 days where a written agreement exists, else 15 days) are DISALLOWED as a
+// deduction until actually paid. This report flags such exposure.
+// ============================================================================
+function MSMEDues({data}){
+  const asOf = today();
+  const [limit, setLimit] = useState(45);   // 45 (with agreement) or 15 (without)
+
+  const partyById = useMemo(() => {
+    const m = {}; (data.parties||[]).forEach(p => m[p.id] = p); return m;
+  }, [data.parties]);
+
+  const allocMap = useMemo(() => {
+    const m = {};
+    (data.vouchers||[]).forEach(v => {
+      if(v.status==='Cancelled') return;
+      (v.billTags||[]).forEach(bt => { m[bt.voucherId] = (m[bt.voucherId]||0) + (bt.allocated||0); });
+    });
+    return m;
+  }, [data.vouchers]);
+
+  // Outstanding purchase bills owed to MSME-flagged vendors
+  const bills = useMemo(() => (data.vouchers||[])
+    .filter(v => v.type==='PUR' && v.status!=='Cancelled')
+    .map(inv => {
+      const p = partyById[inv.partyId];
+      const isMsme = !!(p && p.msmeReg);
+      const ctrlAmt = (inv.lines||[]).reduce((s,l)=> s + (l.accountId==='1300' ? (l.credit||0) : 0), 0);
+      const total = ctrlAmt || inv.total || inv.amount || 0;
+      const paid = allocMap[inv.id] || 0;
+      const out  = Math.max(0, total - paid);
+      const days = Math.floor((new Date(asOf) - new Date(inv.date)) / 86400000);
+      return {id:inv.id, date:inv.date, number:inv.number, party:inv.partyName||'',
+        msmeType:'Micro/Small', udyam:(p&&p.msmeReg)||'', isMsme,
+        total, paid, out, days, overdue: days>limit};
+    })
+    .filter(r => r.isMsme && r.out>0.01)
+    .sort((a,b)=> b.days - a.days), [data.vouchers, partyById, allocMap, asOf, limit]);
+
+  const overdue = bills.filter(b=>b.overdue);
+  const totalOut = bills.reduce((s,b)=>s+b.out,0);
+  const totalDisallow = overdue.reduce((s,b)=>s+b.out,0);
+  const anyFlagged = (data.parties||[]).some(p => p.msmeReg);
+
+  const handleExcel = () => {
+    exportXLSX(`MSME_43Bh_Dues_${asOf}.xlsx`, [{
+      name:'MSME 43B(h) Dues',
+      rows:[
+        [`MSME Sec 43B(h) Exposure  ${data.company.name}  as on ${asOf}  limit ${limit} days`],[],
+        ['Vendor','Udyam','Bill Date','Bill No','Outstanding (₹)','Age (days)','Status'],
+        ...bills.map(b=>[b.party,b.udyam,b.date,b.number,b.out,b.days, b.overdue?'DISALLOWED (overdue)':'Within limit']),
+        [],['','','','Total Outstanding',totalOut,'',''],
+        ['','','','Disallowable u/s 43B(h)',totalDisallow,'',''],
+      ],
+    }]);
+  };
+
+  return (<>
+    <div className="page-head">
+      <div>
+        <h1 className="page-title">MSME Dues — Sec 43B(h)</h1>
+        <div className="page-sub">Micro & Small vendor payments overdue beyond {limit} days · as on {asOf}</div>
+      </div>
+      <div className="page-actions">
+        <span style={{fontSize:12,color:'var(--ink-3)',marginRight:6}}>Limit:</span>
+        <button className={'btn btn-sm'+(limit===45?' btn-primary':'')} onClick={()=>setLimit(45)} title="Written agreement exists">45 days</button>
+        <button className={'btn btn-sm'+(limit===15?' btn-primary':'')} onClick={()=>setLimit(15)} title="No written agreement">15 days</button>
+        <button className="btn btn-sm" onClick={handleExcel}>⬇ Excel</button>
+        <button className="btn btn-sm btn-primary" onClick={()=>window.print()}>⎙ Print</button>
+      </div>
+    </div>
+
+    {!anyFlagged && (
+      <div className="card" style={{marginBottom:14,borderLeft:'4px solid var(--accent)'}}>
+        <div className="card-body" style={{fontSize:13,lineHeight:1.6}}>
+          <b>No vendors are tagged as MSME yet.</b> Open <b>Customers & Vendors</b>, edit a supplier and fill the
+          <b> MSME / Udyam Reg. No.</b> field. This report then tracks payments that
+          must clear within {limit} days to stay deductible under <b>Section 43B(h)</b>. Until then it shows no exposure.
+        </div>
+      </div>
+    )}
+
+    <div className="stat-grid" style={{marginBottom:14}}>
+      <div className="stat"><div className="stat-label">MSME Bills Open</div><div className="stat-value rupee">₹{fmt(totalOut)}</div></div>
+      <div className="stat stat-danger"><div className="stat-label">Overdue &gt; {limit} days</div><div className="stat-value rupee">₹{fmt(totalDisallow)}</div></div>
+      <div className="stat stat-gold"><div className="stat-label">Bills Flagged</div><div className="stat-value">{bills.length}</div></div>
+      <div className="stat stat-info"><div className="stat-label">Overdue Count</div><div className="stat-value">{overdue.length}</div></div>
+    </div>
+
+    <div className="card" style={{marginBottom:14,borderLeft:'4px solid var(--danger)'}}>
+      <div className="card-body" style={{fontSize:12.5,lineHeight:1.6,color:'var(--ink-2)'}}>
+        ⚠ Under <b>Sec 43B(h)</b>, any amount payable to a Micro or Small enterprise still unpaid beyond the MSMED-Act
+        time limit ({limit} days) is <b>not allowed as a deduction</b> in the year of accrual — it becomes deductible only
+        in the year of actual payment. Clear the overdue bills below before 31-Mar to avoid the add-back.
+      </div>
+    </div>
+
+    <div className="table-wrap">
+      <table>
+        <thead><tr>
+          <th>Vendor</th><th style={{width:120}}>Udyam</th><th style={{width:92}}>Bill Date</th>
+          <th style={{width:100}}>Bill No</th><th className="num" style={{width:120}}>Outstanding (₹)</th>
+          <th className="num" style={{width:70}}>Age</th><th style={{width:150}}>Status</th>
+        </tr></thead>
+        <tbody>
+          {bills.length===0 ? (
+            <tr><td colSpan="7"><div className="empty"><div className="empty-ico">✓</div>
+              <div>{anyFlagged?'No outstanding bills to MSME vendors. 🎉':'Tag MSME vendors to begin tracking.'}</div>
+            </div></td></tr>
+          ) : bills.map(b=>(
+            <tr key={b.id} style={b.overdue?{background:'#fef2f2'}:{}}>
+              <td style={{fontWeight:500}}>{b.party} <span style={{fontSize:10,color:'var(--ink-3)'}}>({b.msmeType})</span></td>
+              <td style={{fontFamily:'var(--mono)',fontSize:11}}>{b.udyam||'—'}</td>
+              <td>{fmtDate(b.date)}</td>
+              <td>{b.number}</td>
+              <td className="num bold">₹{fmt(b.out)}</td>
+              <td className="num">{b.days}</td>
+              <td>{b.overdue
+                ? <span style={{color:'var(--danger)',fontWeight:700,fontSize:11}}>● Disallowed (overdue)</span>
+                : <span style={{color:'var(--primary)',fontSize:11}}>Within limit</span>}</td>
+            </tr>
+          ))}
+        </tbody>
+        {bills.length>0 && (
+          <tfoot><tr style={{fontWeight:700,borderTop:'2px solid var(--line)'}}>
+            <td colSpan="4">Disallowable u/s 43B(h) (overdue)</td>
+            <td className="num" style={{color:'var(--danger)'}}>₹{fmt(totalDisallow)}</td>
+            <td colSpan="2"></td>
+          </tr></tfoot>
+        )}
+      </table>
+    </div>
+  </>);
+}
+
+// ============================================================================
+// STARTUP RELIEFS & COMPLIANCE  DPIIT / 80-IAC / angel tax / ROC tracker
+// ============================================================================
+function StartupReliefs({data, setData, showToast, readOnly}){
+  const sp = (data.company && data.company.startupProfile) || {};
+  const setSP = (patch) => {
+    if(readOnly) return;
+    setData(d => ({...d, company:{...d.company, startupProfile:{...((d.company&&d.company.startupProfile)||{}), ...patch}}}));
+  };
+  const incDate = sp.incorporationDate || data.company.incorporationDate || '';
+  const ageYears = incDate ? ((new Date() - new Date(incDate))/ (365.25*86400000)) : null;
+
+  const reliefs = [
+    {t:'DPIIT Recognition', cond: !!sp.dpiitNumber,
+     d:'Recognition by DPIIT (Startup India) is the gateway to most startup benefits. Apply on startupindia.gov.in.',
+     meta: sp.dpiitNumber ? 'DPIIT No: '+sp.dpiitNumber : 'Not recognised yet'},
+    {t:'Sec 80-IAC — 3-year tax holiday', cond: ageYears!=null && ageYears<=10 && !!sp.dpiitNumber,
+     d:'100% deduction of profits for any 3 consecutive years out of the first 10, for DPIIT startups incorporated up to the notified cut-off and turnover ≤ ₹100 cr. Needs separate inter-ministerial-board approval.',
+     meta: ageYears!=null ? ('Company age: '+ageYears.toFixed(1)+' yrs') : 'Set incorporation date below'},
+    {t:'Sec 56(2)(viib) — Angel-tax exemption', cond: !!sp.angelTaxExempt,
+     d:'DPIIT-recognised startups filing Form-2 self-declaration are exempt from angel tax on share premium from eligible investors.',
+     meta: sp.angelTaxExempt ? 'Form-2 filed' : 'Not declared'},
+    {t:'Sec 79 — Carry-forward of losses', cond: ageYears!=null && ageYears<=10,
+     d:'Eligible startups can carry forward losses even with a change in shareholding, provided original promoters continue (relaxed condition).',
+     meta:'Keep founder shareholding records'},
+    {t:'MSME / Udyam registration', cond: !!sp.udyamNumber,
+     d:'Udyam registration unlocks the 45-day payment protection (Sec 43B(h) for your buyers), collateral-free loans and subsidies.',
+     meta: sp.udyamNumber ? 'Udyam: '+sp.udyamNumber : 'Not registered'},
+  ];
+
+  // ROC / statutory annual checklist
+  const checklist = sp.checklist || {};
+  const tick = (k) => setSP({checklist:{...checklist, [k]:!checklist[k]}});
+  const rocItems = [
+    ['inc20a','INC-20A — Commencement of Business (within 180 days of incorporation)'],
+    ['auditor','ADT-1 — Auditor appointment (within 30 days)'],
+    ['aoc4','AOC-4 — Financial statements (within 30 days of AGM)'],
+    ['mgt7','MGT-7 / 7A — Annual Return (within 60 days of AGM)'],
+    ['dpt3','DPT-3 — Return of deposits / loans (by 30 June)'],
+    ['dir3kyc','DIR-3 KYC — Director KYC (by 30 September)'],
+    ['itr','Income-tax Return (by 31 Oct for audit cases)'],
+    ['dpiit','Startup India DPIIT annual update'],
+  ];
+  const done = rocItems.filter(([k])=>checklist[k]).length;
+
+  const Field = ({label, k, ph, type='text'}) => (
+    <label style={{display:'block',marginBottom:10}}>
+      <span style={{display:'block',fontSize:11,fontWeight:600,color:'var(--ink-3)',marginBottom:3}}>{label}</span>
+      <input className="inp" type={type} placeholder={ph} value={sp[k]||''} disabled={readOnly}
+        onChange={e=>setSP({[k]:e.target.value})} style={{width:'100%'}} />
+    </label>
+  );
+
+  return (<>
+    <div className="page-head">
+      <div>
+        <h1 className="page-title">Startup Reliefs & Compliance</h1>
+        <div className="page-sub">DPIIT benefits, tax holidays and ROC annual-filing tracker</div>
+      </div>
+    </div>
+
+    <div style={{display:'grid',gridTemplateColumns:'1.4fr 1fr',gap:18}}>
+      <div className="card">
+        <div className="card-head"><h3 className="card-title">Eligible Reliefs & Exemptions</h3></div>
+        <div className="card-body">
+          {reliefs.map((r,i)=>(
+            <div key={i} style={{display:'flex',gap:12,padding:'12px 0',borderBottom:i<reliefs.length-1?'1px solid var(--line)':'none'}}>
+              <div style={{fontSize:20,lineHeight:1}}>{r.cond?'✅':'⬜'}</div>
+              <div style={{flex:1}}>
+                <div style={{fontWeight:700,fontSize:13}}>{r.t}</div>
+                <div style={{fontSize:12,color:'var(--ink-2)',marginTop:2,lineHeight:1.5}}>{r.d}</div>
+                <div style={{fontSize:11,color: r.cond?'var(--primary)':'var(--ink-3)',marginTop:3,fontWeight:600}}>{r.meta}</div>
+              </div>
+            </div>
+          ))}
+          <div style={{fontSize:10.5,color:'var(--ink-3)',marginTop:10,lineHeight:1.5}}>
+            Informational only — eligibility depends on the conditions in force for your incorporation year. Confirm with a professional before claiming.
+          </div>
+        </div>
+      </div>
+
+      <div>
+        <div className="card" style={{marginBottom:18}}>
+          <div className="card-head"><h3 className="card-title">Startup Profile</h3></div>
+          <div className="card-body">
+            <Field label="Incorporation Date" k="incorporationDate" type="date" />
+            <Field label="DPIIT Recognition No." k="dpiitNumber" ph="DIPP-XXXXX" />
+            <Field label="Udyam Registration No." k="udyamNumber" ph="UDYAM-XX-00-0000000" />
+            <Field label="CIN" k="cin" ph="U72900GJ2025PTC000000" />
+            <label style={{display:'flex',alignItems:'center',gap:8,fontSize:12,marginTop:4,cursor:readOnly?'default':'pointer'}}>
+              <input type="checkbox" checked={!!sp.angelTaxExempt} disabled={readOnly} onChange={e=>setSP({angelTaxExempt:e.target.checked})} />
+              Angel-tax exemption (Form-2) filed
+            </label>
+          </div>
+        </div>
+
+        <div className="card">
+          <div className="card-head">
+            <h3 className="card-title">ROC / Statutory Checklist</h3>
+            <span style={{fontSize:11,color:'var(--ink-3)'}}>{done}/{rocItems.length} done</span>
+          </div>
+          <div className="card-body">
+            {rocItems.map(([k,label])=>(
+              <label key={k} style={{display:'flex',alignItems:'flex-start',gap:8,padding:'6px 0',fontSize:12,cursor:readOnly?'default':'pointer'}}>
+                <input type="checkbox" checked={!!checklist[k]} disabled={readOnly} onChange={()=>tick(k)} style={{marginTop:2}} />
+                <span style={{textDecoration:checklist[k]?'line-through':'none',color:checklist[k]?'var(--ink-3)':'var(--ink-1)'}}>{label}</span>
+              </label>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  </>);
+}
+
+// ============================================================================
 // MIS DASHBOARD  CFO / Management View
 // ============================================================================
 function MISDashboard({data, balances, setPage}){
@@ -11149,6 +11409,45 @@ function MISDashboard({data, balances, setPage}){
 
   const maxRevenue = Math.max(1, ...Object.values(monthlyData).map(m => Math.max(m.revenue, m.expense)));
 
+  // ── Cash Runway & Burn (startup-critical MIS) ──
+  const activeMonths   = Math.max(1, Object.values(monthlyData).filter(m => m.vouchers > 0).length);
+  const avgMonthlyExp  = expense / activeMonths;
+  const avgMonthlyInc  = income / activeMonths;
+  const monthlyBurn    = avgMonthlyExp - avgMonthlyInc;            // >0 ⇒ burning cash
+  const runwayMonths   = monthlyBurn > 0 ? cash / monthlyBurn : Infinity;
+  const runwayLabel    = monthlyBurn <= 0 ? 'Cash-positive' : (runwayMonths >= 99 ? '99+ mo' : runwayMonths.toFixed(1) + ' mo');
+
+  // One-click MIS pack — bundles the core management reports into one workbook
+  const monNames3 = ['','Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const handleMISPack = () => {
+    const hdr = `CFO MIS Pack  ${data.company.name}  FY ${data.company.fyStart?.slice(0,4)}–${data.company.fyEnd?.slice(2,4)}  as on ${today()}`;
+    exportXLSX(`MIS_Pack_${today()}.xlsx`, [
+      {name:'KPIs', rows:[
+        [hdr],[],
+        ['Metric','Value (₹)'],
+        ['Revenue', income],['Gross Profit', grossProfit],['EBITDA', ebitda],['EBIT', ebit],
+        ['Net Profit', profit],['Total Expenses', expense],[],
+        ['Cash & Bank', cash],['Trade Receivables', debtors],['Trade Payables', creditors],
+        ['Inventory', inventory],['Working Capital', currentAssets-currentLiab],['GST Net Payable', gstNet],[],
+        ['Avg Monthly Burn', monthlyBurn>0?monthlyBurn:0],
+        ['Cash Runway (months)', monthlyBurn>0?Number(runwayMonths.toFixed(1)):'No burn'],
+        ['Avg Monthly Revenue', avgMonthlyInc],
+      ]},
+      {name:'Monthly Trend', rows:[
+        ['Month','Revenue','Expense','Net','Vouchers'],
+        ...Object.entries(monthlyData).map(([k,m])=>[monNames3[parseInt(k.slice(5))]+' '+k.slice(0,4), m.revenue, m.expense, m.profit, m.vouchers]),
+      ]},
+      {name:'Top Parties', rows:[
+        ['Party','Sales','Purchases','Total Value'],
+        ...topParties.map(p=>[p.name, p.sales, p.purchases, p.sales+p.purchases]),
+      ]},
+      {name:'Expense Breakdown', rows:[
+        ['Expense Group','Amount','% of Total'],
+        ...expBreakdown.map(([g,a])=>[g, a, expense>0?Number((a/expense*100).toFixed(1)):0]),
+      ]},
+    ]);
+  };
+
   // Top customers / vendors
   const topParties = useMemo(() => {
     const map = {};
@@ -11195,6 +11494,7 @@ function MISDashboard({data, balances, setPage}){
         <div className="page-actions">
           <button className="btn" onClick={() => setPage('mis_ratios')}>▦ Financial Ratios</button>
           <button className="btn" onClick={() => setPage('mis_aging')}>◫ Aging</button>
+          <button className="btn btn-primary" onClick={handleMISPack}>⬇ MIS Pack (Excel)</button>
           <button className="btn" onClick={() => window.print()}>⎙ Print</button>
         </div>
       </div>
@@ -11225,6 +11525,18 @@ function MISDashboard({data, balances, setPage}){
         {kpiCard('Inventory', '₹'+fmt(inventory), 'Turnover days: ' + (costMat>0 ? Math.round(inventory/costMat*365) : '∞'))}
         {kpiCard('Working Capital', '₹'+fmt(currentAssets-currentLiab), currentAssets-currentLiab>0?'Healthy':'Stretched', currentAssets-currentLiab>=0?'':'stat-danger')}
         {kpiCard('GST Net Payable', '₹'+fmt(gstNet), 'Output: ₹'+fmt(gstOutput)+' | ITC: ₹'+fmt(gstInput), 'stat-gold')}
+      </div>
+
+      {/* Startup Liquidity: Cash Runway & Burn */}
+      <div style={{marginBottom:6, marginTop:18, display:'flex', alignItems:'center', gap:8}}>
+        <span style={{fontSize:11, textTransform:'uppercase', letterSpacing:'1.5px', fontWeight:600, color:'var(--ink-3)'}}>Cash Runway & Burn</span>
+        <span style={{flex:1, height:1, background:'var(--line)'}}></span>
+      </div>
+      <div className="stat-grid" style={{gridTemplateColumns:'repeat(4,1fr)'}}>
+        {kpiCard('Avg Monthly Burn', monthlyBurn>0?'₹'+fmt(monthlyBurn):'₹0', monthlyBurn>0?'Net cash outflow / month':'Operating cash-positive', monthlyBurn>0?'stat-danger':'')}
+        {kpiCard('Cash Runway', runwayLabel, monthlyBurn>0?'At current burn rate':'No burn — not cash-constrained', (monthlyBurn>0&&runwayMonths<6)?'stat-danger':'stat-info')}
+        {kpiCard('Avg Monthly Revenue', '₹'+fmt(avgMonthlyInc), 'Over '+activeMonths+' active month'+(activeMonths>1?'s':''))}
+        {kpiCard('Cash on Hand', '₹'+fmt(cash), monthlyBurn>0?('Covers '+runwayMonths.toFixed(1)+' months'):'Liquid runway healthy', 'stat-gold')}
       </div>
 
       <div style={{display:'grid', gridTemplateColumns:'5fr 3fr', gap:18, marginTop:18}}>
@@ -13462,11 +13774,22 @@ function HelpGuide({setPage}){
       title:'Advanced & New Features',
       body: [
         {type:'text', text:'Beyond core accounting, MiyeeBooks includes analysis and automation tools to save time and add insight.'},
+        {type:'heading', text:'CFO Dashboard & MIS'},
+        {type:'steps', items:[
+          '<b>Cash Runway & Burn</b>  the CFO Dashboard now shows your average monthly burn, months of runway at the current burn rate, average monthly revenue and cash on hand  the metrics investors and founders watch first.',
+          '<b>MIS Pack (Excel)</b>  one click exports a multi-sheet workbook (KPIs, monthly trend, top parties, expense breakdown) ready for a board or investor update.',
+        ]},
         {type:'heading', text:'Analysis Reports (Account Manager)'},
         {type:'steps', items:[
           '<b>Budget vs Actual</b>  set an annual budget per P&L account; the report pro-rates it to the period and shows favourable/adverse variance. Click Save Budgets to keep them.',
           '<b>Profitability Analysis</b>  revenue and gross margin by Item, Customer, or HSN. COGS is estimated from your average purchase rate per HSN/item.',
           '<b>P&L Monthly Trend</b> & <b>Compare PY</b>  see month-by-month P&L and prior-year comparison.',
+        ]},
+        {type:'heading', text:'Faster, Safer Data Entry'},
+        {type:'steps', items:[
+          '<b>Duplicate-number warning</b>  the voucher screen flags in red if another live voucher of the same type already uses the number you typed, so you catch double entries before posting.',
+          '<b>Auto-Balance</b>  on manual (JV/Payment) entries, one click sets the balancing figure (net of TDS).',
+          '<b>Bulk CSV import</b> & <b>Duplicate voucher</b>  import many vouchers from a template, or copy any existing voucher as a starting point.',
         ]},
         {type:'heading', text:'Fixed Assets & Period-End (Cost Accountant)'},
         {type:'steps', items:[
@@ -13503,6 +13826,10 @@ function HelpGuide({setPage}){
           '<b>TDS</b>  apply TDS on vouchers (with the 206AB higher-rate toggle for non-filers), and the TDS Report gives the deducted register + Form 26Q working.',
           '<b>HSN / SAC Rate Finder</b>  search GST 2.0 rates; the rate auto-fills when you type an HSN on an invoice line.',
         ]},
+        {type:'heading', text:'MSME Dues — Sec 43B(h)'},
+        {type:'text', text:'Tracks unpaid purchase bills owed to vendors you have tagged as MSME (fill the <b>MSME / Udyam Reg. No.</b> on the vendor master). Any amount overdue beyond the MSMED-Act limit (<b>45 days</b> with a written agreement, else 15) is <b>disallowed as a deduction u/s 43B(h)</b> until actually paid  clear these before 31-Mar to avoid the add-back. Toggle the 45/15-day limit and export to Excel.'},
+        {type:'heading', text:'Startup Reliefs & ROC'},
+        {type:'text', text:'A startup-focused panel: records your <b>incorporation date, DPIIT, Udyam, CIN</b> and angel-tax (Form-2) status, then shows which reliefs you likely qualify for  <b>DPIIT recognition, Sec 80-IAC 3-year tax holiday, Sec 56(2)(viib) angel-tax exemption, Sec 79 loss carry-forward, Udyam benefits</b>  plus a tickable <b>ROC / statutory annual-filing checklist</b> (INC-20A, ADT-1, AOC-4, MGT-7/7A, DPT-3, DIR-3 KYC, ITR). Informational  confirm eligibility with a professional.'},
       ]
     },
     registers: {
