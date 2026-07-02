@@ -71,6 +71,32 @@
     --serif:'Cormorant Garamond', Georgia, serif;
     --sans:'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
   }
+  /* Dark theme — variable overrides only; toggled by adding .dark on <body> */
+  body.dark{
+    --bg:#0f1815;
+    --surface:#16211d;
+    --surface-2:#1b2823;
+    --ink:#e2ece8;
+    --ink-2:#adbfb8;
+    --ink-3:#7d918a;
+    --line:#28362f;
+    --line-2:#33453d;
+    --primary:#2fae83;
+    --primary-2:#38c493;
+    --primary-soft:#12352a;
+    --accent:#d9b544;
+    --accent-soft:#33290e;
+    --danger:#e5695f;
+    --danger-soft:#3a1512;
+    --warning:#d99a2b;
+    --info:#5c95e0;
+    --info-soft:#12233a;
+    --shadow-sm:0 1px 2px rgba(0,0,0,.4);
+    --shadow:0 4px 12px rgba(0,0,0,.5);
+  }
+  body.dark .topbar{background:#0a1310;border-bottom-color:#000}
+  body.dark table th{background:var(--surface-2)}
+  body.dark input, body.dark select, body.dark textarea{background:var(--surface-2);color:var(--ink);border-color:var(--line-2)}
   *{box-sizing:border-box}
   html,body{margin:0;padding:0;background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:13px;line-height:1.5;-webkit-font-smoothing:antialiased}
   button{font-family:inherit;cursor:pointer;border:none;background:none;color:inherit}
@@ -337,6 +363,30 @@ const fmtDate = (iso) => {
   const s = String(iso).slice(0,10);
   const m = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
   return m ? `${m[3]}-${m[2]}-${m[1]}` : iso;
+};
+// GSTIN check-digit (position 15) over the first 14 chars — official GSTN algorithm.
+const GSTIN_CP = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+const gstinCheckDigit = (first14) => {
+  const mod = GSTIN_CP.length;   // 36
+  let factor = 2, sum = 0;
+  for(let i = first14.length - 1; i >= 0; i--){
+    const cp = GSTIN_CP.indexOf(first14[i]);
+    if(cp < 0) return '';
+    let digit = factor * cp;
+    factor = factor === 2 ? 1 : 2;
+    digit = Math.floor(digit / mod) + (digit % mod);
+    sum += digit;
+  }
+  return GSTIN_CP[(mod - (sum % mod)) % mod];
+};
+// Validate a GSTIN: format (2-digit state + 10-char PAN + entity + 'Z' + check) AND checksum.
+// Returns {valid, reason} — reason ∈ empty|length|format|checksum|ok.
+const validateGSTIN = (gstin) => {
+  if(!gstin) return {valid:false, reason:'empty'};
+  const g = String(gstin).toUpperCase().trim();
+  if(g.length !== 15) return {valid:false, reason:'length'};
+  if(!/^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}$/.test(g)) return {valid:false, reason:'format'};
+  return gstinCheckDigit(g.slice(0,14)) === g[14] ? {valid:true, reason:'ok'} : {valid:false, reason:'checksum'};
 };
 // PT helper (Gujarat): Rs200/month, manual (keep ptAmount editable)
 // Monthly: returns 0 if not joined, else ptAmount (user sets this)
@@ -1162,6 +1212,124 @@ function generateInvoicePDF(voucher, appData){
   win.focus();
 }
 
+// One-click financial report bundle → opens a print window (Save as PDF) with a
+// cover, financial summary, Profit & Loss, Balance Sheet and cash position, all
+// derived from account TYPE + balances (COA-agnostic, always tallies).
+function generateReportBundle(data, balances){
+  const getBal = id => balances[id] || 0;
+  const f2 = n => (n||0).toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2});
+  const co = data.company || {};
+  const asOn = (typeof today==='function') ? today() : new Date().toISOString().slice(0,10);
+  const fyLabel = (co.fyStart? co.fyStart.slice(0,4):'') + '–' + (co.fyEnd? co.fyEnd.slice(2,4):'');
+
+  // ── P&L ──
+  const incomeAccts  = data.coa.filter(a=>a.type==='Income');
+  const expenseAccts = data.coa.filter(a=>a.type==='Expense');
+  const income  = incomeAccts.reduce((s,a)=>s+(-getBal(a.id)),0);
+  const expense = expenseAccts.reduce((s,a)=>s+getBal(a.id),0);
+  const profit  = income - expense;
+
+  // ── Balance Sheet ──
+  const assetAccts  = data.coa.filter(a=>a.type==='Asset');
+  const liabAccts   = data.coa.filter(a=>a.type==='Liability');
+  const equityAccts = data.coa.filter(a=>a.type==='Equity');
+  const totalAssets = assetAccts.reduce((s,a)=>s+getBal(a.id),0);
+  const totalLiab   = liabAccts.reduce((s,a)=>s+(-getBal(a.id)),0);
+  const totalEquity = equityAccts.reduce((s,a)=>s+(-getBal(a.id)),0) + profit; // current profit → reserves
+  const cash = getBal('2500')+getBal('2510')+getBal('2511')+getBal('2520');
+
+  // group non-zero accounts under a heading
+  const groupRows = (accts, asAsset) => {
+    const byGroup = {};
+    accts.forEach(a=>{
+      const raw = getBal(a.id);
+      const val = asAsset ? raw : -raw;
+      if(Math.abs(val) < 0.005) return;
+      (byGroup[a.group||'Other'] = byGroup[a.group||'Other'] || []).push({name:a.name, val});
+    });
+    return Object.entries(byGroup).map(([g,rows])=>{
+      const sub = rows.reduce((s,r)=>s+r.val,0);
+      return '<tr class="grp"><td colspan="2">'+g+'</td></tr>' +
+        rows.map(r=>'<tr><td class="ind">'+r.name+'</td><td class="amt">'+f2(r.val)+'</td></tr>').join('') +
+        '<tr class="sub"><td>Subtotal — '+g+'</td><td class="amt">'+f2(sub)+'</td></tr>';
+    }).join('');
+  };
+  const plExpense = groupRows(expenseAccts, true);
+  const plIncome  = groupRows(incomeAccts, false);
+  const bsAssets  = groupRows(assetAccts, true);
+  const bsLiab    = groupRows(liabAccts, false);
+  const bsEquityRows = groupRows(equityAccts, false) +
+    '<tr class="grp"><td colspan="2">Current Year</td></tr>' +
+    '<tr><td class="ind">Profit / (Loss) for the year</td><td class="amt">'+f2(profit)+'</td></tr>';
+
+  const kpi = (l,v) => '<div class="kpi"><div class="kl">'+l+'</div><div class="kv">₹'+f2(v)+'</div></div>';
+  const sect = (title, sub) => '<h2>'+title+'</h2>'+(sub?'<div class="ssub">'+sub+'</div>':'');
+
+  const html =
+  '<!DOCTYPE html><html><head><meta charset="utf-8"><title>Financial Report Bundle — '+(co.name||'')+'</title>'+
+  '<style>'+
+  '*{box-sizing:border-box}body{font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;color:#1a2b26;margin:0;background:#f4f6f5}'+
+  '.pg{max-width:820px;margin:0 auto;background:#fff;padding:38px 46px;min-height:100vh}'+
+  '.cover{text-align:center;padding:120px 0 60px}.cover h1{font-size:30px;margin:0 0 8px;color:#0b6b4f}.cover .co{font-size:20px;font-weight:700}'+
+  '.cover .meta{color:#6b7f78;font-size:13px;margin-top:6px}'+
+  'h2{color:#0b6b4f;font-size:17px;border-bottom:2px solid #0b6b4f;padding-bottom:5px;margin:30px 0 4px}'+
+  '.ssub{color:#6b7f78;font-size:11px;margin-bottom:8px}'+
+  'table{width:100%;border-collapse:collapse;font-size:12.5px;margin-bottom:8px}'+
+  'td{padding:4px 8px;border-bottom:1px solid #eef2f0}.amt{text-align:right;font-variant-numeric:tabular-nums}'+
+  '.grp td{font-weight:700;background:#f0f6f3;color:#0b6b4f;padding-top:7px}'+
+  '.ind{padding-left:22px}.sub td{font-weight:600;border-top:1px solid #cfe0d9}.sub .amt{border-top:1px solid #cfe0d9}'+
+  '.tot td{font-weight:800;font-size:13.5px;border-top:2px solid #0b6b4f;border-bottom:2px solid #0b6b4f;background:#0b6b4f0a}'+
+  '.kpis{display:flex;flex-wrap:wrap;gap:10px;margin:10px 0 6px}.kpi{flex:1;min-width:120px;border:1px solid #e3ebe7;border-radius:8px;padding:10px 12px}'+
+  '.kl{font-size:10px;text-transform:uppercase;letter-spacing:.5px;color:#6b7f78}.kv{font-size:17px;font-weight:700;font-variant-numeric:tabular-nums;margin-top:2px}'+
+  '.foot{margin-top:34px;text-align:center;font-size:10.5px;color:#8a9a94;border-top:1px solid #eef2f0;padding-top:10px}'+
+  '.chk{font-size:11px;margin-top:6px;font-weight:600}'+
+  '@media print{body{background:#fff}.pg{padding:0 8px}.no-print{display:none!important}h2{page-break-after:avoid}.cover{page-break-after:always}}'+
+  '</style></head><body><div class="pg">'+
+  // Cover
+  '<div class="cover"><h1>Financial Report Bundle</h1>'+
+    '<div class="co">'+(co.name||'Your Company')+'</div>'+
+    '<div class="meta">'+(co.gstin?('GSTIN: '+co.gstin+' · '):'')+'FY '+fyLabel+'</div>'+
+    '<div class="meta">Prepared as on '+fmtDate(asOn)+'</div>'+
+    '<div class="meta" style="margin-top:26px">Contents: Financial Summary · Profit &amp; Loss · Balance Sheet · Cash Position</div>'+
+  '</div>'+
+  // Summary
+  sect('Financial Summary')+
+  '<div class="kpis">'+kpi('Total Income',income)+kpi('Total Expenses',expense)+kpi('Net Profit',profit)+'</div>'+
+  '<div class="kpis">'+kpi('Total Assets',totalAssets)+kpi('Equity',totalEquity)+kpi('Cash & Bank',cash)+'</div>'+
+  // P&L
+  sect('Profit & Loss Statement','For FY '+fyLabel)+
+  '<table>'+plExpense+
+    '<tr class="tot"><td>Total Expenses</td><td class="amt">'+f2(expense)+'</td></tr>'+
+    plIncome+
+    '<tr class="tot"><td>Total Income</td><td class="amt">'+f2(income)+'</td></tr>'+
+    '<tr class="tot"><td>Net Profit / (Loss)</td><td class="amt">'+f2(profit)+'</td></tr>'+
+  '</table>'+
+  // Balance Sheet
+  sect('Balance Sheet','As on '+fmtDate(asOn))+
+  '<table>'+
+    '<tr class="grp" style="background:#0b6b4f;color:#fff"><td colspan="2">EQUITY &amp; LIABILITIES</td></tr>'+
+    bsEquityRows+bsLiab+
+    '<tr class="tot"><td>Total Equity &amp; Liabilities</td><td class="amt">'+f2(totalEquity+totalLiab)+'</td></tr>'+
+    '<tr class="grp" style="background:#0b6b4f;color:#fff"><td colspan="2">ASSETS</td></tr>'+
+    bsAssets+
+    '<tr class="tot"><td>Total Assets</td><td class="amt">'+f2(totalAssets)+'</td></tr>'+
+  '</table>'+
+  '<div class="chk" style="color:'+(Math.abs(totalAssets-(totalEquity+totalLiab))<1?'#0b6b4f':'#c62828')+'">'+
+    (Math.abs(totalAssets-(totalEquity+totalLiab))<1 ? '✓ Balance Sheet tallies' : '⚠ Difference ₹'+f2(totalAssets-(totalEquity+totalLiab)))+'</div>'+
+  '<div class="foot">Computer-generated report · MiyeeBooks MSME Accounting Suite · Built by Vipin Nair · MYeeCFO Series</div>'+
+  '<div class="no-print" style="text-align:center;margin:22px 0">'+
+    '<button onclick="window.print()" style="padding:11px 30px;background:#0b6b4f;color:#fff;border:none;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer">⎙ Print / Save as PDF</button>'+
+    '&nbsp;&nbsp;<button onclick="window.close()" style="padding:11px 22px;background:#eee;color:#333;border:1px solid #ccc;border-radius:6px;font-size:13px;cursor:pointer">Close</button>'+
+  '</div>'+
+  '</div></body></html>';
+
+  const win = window.open('', '_blank', 'width=880,height=1000');
+  if(!win){ alert('Allow pop-ups to generate the report bundle.'); return; }
+  win.document.write(html);
+  win.document.close();
+  win.focus();
+}
+
 // Generate the IRP e-invoice JSON (schema 1.1) for a sales invoice — upload to the
 // e-invoice portal / GePP, or pass to an IRN-generation API.
 function generateEInvoiceJSON(voucher, appData){
@@ -1196,6 +1364,119 @@ function generateEInvoiceJSON(voucher, appData){
   const url = URL.createObjectURL(blob), a = document.createElement('a');
   a.href = url; a.download = `einvoice_${(voucher.number||'INV').replace(/[^\w]/g,'_')}.json`; a.click();
   URL.revokeObjectURL(url);
+}
+
+// Generate the NIC e-Way Bill bulk-upload JSON for a sales invoice (consignments
+// over ₹50,000). Transport details (vehicle no, distance) are prompted — leave
+// blank to fill them on the portal before generation.
+function generateEWayBillJSON(voucher, appData){
+  const co = appData.company;
+  const party = appData.parties.find(p => p.id === voucher.partyId) || {};
+  const inter = voucher.isInterState;
+  const d2 = iso => { const m=String(iso).match(/^(\d{4})-(\d{2})-(\d{2})/); return m?`${m[3]}/${m[2]}/${m[1]}`:iso; };
+  const pin = s => Number(String(s||'').match(/\b(\d{6})\b/)?.[1]||0) || 0;
+  const vehicleNo = (prompt('Vehicle number (e.g. GJ01AB1234) — leave blank to fill on portal:','')||'').toUpperCase().replace(/\s/g,'');
+  const distance  = parseInt(prompt('Approx. transport distance in km (blank = 0, portal will auto-compute):','')||'0',10)||0;
+  const bill = {
+    version:'1.0.0421',
+    billLists:[{
+      genMode:'portal', userGstin: co.gstin||'',
+      supplyType:'O', subSupplyType:'1', subSupplyDesc:'',
+      docType: voucher.type==='CRN' ? 'CRN' : 'INV',
+      docNo: voucher.number||'', docDate: d2(voucher.date),
+      fromGstin: co.gstin||'', fromTrdName: co.name||'',
+      fromAddr1:(co.address||'').slice(0,120), fromAddr2:'', fromPlace:(co.state||'').slice(0,50),
+      fromPincode: pin(co.address)||390001, actualFromStateCode: Number(co.stateCode||24), fromStateCode: Number(co.stateCode||24),
+      toGstin: party.gstin||'URP', toTrdName: party.name||'',
+      toAddr1:(party.address||'').slice(0,120), toAddr2:'', toPlace:(party.state||'').slice(0,50),
+      toPincode: pin(party.address)||380001, actualToStateCode: Number(party.stateCode||24), toStateCode: Number(party.stateCode||24),
+      transactionType: 1, otherValue: 0,
+      totalValue: voucher.taxable||0,
+      cgstValue: voucher.cgst||0, sgstValue: voucher.sgst||0, igstValue: voucher.igst||0, cessValue: 0, cessNonAdvolValue: 0,
+      totInvValue: voucher.total||voucher.amount||0,
+      transMode:'1', transDistance:String(distance),
+      transporterName:'', transporterId:'', transDocNo:'', transDocDate:'',
+      vehicleNo: vehicleNo, vehicleType:'R',
+      itemList:(voucher.items||[]).map(it => {
+        const ass = (it.qty||0)*(it.rate||0);
+        const tax = ass*(it.gstRate||0)/100;
+        return {
+          productName:(it.description||'').slice(0,100), productDesc:(it.description||'').slice(0,100),
+          hsnCode: Number(String(it.hsn||'').replace(/\D/g,''))||0,
+          quantity: it.qty||0, qtyUnit:'NOS',
+          taxableAmount: Math.round(ass*100)/100,
+          sgstRate: inter?0:(it.gstRate||0)/2, cgstRate: inter?0:(it.gstRate||0)/2,
+          igstRate: inter?(it.gstRate||0):0, cessRate:0, cessNonAdvol:0,
+        };
+      }),
+    }],
+  };
+  const blob = new Blob([JSON.stringify(bill, null, 2)], {type:'application/json'});
+  const url = URL.createObjectURL(blob), a = document.createElement('a');
+  a.href = url; a.download = `ewaybill_${(voucher.number||'INV').replace(/[^\w]/g,'_')}.json`; a.click();
+  URL.revokeObjectURL(url);
+}
+
+// Print a sales document (Quotation / Proforma Invoice / Delivery Challan) in a
+// GST-style layout with WhatsApp / Email share, mirroring generateInvoicePDF.
+function printSalesDoc(doc, appData){
+  const co = appData.company || {};
+  const party = appData.parties.find(p => p.id === doc.partyId) || {name:doc.partyName||''};
+  const f2 = n => (n||0).toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2});
+  const isChallan = doc.docType==='Delivery Challan';
+  const title = (doc.docType||'Quotation').toUpperCase();
+  let taxable=0, totTax=0;
+  const rowsHtml = (doc.items||[]).map((it,i)=>{
+    const amt=(it.qty||0)*(it.rate||0), tax=isChallan?0:amt*(it.gstRate||0)/100;
+    taxable+=amt; totTax+=tax;
+    return '<tr><td>'+(i+1)+'</td><td>'+(it.description||'')+'</td><td>'+(it.hsn||'')+'</td>'+
+      '<td class="n">'+(it.qty||0)+'</td><td class="n">'+f2(it.rate)+'</td>'+
+      (isChallan?'':'<td class="n">'+(it.gstRate||0)+'%</td>')+
+      '<td class="n">'+f2(isChallan?amt:amt+tax)+'</td></tr>';
+  }).join('');
+  const total = taxable+totTax;
+  const waText = encodeURIComponent(`${doc.docType} ${doc.number} from ${co.name}\nTotal: ₹${f2(total)}\nValid till: ${doc.validTill?fmtDate(doc.validTill):'—'}`);
+  const waUrl = party.phone ? 'https://wa.me/'+String(party.phone).replace(/\D/g,'')+'?text='+waText : '';
+  const html = '<!DOCTYPE html><html><head><meta charset="utf-8"><title>'+title+' '+(doc.number||'')+'</title><style>'+
+    'body{font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;color:#1a2b26;margin:0;background:#f4f6f5}'+
+    '.pg{max-width:780px;margin:0 auto;background:#fff;padding:34px 42px}'+
+    '.hd{display:flex;justify-content:space-between;border-bottom:3px solid #0b6b4f;padding-bottom:12px;margin-bottom:14px}'+
+    '.hd h1{font-size:22px;color:#0b6b4f;margin:0}.co{font-size:12px;color:#4a5f57;line-height:1.5}'+
+    '.badge{background:#0b6b4f;color:#fff;padding:4px 16px;border-radius:4px;font-weight:700;font-size:13px;letter-spacing:1px}'+
+    '.meta{display:flex;gap:26px;font-size:12px;margin:12px 0;flex-wrap:wrap}.meta b{display:block;font-size:10px;color:#6b7f78;text-transform:uppercase}'+
+    'table{width:100%;border-collapse:collapse;font-size:12px;margin:10px 0}th{background:#0b6b4f;color:#fff;padding:7px 9px;text-align:left;font-size:11px}'+
+    'td{padding:6px 9px;border-bottom:1px solid #e8efec}.n{text-align:right;font-variant-numeric:tabular-nums}'+
+    '.tot{display:flex;justify-content:flex-end;margin-top:8px}.tot table{width:300px}.tot .g td{font-weight:800;border-top:2px solid #0b6b4f;font-size:14px}'+
+    '.terms{font-size:11px;color:#4a5f57;margin-top:16px;white-space:pre-wrap}'+
+    '.foot{margin-top:26px;text-align:center;font-size:10px;color:#8a9a94;border-top:1px solid #eef2f0;padding-top:8px}'+
+    '@media print{body{background:#fff}.pg{padding:0}.no-print{display:none!important}}'+
+    '</style></head><body><div class="pg">'+
+    '<div class="hd"><div><h1>'+(co.name||'')+'</h1><div class="co">'+(co.address||'')+(co.gstin?'<br/>GSTIN: '+co.gstin:'')+'</div></div>'+
+    '<div style="text-align:right"><span class="badge">'+title+'</span>'+(isChallan?'<div style="font-size:10px;color:#6b7f78;margin-top:6px">Goods sent — not a tax invoice</div>':'')+'</div></div>'+
+    '<div class="meta">'+
+      '<div><b>'+(doc.docType||'Quotation')+' No.</b>'+(doc.number||'')+'</div>'+
+      '<div><b>Date</b>'+fmtDate(doc.date)+'</div>'+
+      (doc.validTill?'<div><b>Valid Till</b>'+fmtDate(doc.validTill)+'</div>':'')+
+      '<div><b>To</b>'+(party.name||'')+(party.gstin?'<br/>GSTIN: '+party.gstin:'')+(party.address?'<br/>'+party.address:'')+'</div>'+
+      (doc.reference?'<div><b>Reference</b>'+doc.reference+'</div>':'')+
+    '</div>'+
+    '<table><thead><tr><th>#</th><th>Description</th><th>HSN</th><th style="text-align:right">Qty</th><th style="text-align:right">Rate</th>'+
+    (isChallan?'':'<th style="text-align:right">GST</th>')+'<th style="text-align:right">Amount</th></tr></thead><tbody>'+rowsHtml+'</tbody></table>'+
+    '<div class="tot"><table>'+
+      '<tr><td>Taxable Value</td><td class="n">₹'+f2(taxable)+'</td></tr>'+
+      (isChallan?'':'<tr><td>Total GST</td><td class="n">₹'+f2(totTax)+'</td></tr>')+
+      '<tr class="g"><td>'+(isChallan?'Total Value of Goods':'Grand Total')+'</td><td class="n">₹'+f2(total)+'</td></tr>'+
+    '</table></div>'+
+    (doc.notes?'<div class="terms"><b>Terms & Notes</b><br/>'+doc.notes+'</div>':'')+
+    '<div class="foot">Computer-generated '+(doc.docType||'document').toLowerCase()+' · MiyeeBooks MSME Accounting Suite · Built by Vipin Nair · MYeeCFO Series</div>'+
+    '<div class="no-print" style="text-align:center;margin:20px 0">'+
+      (waUrl?'<button onclick="window.open(\''+waUrl+'\',\'_blank\')" style="padding:11px 20px;background:#25D366;color:#fff;border:none;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer">💬 WhatsApp</button>&nbsp;&nbsp;':'')+
+      '<button onclick="window.print()" style="padding:11px 28px;background:#0b6b4f;color:#fff;border:none;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer">⎙ Print / Save as PDF</button>'+
+      '&nbsp;&nbsp;<button onclick="window.close()" style="padding:11px 20px;background:#eee;color:#333;border:1px solid #ccc;border-radius:6px;font-size:13px;cursor:pointer">Close</button>'+
+    '</div></div></body></html>';
+  const win = window.open('', '_blank', 'width=860,height=980');
+  if(!win){ alert('Allow pop-ups to print this document.'); return; }
+  win.document.write(html); win.document.close(); win.focus();
 }
 
 // ============================================================================
@@ -1273,10 +1554,10 @@ const SEED_COA = [
 const SEED_PARTIES = [
   {id:uid(), name:'Reliance Industries Ltd', type:'Customer', gstin:'27AAACR5055K1Z7', state:'Maharashtra', stateCode:'27', address:'Maker Chambers IV, Mumbai', email:'ap@ril.com', phone:'+91 22 3555 5000', currency:'INR', balance:120000},
   {id:uid(), name:'Tata Consultancy Services', type:'Customer', gstin:'27AAACT2727Q1ZW', state:'Maharashtra', stateCode:'27', address:'TCS House, Mumbai', email:'vendor@tcs.com', phone:'+91 22 6778 9999', currency:'INR', balance:80000},
-  {id:uid(), name:'Acme Trading Co.', type:'Customer', gstin:'24AABCA1234Z1Z5', state:'Gujarat', stateCode:'24', address:'Ahmedabad', email:'info@acme.in', phone:'+91 79 2658 0000', currency:'INR', balance:40000},
+  {id:uid(), name:'Acme Trading Co.', type:'Customer', gstin:'24AABCA1234Z1ZA', state:'Gujarat', stateCode:'24', address:'Ahmedabad', email:'info@acme.in', phone:'+91 79 2658 0000', currency:'INR', balance:40000},
   {id:uid(), name:'GlobalCorp Inc. (USA)', type:'Customer', gstin:'', state:'Outside India', stateCode:'97', address:'Delaware, USA', email:'ap@globalcorp.com', phone:'+1 302 555 0100', currency:'USD', balance:0, isForeign:true},
-  {id:uid(), name:'Aditya Birla Supplies', type:'Vendor', gstin:'24AABCA9999B1Z2', state:'Gujarat', stateCode:'24', address:'Surat', email:'sales@absupplies.in', phone:'+91 261 234 5000', currency:'INR', balance:85000},
-  {id:uid(), name:'Mahesh Stationers', type:'Vendor', gstin:'24BBCDM4321A1Z0', state:'Gujarat', stateCode:'24', address:'Ahmedabad', email:'mahesh@stat.in', phone:'+91 98765 12345', currency:'INR', balance:25000},
+  {id:uid(), name:'Aditya Birla Supplies', type:'Vendor', gstin:'24AABCA9999B1ZJ', state:'Gujarat', stateCode:'24', address:'Surat', email:'sales@absupplies.in', phone:'+91 261 234 5000', currency:'INR', balance:85000},
+  {id:uid(), name:'Mahesh Stationers', type:'Vendor', gstin:'24BBCDM4321A1Z5', state:'Gujarat', stateCode:'24', address:'Ahmedabad', email:'mahesh@stat.in', phone:'+91 98765 12345', currency:'INR', balance:25000},
   {id:uid(), name:'Reliance Jio (Telecom)', type:'Vendor', gstin:'27AAACR5055K2Z6', state:'Maharashtra', stateCode:'27', address:'Mumbai', email:'support@jio.com', phone:'1800 889 9999', currency:'INR', balance:0},
   {id:uid(), name:'Office Landlord  Mr. Patel', type:'Vendor', gstin:'', state:'Gujarat', stateCode:'24', address:'Ahmedabad', email:'patel@landlord.in', phone:'+91 99999 11111', currency:'INR', balance:0, unregistered:true},
 ];
@@ -1284,7 +1565,7 @@ const SEED_PARTIES = [
 const DEFAULT_COMPANY = {
   name:'My MSME Enterprises Pvt Ltd',
   address:'45 Industrial Estate, Ahmedabad, Gujarat 380001',
-  gstin:'24ABCDE1234F1Z5',
+  gstin:'24ABCDE1234F1Z6',
   pan:'ABCDE1234F',
   cin:'U72200GJ2020PTC123456',
   email:'accounts@mymsme.in',
@@ -1727,18 +2008,18 @@ const buildSampleData = () => {
   };
   const parties = [
     {id:P.reliance, name:'Reliance Industries Ltd', type:'Customer', gstin:'27AAACR5055K1Z7', state:'Maharashtra', stateCode:'27', address:'Maker Chambers IV, Mumbai', email:'ap@ril.com', phone:'+91 22 3555 5000', currency:'INR', balance:0},
-    {id:P.acme, name:'Acme Engineering Co.', type:'Customer', gstin:'24AABCA1234Z1Z5', state:'Gujarat', stateCode:'24', address:'Ahmedabad', email:'info@acme.in', phone:'+91 79 2658 0000', currency:'INR', balance:0},
-    {id:P.mahindra, name:'Mahindra & Mahindra Ltd', type:'Customer', gstin:'27AAACM3025E1ZA', state:'Maharashtra', stateCode:'27', address:'Worli, Mumbai', email:'purchase@mahindra.com', phone:'+91 22 2490 0000', currency:'INR', balance:0},
-    {id:P.patel, name:'Patel Hardware Traders', type:'Customer', gstin:'24AAEPP8765R1Z3', state:'Gujarat', stateCode:'24', address:'Rajkot', email:'patel@hardware.in', phone:'+91 281 245 6000', currency:'INR', balance:0},
+    {id:P.acme, name:'Acme Engineering Co.', type:'Customer', gstin:'24AABCA1234Z1ZA', state:'Gujarat', stateCode:'24', address:'Ahmedabad', email:'info@acme.in', phone:'+91 79 2658 0000', currency:'INR', balance:0},
+    {id:P.mahindra, name:'Mahindra & Mahindra Ltd', type:'Customer', gstin:'27AAACM3025E1ZZ', state:'Maharashtra', stateCode:'27', address:'Worli, Mumbai', email:'purchase@mahindra.com', phone:'+91 22 2490 0000', currency:'INR', balance:0},
+    {id:P.patel, name:'Patel Hardware Traders', type:'Customer', gstin:'24AAEPP8765R1ZR', state:'Gujarat', stateCode:'24', address:'Rajkot', email:'patel@hardware.in', phone:'+91 281 245 6000', currency:'INR', balance:0},
     {id:P.global, name:'GlobalCorp Inc. (USA)', type:'Customer', gstin:'', state:'Outside India', stateCode:'97', address:'Delaware, USA', email:'ap@globalcorp.com', phone:'+1 302 555 0100', currency:'USD', balance:0, isForeign:true},
-    {id:P.steelco, name:'Gujarat Steel Suppliers', type:'Vendor', gstin:'24AADCS5566F1Z8', state:'Gujarat', stateCode:'24', address:'Bhavnagar', email:'sales@gjsteel.in', phone:'+91 278 220 1000', currency:'INR', balance:0, msmeReg:'UDYAM-GJ-01-0012345'},
-    {id:P.motorworld, name:'Motor World Pvt Ltd', type:'Vendor', gstin:'27AABCM7788H1Z4', state:'Maharashtra', stateCode:'27', address:'Pune', email:'sales@motorworld.in', phone:'+91 20 2567 8000', currency:'INR', balance:0},
-    {id:P.birla, name:'Aditya Birla Supplies', type:'Vendor', gstin:'24AABCA9999B1Z2', state:'Gujarat', stateCode:'24', address:'Surat', email:'sales@absupplies.in', phone:'+91 261 234 5000', currency:'INR', balance:0},
-    {id:P.mahesh, name:'Mahesh Stationers', type:'Vendor', gstin:'24BBCDM4321A1Z0', state:'Gujarat', stateCode:'24', address:'Ahmedabad', email:'mahesh@stat.in', phone:'+91 98765 12345', currency:'INR', balance:0, msmeReg:'UDYAM-GJ-01-0067890'},
+    {id:P.steelco, name:'Gujarat Steel Suppliers', type:'Vendor', gstin:'24AADCS5566F1ZC', state:'Gujarat', stateCode:'24', address:'Bhavnagar', email:'sales@gjsteel.in', phone:'+91 278 220 1000', currency:'INR', balance:0, msmeReg:'UDYAM-GJ-01-0012345'},
+    {id:P.motorworld, name:'Motor World Pvt Ltd', type:'Vendor', gstin:'27AABCM7788H1ZY', state:'Maharashtra', stateCode:'27', address:'Pune', email:'sales@motorworld.in', phone:'+91 20 2567 8000', currency:'INR', balance:0},
+    {id:P.birla, name:'Aditya Birla Supplies', type:'Vendor', gstin:'24AABCA9999B1ZJ', state:'Gujarat', stateCode:'24', address:'Surat', email:'sales@absupplies.in', phone:'+91 261 234 5000', currency:'INR', balance:0},
+    {id:P.mahesh, name:'Mahesh Stationers', type:'Vendor', gstin:'24BBCDM4321A1Z5', state:'Gujarat', stateCode:'24', address:'Ahmedabad', email:'mahesh@stat.in', phone:'+91 98765 12345', currency:'INR', balance:0, msmeReg:'UDYAM-GJ-01-0067890'},
     {id:P.jio, name:'Reliance Jio (Telecom)', type:'Vendor', gstin:'27AAACR5055K2Z6', state:'Maharashtra', stateCode:'27', address:'Mumbai', email:'support@jio.com', phone:'1800 889 9999', currency:'INR', balance:0},
     {id:P.landlord, name:'Factory Landlord  Mr. Patel', type:'Vendor', gstin:'', state:'Gujarat', stateCode:'24', address:'Ahmedabad', email:'patel@landlord.in', phone:'+91 99999 11111', currency:'INR', balance:0, unregistered:true},
-    {id:P.sharma, name:'Sharma & Associates (CA)', type:'Vendor', gstin:'24AAFFS1234K1ZP', state:'Gujarat', stateCode:'24', address:'Ahmedabad', email:'ca@sharma.in', phone:'+91 79 4000 1111', currency:'INR', balance:0, pan:'AAFFS1234K'},
-    {id:P.buildwell, name:'BuildWell Contractors Pvt Ltd', type:'Vendor', gstin:'24AABCB7777C1Z9', state:'Gujarat', stateCode:'24', address:'Gandhinagar', email:'works@buildwell.in', phone:'+91 79 5000 2222', currency:'INR', balance:0, pan:'AABCB7777C'},
+    {id:P.sharma, name:'Sharma & Associates (CA)', type:'Vendor', gstin:'24AAFFS1234K1ZC', state:'Gujarat', stateCode:'24', address:'Ahmedabad', email:'ca@sharma.in', phone:'+91 79 4000 1111', currency:'INR', balance:0, pan:'AAFFS1234K'},
+    {id:P.buildwell, name:'BuildWell Contractors Pvt Ltd', type:'Vendor', gstin:'24AABCB7777C1ZS', state:'Gujarat', stateCode:'24', address:'Gandhinagar', email:'works@buildwell.in', phone:'+91 79 5000 2222', currency:'INR', balance:0, pan:'AABCB7777C'},
   ];
   const partyOf = id => parties.find(p => p.id === id);
 
@@ -2034,6 +2315,21 @@ const buildSampleData = () => {
     employees, payrollRuns,
     tdsSections: SEED_TDS_SECTIONS.map(s => ({...s, id: uid()})),
     stockItems, boms, productionOrders,
+    quotations: [
+      {id:uid(), docType:'Quotation', number:'QTN/0001', date:'2026-02-10', validTill:'2026-03-10',
+       partyId:P.acme, partyName:'Acme Engineering Co.', reference:'ACME-RFQ-88', status:'Sent',
+       notes:'Prices valid 30 days. Delivery within 2 weeks of PO. Payment: 50% advance, 50% on delivery.',
+       items:[{id:uid(), description:'Water Pump 1HP', hsn:'8413', qty:25, rate:3450, gstRate:18},
+              {id:uid(), description:'Industrial Fan', hsn:'8414', qty:10, rate:2750, gstRate:18}]},
+      {id:uid(), docType:'Proforma Invoice', number:'PRF/0001', date:'2026-02-18', validTill:'2026-03-18',
+       partyId:P.patel, partyName:'Patel Hardware Traders', reference:'', status:'Accepted',
+       notes:'Proforma for advance payment. Goods dispatch after credit of advance.',
+       items:[{id:uid(), description:'Water Pump 1HP', hsn:'8413', qty:15, rate:3500, gstRate:18}]},
+      {id:uid(), docType:'Delivery Challan', number:'DCH/0001', date:'2026-03-05',
+       partyId:P.mahindra, partyName:'Mahindra & Mahindra Ltd', reference:'Job-work approval', status:'Sent',
+       notes:'Goods sent on approval basis — returnable within 30 days.',
+       items:[{id:uid(), description:'Industrial Fan', hsn:'8414', qty:5, rate:2800, gstRate:18}]},
+    ],
     costCentres, departments, bankRecon: [], allocations: [], bankRules: [],
     fixedAssets: [], budgets: {}, amortizations: [],
     auditLog: [auditEntry('SAMPLE_DATA', `Loaded factory sample dataset · ${vouchers.length} vouchers · FY 2025-26`)],
@@ -2860,6 +3156,33 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
   const [showUpgrade, setShowUpgrade] = useState(false);
   const [upgradeReason, setUpgradeReason] = useState('limit');
 
+  // Dark mode — persisted per browser
+  const [darkMode, setDarkMode] = useState(() => { try { return localStorage.getItem('mb_theme')==='dark'; } catch(e){ return false; } });
+  useEffect(() => {
+    document.body.classList.toggle('dark', darkMode);
+    try { localStorage.setItem('mb_theme', darkMode?'dark':'light'); } catch(e){}
+  }, [darkMode]);
+
+  // Tally-style function keys: F4 Contra · F5 Payment · F6 Receipt · F7 Journal · F8 Sales · F9 Purchase
+  useEffect(() => {
+    const KEYMAP = {F4:'CON', F5:'PAY', F6:'REC', F7:'JV', F8:'SAL', F9:'PUR'};
+    const h = (e) => {
+      if(e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
+      const t = KEYMAP[e.key];
+      if(!t) return;
+      // Never steal keys while the user is typing or has any modal open —
+      // otherwise F5 muscle-memory would wipe an in-progress voucher.
+      const el = e.target;
+      if(el && (el.tagName==='INPUT' || el.tagName==='TEXTAREA' || el.tagName==='SELECT' || el.isContentEditable)) return;
+      if(document.querySelector('.modal-overlay')) return;
+      e.preventDefault();
+      setPage('vouchers');
+      setTimeout(() => window.dispatchEvent(new CustomEvent('mb:newVoucher', {detail:{type:t}})), 60);
+    };
+    window.addEventListener('keydown', h);
+    return () => window.removeEventListener('keydown', h);
+  }, []);
+
   const triggerUpgrade = (reason='limit') => { setUpgradeReason(reason); setShowUpgrade(true); };
   const activeVoucherCount = useMemo(() => (data.vouchers||[]).filter(v=>v.status!=='Cancelled').length, [data.vouchers]);
   const isPrem = isPremiumActive(data.company);
@@ -3011,7 +3334,7 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
   const invItems = [
     ...(mod.trader||mod.factory ? [{id:'inv_items', label:'Stock Items', ico:'▣'},{id:'inv_ledger', label:'Stock Ledger', ico:'▤'}] : []),
     ...(mod.factory ? [{id:'inv_bom', label:'Bill of Materials', ico:'⊞'},{id:'inv_production', label:'Production Orders', ico:'⚙'}] : []),
-    ...(mod.trader||mod.factory ? [{id:'inv_movement', label:'Inventory Movements', ico:'⇌'}] : []),
+    ...(mod.trader||mod.factory ? [{id:'inv_movement', label:'Inventory Movements', ico:'⇌'},{id:'inv_valuation', label:'Stock Valuation', ico:'⚖'}] : []),
   ];
 
   // Role-based navigation: sections grouped the way a finance team divides work
@@ -3021,6 +3344,8 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
     ]},
     {section:'👨‍💻 Accountant', items:[
       {id:'vouchers', label:'Vouchers / Entry', ico:'✎'},
+      {id:'salesdocs', label:'Quotations & Challans', ico:'📄'},
+      {id:'collections', label:'Collections / Reminders', ico:'📢'},
       {id:'daybook', label:'Day Book', ico:'☷'},
       {id:'bank_recon', label:'Bank Reconciliation', ico:'🏦'},
       {id:'billwise', label:'Bill-wise Outstanding', ico:'📋'},
@@ -3099,6 +3424,10 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
           <span className="brand-tag">MSME Accounting Suite</span>
         </div>
         <div className="topbar-right">
+          <button onClick={()=>setDarkMode(d=>!d)} title={darkMode?'Switch to light mode':'Switch to dark mode'}
+            style={{background:'transparent',border:'1px solid #2a4039',borderRadius:20,padding:'3px 10px',fontSize:12,color:'#b5c5be'}}>
+            {darkMode?'☀':'🌙'}
+          </button>
           <span className="pill">FY {data.company.fyStart?.slice(0,4)}–{data.company.fyEnd?.slice(2,4)}</span>
           <span>{data.company.name}</span>
           {data.company.gstin && <><span style={{color:'#5a7068'}}>•</span><span>GSTIN: {data.company.gstin}</span></>}
@@ -3186,6 +3515,8 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
           {page==='cc_report'    && <CostCentreReport data={data} />}
           {page==='dept_report'  && <DepartmentReport data={data} />}
           {page==='vouchers' && <Vouchers data={data} setData={canWrite?setData:()=>{}} showToast={showToast} readOnly={isViewer} />}
+          {page==='salesdocs' && <SalesDocs data={data} setData={canWrite?setData:()=>{}} showToast={showToast} readOnly={isViewer} />}
+          {page==='collections' && <Collections data={data} showToast={showToast} />}
           {page==='daybook' && <DayBook data={data} />}
           {page==='trial' && <TrialBalance data={data} balances={ledgerBalances} />}
           {page==='pnl' && <ProfitLoss data={data} balances={ledgerBalances} />}
@@ -3231,6 +3562,7 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
           {page==='inv_bom' && <FactoryBOM data={data} setData={setData} showToast={showToast} />}
           {page==='inv_production' && <ProductionOrders data={data} setData={setData} showToast={showToast} />}
           {page==='inv_movement' && <InventoryMovements data={data} />}
+          {page==='inv_valuation' && <StockValuation data={data} setData={canWrite?setData:()=>{}} showToast={showToast} balances={ledgerBalances} readOnly={isViewer} />}
           {page==='help' && <HelpGuide setPage={setPage} />}
           {page==='upgrade' && (
             <div style={{maxWidth:720,margin:'0 auto'}}>
@@ -4241,6 +4573,43 @@ function Dashboard({data, balances, setPage, setData=()=>{}, showToast=()=>{}}){
         </div>
       )}
 
+      {/* Low-stock alert (below reorder level) */}
+      {(() => {
+        const items = (data.stockItems||[]).filter(i=>i.active!==false && (i.reorderLevel||0)>0);
+        if(!items.length) return null;
+        const qty = {}; items.forEach(i=>qty[i.id]=i.openingQty||0);
+        (data.vouchers||[]).forEach(v=>{
+          if(v.status==='Cancelled') return;
+          (v.items||[]).forEach(it=>{
+            if(!it.itemId || !(it.itemId in qty)) return;
+            if(v.type==='PUR') qty[it.itemId]+=it.qty||0;
+            if(v.type==='SAL') qty[it.itemId]-=it.qty||0;
+          });
+        });
+        (data.productionOrders||[]).forEach(po=>{
+          if(po.status!=='Posted') return;
+          (po.consumptions||[]).forEach(c=>{ if(c.itemId in qty) qty[c.itemId]-=c.qty||0; });
+          if(po.fgItemId in qty) qty[po.fgItemId]+=po.fgQty||0;
+        });
+        const low = items.filter(i=>qty[i.id] <= (i.reorderLevel||0)).sort((a,b)=>(qty[a.id]/(a.reorderLevel||1))-(qty[b.id]/(b.reorderLevel||1)));
+        if(!low.length) return null;
+        return (
+          <div className="card" style={{marginBottom:16,border:'1px solid var(--danger)',background:'#fff8f8'}}>
+            <div className="card-body" style={{padding:'14px 18px'}}>
+              <div style={{fontWeight:700,fontSize:13,marginBottom:8}}>📦 Low Stock — {low.length} item{low.length>1?'s':''} at or below reorder level</div>
+              <div style={{display:'flex',flexWrap:'wrap',gap:8}}>
+                {low.slice(0,8).map(i=>(
+                  <span key={i.id} style={{background:'#fff',border:'1px solid var(--danger)',borderRadius:20,padding:'4px 12px',fontSize:11}}>
+                    <b>{i.name}</b>: {Math.round(qty[i.id]*100)/100} {i.unit} <span style={{color:'var(--ink-3)'}}>(reorder at {i.reorderLevel})</span>
+                  </span>
+                ))}
+                {low.length>8 && <span style={{fontSize:11,color:'var(--ink-3)',alignSelf:'center'}}>+{low.length-8} more…</span>}
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
       <div className="stat-grid">
         <div className="stat">
           <div className="stat-label">Revenue (YTD)</div>
@@ -5173,8 +5542,17 @@ function PartyModal({party, onSave, onClose}){
           <div className="section-divider"><div className="label">Statutory / Tax Details</div><div className="line"></div></div>
           <div className="form-grid">
             <div className="field"><label>GSTIN</label>
-              <input value={f.gstin} onChange={e => handleGstinChange(e.target.value)} placeholder="15-char GSTIN" maxLength="15" style={{fontFamily:'var(--mono)'}} />
-              <div className="help">{f.gstin?.length === 15 ? '✓ Valid length' : f.gstin?.length > 0 ? '✗ Must be 15 chars' : 'Leave blank for URD'}</div>
+              <input value={f.gstin} onChange={e => handleGstinChange(e.target.value)} placeholder="15-char GSTIN" maxLength="15" style={{fontFamily:'var(--mono)', ...(f.gstin && f.gstin.length===15 && !validateGSTIN(f.gstin).valid ? {borderColor:'var(--danger)'} : {})}} />
+              <div className="help" style={f.gstin && f.gstin.length===15 ? {color: validateGSTIN(f.gstin).valid ? 'var(--primary)' : 'var(--danger)', fontWeight:600} : {}}>
+                {(() => {
+                  if(!f.gstin) return 'Leave blank for URD';
+                  if(f.gstin.length < 15) return '✗ Must be 15 chars ('+f.gstin.length+'/15)';
+                  const r = validateGSTIN(f.gstin);
+                  if(r.valid) return '✓ Valid GSTIN (checksum OK)';
+                  if(r.reason==='checksum') return '✗ Invalid checksum — check for typos';
+                  return '✗ Invalid GSTIN format';
+                })()}
+              </div>
             </div>
             <div className="field"><label>PAN</label>
               <input value={f.pan||''} onChange={e => setF({...f, pan:e.target.value.toUpperCase()})} placeholder="ABCDE1234F" maxLength="10" style={{fontFamily:'var(--mono)'}} />
@@ -5460,7 +5838,10 @@ function CompanySettings({data, setData, showToast, readOnly=false}){
             <div className="field"><label>Company Name</label><input value={f.name} onChange={e => setF({...f, name:e.target.value})} /></div>
             <div className="field"><label>CIN</label><input value={f.cin} onChange={e => setF({...f, cin:e.target.value})} /></div>
             <div className="field"><label>PAN</label><input value={f.pan} onChange={e => setF({...f, pan:e.target.value.toUpperCase()})} maxLength="10" /></div>
-            <div className="field"><label>GSTIN</label><input value={f.gstin} onChange={e => setF({...f, gstin:e.target.value.toUpperCase()})} maxLength="15" /></div>
+            <div className="field"><label>GSTIN</label>
+              <input value={f.gstin} onChange={e => setF({...f, gstin:e.target.value.toUpperCase()})} maxLength="15" style={f.gstin && f.gstin.length===15 && !validateGSTIN(f.gstin).valid ? {borderColor:'var(--danger)'} : {}} />
+              {f.gstin && f.gstin.length===15 && <div className="help" style={{color: validateGSTIN(f.gstin).valid ? 'var(--primary)' : 'var(--danger)', fontWeight:600}}>{validateGSTIN(f.gstin).valid ? '✓ Valid GSTIN (checksum OK)' : validateGSTIN(f.gstin).reason==='checksum' ? '✗ Invalid checksum' : '✗ Invalid format'}</div>}
+            </div>
             <div className="field" style={{gridColumn:'span 2'}}><label>Registered Address</label><input value={f.address} onChange={e => setF({...f, address:e.target.value})} /></div>
             <div className="field"><label>State</label><input value={f.state} onChange={e => setF({...f, state:e.target.value})} /></div>
             <div className="field"><label>State Code</label><input value={f.stateCode} onChange={e => setF({...f, stateCode:e.target.value})} maxLength="2" /></div>
@@ -5570,6 +5951,7 @@ function Vouchers({data, setData, showToast, readOnly=false}){
     setDup({
       ...v, id:undefined, number:'', date:today(), status:'Posted',
       reference:'', irn:'', ackNo:'', ackDate:'', billTags:[], isAdvance:false, recurringMonthly:false,
+      attachments:[],   // evidence belongs to the source voucher, never the copy
       lines:(v.lines||[]).map(l=>({...l, id:uid()})),
       items:(v.items||[]).map(it=>({...it, id:uid()})),
     });
@@ -5586,6 +5968,18 @@ function Vouchers({data, setData, showToast, readOnly=false}){
   const [page, setPage] = useState(1);
   const vPageSize = 50;
   useEffect(() => { setPage(1); }, [filter, search]);
+
+  // Function-key shortcut (dispatched by the app shell) → open a new voucher of that type
+  useEffect(() => {
+    const h = (e) => {
+      const t = e.detail && e.detail.type;
+      if(!t || readOnly) return;
+      if(isAtLimit){ setShowUpgradeGate(true); return; }
+      setEditing(null); setDup(null); setVtype(t); setShowModal(true);
+    };
+    window.addEventListener('mb:newVoucher', h);
+    return () => window.removeEventListener('mb:newVoucher', h);
+  }, [readOnly, isAtLimit]);
 
   // NEW multi-line format: each CSV row = one journal line; rows grouped by (date+type+reference) = one voucher
   const VCHR_SAMPLE_HEADERS = ['date','type','reference','narration','accountCode','debit','credit','partyName','partyGSTIN','partyType','costCentre','department'];
@@ -5855,7 +6249,7 @@ function Vouchers({data, setData, showToast, readOnly=false}){
             ) : pageVouchers.map(v => (
               <tr key={v.id} style={{opacity:v.status==='Cancelled'?.5:1}}>
                 <td>{fmtDate(v.date)}</td>
-                <td style={{fontFamily:'var(--mono)', fontWeight:600}}>{v.number}</td>
+                <td style={{fontFamily:'var(--mono)', fontWeight:600}}>{v.number}{(v.attachments||[]).length>0 && <span title={(v.attachments||[]).length+' attachment(s)'} style={{marginLeft:5,fontSize:11}}>📎</span>}</td>
                 <td><span className="badge badge-info">{v.type}</span></td>
                 <td>{v.partyName || ''}</td>
                 <td style={{maxWidth:280, fontSize:12, color:'var(--ink-2)'}}>{v.narration || ''}</td>
@@ -5866,6 +6260,7 @@ function Vouchers({data, setData, showToast, readOnly=false}){
                   {!readOnly && <button className="btn btn-sm btn-ghost" style={{color:'var(--ink-2)'}} title="Create a new voucher pre-filled from this one" onClick={() => duplicate(v)}>⧉ Copy</button>}
                   {['SAL','PUR','CRN','DBN'].includes(v.type) && v.status!=='Cancelled' && <button className="btn btn-sm btn-ghost" style={{color:'var(--primary)'}} onClick={() => generateInvoicePDF(v, data)}>⎙ PDF</button>}
                   {['SAL','CRN','DBN'].includes(v.type) && v.status!=='Cancelled' && (v.items||[]).length>0 && <button className="btn btn-sm btn-ghost" style={{color:'var(--info)'}} title="Download e-invoice IRP JSON" onClick={() => generateEInvoiceJSON(v, data)}>⊕ e-Inv</button>}
+                  {['SAL','CRN'].includes(v.type) && v.status!=='Cancelled' && (v.items||[]).length>0 && (v.total||v.amount||0)>50000 && <button className="btn btn-sm btn-ghost" style={{color:'var(--warning)'}} title="Download NIC e-Way Bill JSON (consignment > ₹50,000)" onClick={() => generateEWayBillJSON(v, data)}>🚚 e-Way</button>}
                   {!readOnly && v.status!=='Cancelled' && <button className="btn btn-sm btn-danger" onClick={() => handleDelete(v)}>×</button>}
                 </td>
               </tr>
@@ -6100,10 +6495,52 @@ function VoucherModal({vtype, voucher, prefill, data, onSave, onClose, showToast
   const totalDr = f.lines.reduce((s,l) => s + (l.debit||0), 0);
   const totalCr = f.lines.reduce((s,l) => s + (l.credit||0), 0);
   const balanced = Math.abs(totalDr - totalCr) < 0.01;
+  // Esc closes the voucher modal — but not while focus is inside a field
+  // (typing Esc there is often "dismiss suggestion", not "discard my entry")
+  useEffect(() => {
+    const h = (e) => {
+      if(e.key !== 'Escape') return;
+      const el = e.target;
+      if(el && (el.tagName==='INPUT' || el.tagName==='TEXTAREA' || el.tagName==='SELECT')){ el.blur(); return; }
+      onClose();
+    };
+    window.addEventListener('keydown', h);
+    return () => window.removeEventListener('keydown', h);
+  }, []);
+
   // Warn if another live voucher of the same type already uses this number
   const dupNumber = !!(f.number||'').trim() && (data.vouchers||[]).some(v =>
     v.id !== f.id && v.type === f.type && v.status !== 'Cancelled' &&
     (v.number||'').trim().toLowerCase() === (f.number||'').trim().toLowerCase());
+
+  // ── Credit control (SAL): outstanding + this invoice vs the party's limit ──
+  const creditCheck = useMemo(() => {
+    if(vtype !== 'SAL' || !f.partyId) return null;
+    const p = data.parties.find(x => x.id === f.partyId);
+    if(!p) return null;
+    const alloc = {};
+    (data.vouchers||[]).forEach(v => {
+      if(v.status==='Cancelled') return;
+      (v.billTags||[]).forEach(bt => { alloc[bt.voucherId] = (alloc[bt.voucherId]||0) + (bt.allocated||0); });
+    });
+    let outstanding = 0, oldestOverdue = 0;
+    const creditDays = p.creditDays != null ? p.creditDays : 30;
+    (data.vouchers||[]).forEach(v => {
+      if(v.type!=='SAL' || v.status==='Cancelled' || v.partyId!==f.partyId || v.id===f.id) return;
+      const ctrl = (v.lines||[]).reduce((s,l)=> s + (l.accountId==='2400' ? (l.debit||0) : 0), 0);
+      const out = Math.max(0, (ctrl || v.total || v.amount || 0) - (alloc[v.id]||0));
+      if(out > 0.01){
+        outstanding += out;
+        const od = Math.floor((new Date(today()) - new Date(v.date))/86400000) - creditDays;
+        if(od > oldestOverdue) oldestOverdue = od;
+      }
+    });
+    const projected = outstanding + (f.total||f.amount||0);
+    const limit = p.creditLimit || 0;
+    return { name:p.name, outstanding, projected, limit, creditDays, oldestOverdue,
+      overLimit: limit > 0 && projected > limit,
+      hasOverdue: oldestOverdue > 0 };
+  }, [vtype, f.partyId, f.total, f.amount, data.vouchers, data.parties]);
 
   // ── Bill Tagging (PAY / REC) ─────────────────────────────────────────────
   const isBillType = ['PAY','REC'].includes(vtype);
@@ -6299,6 +6736,18 @@ function VoucherModal({vtype, voucher, prefill, data, onSave, onClose, showToast
           <button className="btn btn-ghost btn-sm" onClick={onClose}>✕</button>
         </div>
         <div className="modal-body">
+          {creditCheck && (creditCheck.overLimit || creditCheck.hasOverdue) && (
+            <div style={{background: creditCheck.overLimit ? 'var(--danger-soft)' : '#fff8e6',
+              border:'1px solid '+(creditCheck.overLimit ? 'var(--danger)' : '#e0b84d'),
+              borderRadius:8, padding:'10px 14px', marginBottom:14, fontSize:12.5, lineHeight:1.6}}>
+              <b style={{color: creditCheck.overLimit ? 'var(--danger)' : '#8a6d1a'}}>⚠ Credit control — {creditCheck.name}</b><br/>
+              Current outstanding: <b>₹{fmt(creditCheck.outstanding)}</b>
+              {(f.total||f.amount||0) > 0 && <> · With this invoice: <b>₹{fmt(creditCheck.projected)}</b></>}
+              {creditCheck.limit > 0 && <> · Credit limit: <b>₹{fmt(creditCheck.limit)}</b></>}
+              {creditCheck.overLimit && <span style={{color:'var(--danger)',fontWeight:700}}> — exceeds the limit by ₹{fmt(creditCheck.projected - creditCheck.limit)}</span>}
+              {creditCheck.hasOverdue && <><br/>Oldest bill is <b>{creditCheck.oldestOverdue} days</b> past the {creditCheck.creditDays}-day credit period — consider collecting before extending more credit (see Collections page).</>}
+            </div>
+          )}
           <div className="form-grid" style={{marginBottom:14}}>
             <div className="field required"><label>Date</label><input type="date" value={f.date} onChange={e => setF({...f, date:e.target.value})} /></div>
             <div className="field"><label>Voucher No. {dupNumber && <span style={{color:'var(--danger)',fontWeight:700,fontSize:10}} title="Another voucher of this type already uses this number">⚠ Duplicate</span>}</label><input value={f.number} onChange={e => setF({...f, number:e.target.value})} placeholder="Auto-generated" style={dupNumber?{borderColor:'var(--danger)',boxShadow:'0 0 0 2px var(--danger-soft)'}:{}} /></div>
@@ -6756,6 +7205,43 @@ function VoucherModal({vtype, voucher, prefill, data, onSave, onClose, showToast
             <textarea rows="2" value={f.narration} onChange={e => setF({...f, narration:e.target.value})} placeholder="Being..." style={{padding:8, border:'1px solid var(--line-2)', borderRadius:6, resize:'vertical'}} />
           </div>
 
+          {/* ── Attachments (bill / receipt image or PDF, stored inline) ── */}
+          <div style={{marginTop:12}}>
+            <div style={{display:'flex',alignItems:'center',gap:10,flexWrap:'wrap'}}>
+              <span style={{fontSize:12,fontWeight:600,color:'var(--ink-2)'}}>📎 Attachments</span>
+              {(f.attachments||[]).length < 3 && (
+                <label className="btn btn-sm" style={{fontSize:11,cursor:'pointer'}}>
+                  + Attach bill / receipt
+                  <input type="file" accept="image/*,application/pdf" style={{display:'none'}}
+                    onChange={e => {
+                      const file = e.target.files && e.target.files[0];
+                      e.target.value = '';
+                      if(!file) return;
+                      if(file.size > 400*1024){ showToast('Max 400 KB per attachment — compress the image/PDF first','error'); return; }
+                      const rd = new FileReader();
+                      rd.onload = () => setF(prev => ({...prev, attachments:[...(prev.attachments||[]), {id:uid(), name:file.name, type:file.type, size:file.size, dataUrl:rd.result}]}));
+                      rd.readAsDataURL(file);
+                    }} />
+                </label>
+              )}
+              <span style={{fontSize:10,color:'var(--ink-3)'}}>max 3 files · 400 KB each · stored inside the voucher</span>
+            </div>
+            {(f.attachments||[]).length > 0 && (
+              <div style={{display:'flex',gap:8,marginTop:8,flexWrap:'wrap'}}>
+                {f.attachments.map(a => (
+                  <span key={a.id} style={{display:'inline-flex',alignItems:'center',gap:6,background:'var(--surface-2)',border:'1px solid var(--line)',borderRadius:6,padding:'4px 10px',fontSize:11}}>
+                    <a href="#" onClick={e=>{ e.preventDefault();
+                      const w = window.open('','_blank');
+                      if(w){ w.document.write('<html><head><title>'+a.name+'</title></head><body style="margin:0;background:#333;text-align:center">'+(a.type==='application/pdf'?'<iframe src="'+a.dataUrl+'" style="width:100%;height:100vh;border:none"></iframe>':'<img src="'+a.dataUrl+'" style="max-width:100%;margin-top:20px"/>')+'</body></html>'); w.document.close(); }
+                    }} style={{color:'var(--info)',textDecoration:'none'}}>{a.type==='application/pdf'?'📄':'🖼'} {a.name}</a>
+                    <span style={{color:'var(--ink-3)'}}>({Math.round(a.size/1024)} KB)</span>
+                    <button onClick={()=>setF(prev=>({...prev, attachments:(prev.attachments||[]).filter(x=>x.id!==a.id)}))} style={{color:'var(--danger)',fontSize:12,padding:0}}>✕</button>
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+
           {/* Recurring flag  dashboard prompts to re-post each month */}
           <label style={{display:'flex',alignItems:'center',gap:8,marginTop:10,fontSize:12,cursor:'pointer',color:'var(--ink-2)',
             background:f.recurringMonthly?'var(--primary-soft)':'transparent',padding:'8px 12px',borderRadius:6,
@@ -6925,6 +7411,360 @@ function PnLTrend({data}){
             {pbtRow.map((v,i)=><td key={i} className="num" style={{color:v>=0?'var(--primary)':'var(--danger)'}}>{fmt(v)}</td>)}
             <td className="num" style={{background:'var(--primary-soft)'}}>{fmt(pbtRow.reduce((s,v)=>s+v,0))}</td>
           </tr>
+        </tbody>
+      </table>
+    </div>
+  </>);
+}
+
+// ============================================================================
+// SALES DOCUMENTS  Quotation / Proforma Invoice / Delivery Challan
+// Pre-invoice paperwork: create → print/WhatsApp → convert to a SAL voucher
+// with one click (no re-typing). Stored in data.quotations[] — no GL impact
+// until converted.
+// ============================================================================
+function SalesDocs({data, setData, showToast, readOnly=false}){
+  const docs = data.quotations || [];
+  const [showModal, setShowModal] = useState(false);
+  const [editing, setEditing] = useState(null);
+  const [typeFilter, setTypeFilter] = useState('All');
+  const [statusFilter, setStatusFilter] = useState('All');
+  const r2 = n => Math.round(n*100)/100;
+
+  const DOC_TYPES = ['Quotation','Proforma Invoice','Delivery Challan'];
+  const STATUSES  = ['Draft','Sent','Accepted','Rejected','Invoiced'];
+  const stClr = s => s==='Invoiced'?'badge-success':s==='Accepted'?'badge-info':s==='Rejected'?'badge-danger':s==='Sent'?'badge-gold':'badge-muted';
+
+  const docTotal = (d) => {
+    let t=0; (d.items||[]).forEach(it=>{ const amt=(it.qty||0)*(it.rate||0); t += amt + (d.docType==='Delivery Challan'?0:amt*(it.gstRate||0)/100); });
+    return r2(t);
+  };
+
+  const nextDocNo = (docType) => {
+    const pfx = docType==='Proforma Invoice' ? 'PRF' : docType==='Delivery Challan' ? 'DCH' : 'QTN';
+    const count = docs.filter(d=>d.docType===docType).length + 1;
+    return pfx + '/' + String(count).padStart(4,'0');
+  };
+
+  const saveDoc = (d) => {
+    const isNew = !d.id;
+    const doc = {...d, id: d.id || uid(), number: d.number || nextDocNo(d.docType)};
+    setData({...data,
+      quotations: isNew ? [...docs, doc] : docs.map(x => x.id===doc.id ? doc : x),
+      auditLog: [...(data.auditLog||[]), auditEntry(isNew?'DOC_CREATE':'DOC_EDIT', doc.docType+' '+doc.number)]});
+    showToast(doc.docType+' '+(isNew?'created':'updated'));
+    setShowModal(false); setEditing(null);
+  };
+
+  const setStatus = (d, status) => {
+    setData({...data, quotations: docs.map(x => x.id===d.id ? {...x, status} : x)});
+    showToast(d.number+' → '+status);
+  };
+
+  const deleteDoc = (d) => {
+    if(!confirm('Delete '+d.docType+' '+d.number+'?')) return;
+    setData({...data, quotations: docs.filter(x=>x.id!==d.id)});
+    showToast('Deleted');
+  };
+
+  // ── Convert to a posted SAL voucher (same line logic as manual entry) ──
+  const convertToInvoice = (q) => {
+    const party = data.parties.find(p=>p.id===q.partyId);
+    if(!party){ showToast('Select a customer on the document first','error'); return; }
+    if(!(q.items||[]).length){ showToast('Document has no line items','error'); return; }
+    const inter = party.stateCode !== data.company.stateCode && !party.isForeign;
+    const exp = !!party.isForeign;
+    // Round each line FIRST, then accumulate — guarantees Dr = Σ(rounded Cr)
+    // exactly (independent rounding of the sum vs the lines can differ by paise).
+    let taxable=0, cgst=0, sgst=0, igst=0;
+    const items = [], itemAmts = [];
+    q.items.forEach(it => {
+      const amt = r2((it.qty||0)*(it.rate||0));
+      taxable = r2(taxable + amt);
+      const tax = exp ? 0 : r2(amt*(it.gstRate||0)/100);
+      if(inter) igst = r2(igst + tax); else { cgst = r2(cgst + r2(tax/2)); sgst = r2(sgst + r2(tax/2)); }
+      items.push({...it, id:uid(), accountId: it.accountId||'3100'});
+      itemAmts.push(amt);
+    });
+    const total = r2(taxable+cgst+sgst+igst);
+    const lines = [{id:uid(), accountId:'2400', debit:total, credit:0, narration:'To '+party.name, partyId:party.id}];
+    items.forEach((it,i) => { if(itemAmts[i]>0) lines.push({id:uid(), accountId:it.accountId, debit:0, credit:itemAmts[i], narration:it.description||''}); });
+    if(igst>0) lines.push({id:uid(), accountId:'1312', debit:0, credit:igst, narration:'IGST Output'});
+    if(cgst>0) lines.push({id:uid(), accountId:'1310', debit:0, credit:cgst, narration:'CGST Output'});
+    if(sgst>0) lines.push({id:uid(), accountId:'1311', debit:0, credit:sgst, narration:'SGST Output'});
+    const v = {id:uid(), type:'SAL', date:today(), number:nextVoucherNumber(data,'SAL'),
+      partyId:party.id, partyName:party.name,
+      narration:'Against '+q.docType+' '+q.number, reference:q.number, placeOfSupply:party.stateCode,
+      items, taxable, cgst, sgst, igst, total, amount:total, isInterState:inter, isExport:exp,
+      lines, status:'Posted', createdAt:new Date().toISOString()};
+    setData({...data,
+      vouchers:[...data.vouchers, v],
+      quotations: docs.map(x => x.id===q.id ? {...x, status:'Invoiced', invoiceId:v.id, invoiceNumber:v.number} : x),
+      auditLog:[...(data.auditLog||[]), auditEntry('DOC_CONVERT', q.docType+' '+q.number+' → Invoice '+v.number+' ₹'+fmt(total))]});
+    showToast('Invoice '+v.number+' created from '+q.number+' — ₹'+fmt(total));
+  };
+
+  const filtered = docs.filter(d =>
+    (typeFilter==='All' || d.docType===typeFilter) &&
+    (statusFilter==='All' || (d.status||'Draft')===statusFilter))
+    .sort((a,b)=>(b.date||'').localeCompare(a.date||''));
+
+  const openTotal = docs.filter(d=>!['Invoiced','Rejected'].includes(d.status||'Draft') && d.docType!=='Delivery Challan').reduce((s,d)=>s+docTotal(d),0);
+
+  return (<>
+    <div className="page-head">
+      <div>
+        <h1 className="page-title">Quotations & Challans</h1>
+        <div className="page-sub">Quotation → Proforma → Invoice pipeline · Delivery Challans · {docs.length} documents</div>
+      </div>
+      {!readOnly && <div className="page-actions">
+        <button className="btn btn-primary" onClick={()=>{ setEditing(null); setShowModal(true); }}>+ New Document</button>
+      </div>}
+    </div>
+
+    <div className="stat-grid" style={{marginBottom:14}}>
+      <div className="stat stat-info"><div className="stat-label">Open Pipeline (Quotes + Proforma)</div><div className="stat-value rupee">₹{fmt(openTotal)}</div></div>
+      <div className="stat"><div className="stat-label">Quotations</div><div className="stat-value">{docs.filter(d=>d.docType==='Quotation').length}</div></div>
+      <div className="stat stat-gold"><div className="stat-label">Converted to Invoice</div><div className="stat-value">{docs.filter(d=>d.status==='Invoiced').length}</div></div>
+      <div className="stat"><div className="stat-label">Delivery Challans</div><div className="stat-value">{docs.filter(d=>d.docType==='Delivery Challan').length}</div></div>
+    </div>
+
+    <div className="filter-bar">
+      <div className="field"><label>Type</label>
+        <select value={typeFilter} onChange={e=>setTypeFilter(e.target.value)}><option>All</option>{DOC_TYPES.map(t=><option key={t}>{t}</option>)}</select>
+      </div>
+      <div className="field"><label>Status</label>
+        <select value={statusFilter} onChange={e=>setStatusFilter(e.target.value)}><option>All</option>{STATUSES.map(s=><option key={s}>{s}</option>)}</select>
+      </div>
+    </div>
+
+    <div className="table-wrap">
+      <table>
+        <thead><tr><th>No.</th><th>Type</th><th>Date</th><th>Customer</th><th className="num">Value (₹)</th><th>Status</th><th style={{width:290}}></th></tr></thead>
+        <tbody>
+          {filtered.length===0 ? (
+            <tr><td colSpan="7"><div className="empty"><div className="empty-ico">✎</div>
+              <div>No documents yet. Create a Quotation, send it, then convert to an invoice in one click.</div>
+            </div></td></tr>
+          ) : filtered.map(d => (
+            <tr key={d.id}>
+              <td style={{fontFamily:'var(--mono)',fontSize:12}}>{d.number}</td>
+              <td><span className="badge badge-info" style={{fontSize:10}}>{d.docType}</span></td>
+              <td>{fmtDate(d.date)}</td>
+              <td style={{fontWeight:500}}>{d.partyName}{d.invoiceNumber && <div style={{fontSize:10,color:'var(--primary)'}}>→ {d.invoiceNumber}</div>}</td>
+              <td className="num bold">₹{fmt(docTotal(d))}</td>
+              <td><span className={'badge '+stClr(d.status||'Draft')}>{d.status||'Draft'}</span></td>
+              <td style={{whiteSpace:'nowrap'}}>
+                <button className="btn btn-sm btn-ghost" onClick={()=>printSalesDoc(d, data)}>⎙ Print</button>
+                {!readOnly && d.status!=='Invoiced' && <>
+                  <button className="btn btn-sm btn-ghost" onClick={()=>{ setEditing(d); setShowModal(true); }}>✎</button>
+                  {(d.status||'Draft')==='Draft' && <button className="btn btn-sm btn-ghost" onClick={()=>setStatus(d,'Sent')}>➤ Sent</button>}
+                  {d.status==='Sent' && d.docType!=='Delivery Challan' && <button className="btn btn-sm btn-ghost" style={{color:'var(--primary)'}} onClick={()=>setStatus(d,'Accepted')}>✓ Accepted</button>}
+                  {d.docType!=='Delivery Challan' && <button className="btn btn-sm btn-primary" onClick={()=>convertToInvoice(d)}>→ Invoice</button>}
+                  <button className="btn btn-sm btn-ghost" style={{color:'var(--danger)'}} onClick={()=>deleteDoc(d)}>✕</button>
+                </>}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+
+    {showModal && <SalesDocModal doc={editing} data={data} docTypes={DOC_TYPES} onSave={saveDoc} onClose={()=>{ setShowModal(false); setEditing(null); }} />}
+  </>);
+}
+
+function SalesDocModal({doc, data, docTypes, onSave, onClose}){
+  const [f, setF] = useState(doc || {
+    docType:'Quotation', date:today(), validTill:'', partyId:'', partyName:'',
+    reference:'', notes:'', status:'Draft',
+    items:[{id:uid(), description:'', hsn:'', qty:1, rate:0, gstRate:18}],
+  });
+  const customers = data.parties.filter(p=>p.type==='Customer');
+  const setItem = (id, patch) => setF({...f, items:f.items.map(it=>it.id===id?{...it,...patch}:it)});
+  const total = (f.items||[]).reduce((s,it)=>{ const amt=(it.qty||0)*(it.rate||0); return s+amt+(f.docType==='Delivery Challan'?0:amt*(it.gstRate||0)/100); },0);
+  return (
+    <div className="modal-overlay" onClick={e=>{if(e.target===e.currentTarget)onClose();}}>
+      <div className="modal wide" onClick={e=>e.stopPropagation()}>
+        <div className="modal-head">
+          <h2 className="modal-title">{doc?'Edit':'New'} {f.docType}</h2>
+          <button className="btn btn-ghost btn-sm" onClick={onClose}>✕</button>
+        </div>
+        <div className="modal-body" style={{maxHeight:'72vh',overflowY:'auto'}}>
+          <div className="form-grid">
+            <div className="field"><label>Document Type</label>
+              <select value={f.docType} onChange={e=>setF({...f, docType:e.target.value})} disabled={!!doc}>
+                {docTypes.map(t=><option key={t}>{t}</option>)}
+              </select>
+            </div>
+            <div className="field"><label>Date</label><input type="date" value={f.date} onChange={e=>setF({...f, date:e.target.value})} /></div>
+            {f.docType!=='Delivery Challan' && <div className="field"><label>Valid Till</label><input type="date" value={f.validTill||''} onChange={e=>setF({...f, validTill:e.target.value})} /></div>}
+            <div className="field required"><label>Customer</label>
+              <select value={f.partyId} onChange={e=>{ const p=customers.find(x=>x.id===e.target.value); setF({...f, partyId:e.target.value, partyName:p?p.name:''}); }}>
+                <option value="">— Select —</option>
+                {customers.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}
+              </select>
+            </div>
+            <div className="field"><label>Reference / PO No.</label><input value={f.reference||''} onChange={e=>setF({...f, reference:e.target.value})} /></div>
+          </div>
+
+          <div className="section-divider"><div className="label">Line Items</div><div className="line"></div></div>
+          <table style={{fontSize:12}}>
+            <thead><tr><th>Description</th><th style={{width:80}}>HSN</th><th style={{width:70}}>Qty</th><th style={{width:100}}>Rate</th>{f.docType!=='Delivery Challan'&&<th style={{width:70}}>GST %</th>}<th className="num" style={{width:110}}>Amount</th><th style={{width:34}}></th></tr></thead>
+            <tbody>
+              {f.items.map(it=>{
+                const amt=(it.qty||0)*(it.rate||0), tax=f.docType==='Delivery Challan'?0:amt*(it.gstRate||0)/100;
+                return (<tr key={it.id}>
+                  <td><input value={it.description} onChange={e=>setItem(it.id,{description:e.target.value})} placeholder="Item / service" style={{width:'100%'}} /></td>
+                  <td><input value={it.hsn||''} onChange={e=>setItem(it.id,{hsn:e.target.value})} style={{width:'100%'}} /></td>
+                  <td><input type="number" value={it.qty} onChange={e=>setItem(it.id,{qty:parseFloat(e.target.value)||0})} style={{width:'100%'}} /></td>
+                  <td><input type="number" value={it.rate} onChange={e=>setItem(it.id,{rate:parseFloat(e.target.value)||0})} style={{width:'100%'}} /></td>
+                  {f.docType!=='Delivery Challan'&&<td><input type="number" value={it.gstRate} onChange={e=>setItem(it.id,{gstRate:parseFloat(e.target.value)||0})} style={{width:'100%'}} /></td>}
+                  <td className="num" style={{fontFamily:'var(--mono)'}}>₹{fmt(amt+tax)}</td>
+                  <td>{f.items.length>1 && <button className="btn btn-sm btn-ghost" style={{color:'var(--danger)'}} onClick={()=>setF({...f, items:f.items.filter(x=>x.id!==it.id)})}>✕</button>}</td>
+                </tr>);
+              })}
+            </tbody>
+          </table>
+          <button className="btn btn-sm" style={{marginTop:6}} onClick={()=>setF({...f, items:[...f.items,{id:uid(), description:'', hsn:'', qty:1, rate:0, gstRate:18}]})}>+ Add Line</button>
+
+          <div style={{textAlign:'right',fontWeight:700,fontSize:15,margin:'12px 0'}}>Total: <span className="rupee">₹{fmt(total)}</span></div>
+
+          <div className="field"><label>Terms / Notes (printed on the document)</label>
+            <textarea value={f.notes||''} onChange={e=>setF({...f, notes:e.target.value})} rows="3" style={{width:'100%'}} placeholder="Payment terms, delivery schedule, validity conditions…" />
+          </div>
+        </div>
+        <div className="modal-foot">
+          <button className="btn" onClick={onClose}>Cancel</button>
+          <button className="btn btn-primary" onClick={()=>{ if(!f.partyId){alert('Select a customer');return;} onSave(f); }}>💾 Save {f.docType}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================================
+// COLLECTIONS  overdue receivables with one-click WhatsApp / Email reminders
+// Tone escalates with age: gentle (≤15d past due) → firm (≤45d) → final notice.
+// ============================================================================
+function Collections({data, showToast}){
+  const asOf = today();
+  const partyById = useMemo(() => { const m={}; (data.parties||[]).forEach(p=>m[p.id]=p); return m; }, [data.parties]);
+
+  const allocMap = useMemo(() => {
+    const m = {};
+    (data.vouchers||[]).forEach(v => {
+      if(v.status==='Cancelled') return;
+      (v.billTags||[]).forEach(bt => { m[bt.voucherId] = (m[bt.voucherId]||0) + (bt.allocated||0); });
+    });
+    return m;
+  }, [data.vouchers]);
+
+  const bills = useMemo(() => (data.vouchers||[])
+    .filter(v => v.type==='SAL' && v.status!=='Cancelled')
+    .map(inv => {
+      const p = partyById[inv.partyId] || {};
+      const ctrlAmt = (inv.lines||[]).reduce((s,l)=> s + (l.accountId==='2400' ? (l.debit||0) : 0), 0);
+      const total = ctrlAmt || inv.total || inv.amount || 0;
+      const out = Math.max(0, total - (allocMap[inv.id]||0));
+      const age = Math.floor((new Date(asOf) - new Date(inv.date)) / 86400000);
+      const creditDays = p.creditDays != null ? p.creditDays : 30;
+      const overdueDays = age - creditDays;
+      return {id:inv.id, date:inv.date, number:inv.number, party:p.name||inv.partyName||'',
+        phone:p.phone||'', email:p.email||'', total, out, age, creditDays, overdueDays};
+    })
+    .filter(b => b.out > 0.01 && b.overdueDays > 0)
+    .sort((a,b) => b.overdueDays - a.overdueDays), [data.vouchers, partyById, allocMap, asOf]);
+
+  const tone = (od) => od<=15 ? 'gentle' : od<=45 ? 'firm' : 'final';
+  const toneBadge = (od) => od<=15 ? ['Gentle','badge-info'] : od<=45 ? ['Firm','badge-gold'] : ['Final Notice','badge-danger'];
+
+  const buildMsg = (b) => {
+    const co = data.company.name;
+    if(tone(b.overdueDays)==='gentle')
+      return `Dear ${b.party},\n\nA gentle reminder that Invoice ${b.number} dated ${fmtDate(b.date)} for ₹${fmt(b.out)} is now due for payment (credit period ${b.creditDays} days).\n\nKindly arrange the payment at your convenience. Please ignore if already paid.\n\nThank you,\n${co}`;
+    if(tone(b.overdueDays)==='firm')
+      return `Dear ${b.party},\n\nOur records show Invoice ${b.number} dated ${fmtDate(b.date)} for ₹${fmt(b.out)} is overdue by ${b.overdueDays} days beyond the agreed ${b.creditDays}-day credit period.\n\nWe request you to clear the outstanding within 7 days. If payment has been made, please share the reference.\n\nRegards,\n${co}`;
+    return `Dear ${b.party},\n\nFINAL REMINDER: Invoice ${b.number} dated ${fmtDate(b.date)} for ₹${fmt(b.out)} remains unpaid ${b.overdueDays} days past the due date.\n\nKindly settle the amount immediately to avoid interruption of supplies and further recovery steps under the MSMED Act (interest on delayed payments).\n\n${co}`;
+  };
+
+  const waLink = (b) => 'https://wa.me/' + String(b.phone).replace(/\D/g,'') + '?text=' + encodeURIComponent(buildMsg(b));
+  const mailLink = (b) => 'mailto:' + b.email + '?subject=' + encodeURIComponent(`Payment reminder — Invoice ${b.number} — ₹${fmt(b.out)}`) + '&body=' + encodeURIComponent(buildMsg(b));
+
+  const totalOverdue = bills.reduce((s,b)=>s+b.out,0);
+
+  const handleExcel = () => {
+    exportXLSX(`Collections_${asOf}.xlsx`, [{
+      name:'Overdue Receivables',
+      rows:[
+        [`Collections follow-up  ${data.company.name}  as on ${asOf}`],[],
+        ['Customer','Invoice','Date','Outstanding (₹)','Age (days)','Credit Days','Overdue By','Tone'],
+        ...bills.map(b=>[b.party,b.number,b.date,b.out,b.age,b.creditDays,b.overdueDays,toneBadge(b.overdueDays)[0]]),
+        [],['','','TOTAL',totalOverdue,'','','',''],
+      ],
+    }]);
+  };
+
+  return (<>
+    <div className="page-head">
+      <div>
+        <h1 className="page-title">Collections / Payment Reminders</h1>
+        <div className="page-sub">Invoices past the customer's credit period · one-click WhatsApp & Email follow-up</div>
+      </div>
+      <div className="page-actions">
+        <button className="btn btn-sm" onClick={handleExcel}>⬇ Excel</button>
+        <button className="btn btn-sm btn-primary" onClick={()=>window.print()}>⎙ Print</button>
+      </div>
+    </div>
+
+    <div className="stat-grid" style={{marginBottom:14}}>
+      <div className="stat stat-danger"><div className="stat-label">Total Overdue</div><div className="stat-value rupee">₹{fmt(totalOverdue)}</div></div>
+      <div className="stat"><div className="stat-label">Overdue Invoices</div><div className="stat-value">{bills.length}</div></div>
+      <div className="stat stat-gold"><div className="stat-label">Needs Firm Follow-up</div><div className="stat-value">{bills.filter(b=>b.overdueDays>15&&b.overdueDays<=45).length}</div></div>
+      <div className="stat stat-danger"><div className="stat-label">Final Notice (45d+)</div><div className="stat-value">{bills.filter(b=>b.overdueDays>45).length}</div></div>
+    </div>
+
+    <div className="card" style={{marginBottom:14,borderLeft:'4px solid var(--info)'}}>
+      <div className="card-body" style={{fontSize:12.5,color:'var(--ink-2)',lineHeight:1.6}}>
+        The reminder tone escalates automatically: <b>Gentle</b> (≤15 days past due) → <b>Firm</b> (16–45) → <b>Final Notice</b> (45+, cites MSMED-Act interest).
+        Clicking 💬 or 📧 opens WhatsApp / your mail app with the message pre-filled — review before sending. Due date = invoice date + the customer's credit days (set on the party master).
+      </div>
+    </div>
+
+    <div className="table-wrap">
+      <table>
+        <thead><tr>
+          <th>Customer</th><th style={{width:100}}>Invoice</th><th style={{width:92}}>Date</th>
+          <th className="num" style={{width:120}}>Outstanding (₹)</th>
+          <th className="num" style={{width:90}}>Overdue By</th><th style={{width:100}}>Tone</th><th style={{width:190}}>Remind</th>
+        </tr></thead>
+        <tbody>
+          {bills.length===0 ? (
+            <tr><td colSpan="7"><div className="empty"><div className="empty-ico">🎉</div>
+              <div>No invoices past their credit period — collections are under control.</div>
+            </div></td></tr>
+          ) : bills.map(b => {
+            const [tl,tc] = toneBadge(b.overdueDays);
+            return (
+              <tr key={b.id} style={b.overdueDays>45?{background:'#fef2f2'}:{}}>
+                <td style={{fontWeight:500}}>{b.party}</td>
+                <td style={{fontFamily:'var(--mono)',fontSize:11}}>{b.number}</td>
+                <td>{fmtDate(b.date)}</td>
+                <td className="num bold">₹{fmt(b.out)}</td>
+                <td className="num" style={{color:'var(--danger)',fontWeight:700}}>{b.overdueDays}d</td>
+                <td><span className={'badge '+tc}>{tl}</span></td>
+                <td style={{whiteSpace:'nowrap'}}>
+                  {b.phone
+                    ? <button className="btn btn-sm" style={{background:'#25D366',color:'#fff',border:'none'}} onClick={()=>window.open(waLink(b),'_blank')}>💬 WhatsApp</button>
+                    : <span style={{fontSize:10,color:'var(--ink-3)'}}>no phone</span>}
+                  {' '}
+                  {b.email
+                    ? <button className="btn btn-sm" style={{background:'#1565c0',color:'#fff',border:'none'}} onClick={()=>{window.location.href=mailLink(b);}}>📧 Email</button>
+                    : <span style={{fontSize:10,color:'var(--ink-3)'}}>no email</span>}
+                </td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
     </div>
@@ -7706,8 +8546,10 @@ function HealthCheck({data, setPage}){
     const dupNums = (() => {
       const seen={}, dups=new Set(); active.forEach(v=>{ if(v.number){ if(seen[v.number]) dups.add(v.number); seen[v.number]=1; } }); return [...dups];
     })();
+    const badGstin = (data.parties||[]).filter(p => p.gstin && !validateGSTIN(p.gstin).valid).map(p=>p.name);
+    if(data.company && data.company.gstin && !validateGSTIN(data.company.gstin).valid) badGstin.unshift('(Your company)');
     const sizeKB = new Blob([JSON.stringify(data)]).size/1024;
-    return {unbalanced, orphan, tbDr, tbCr, tbDiff, empty, missingParty, gstMissing, negCash, dupNums,
+    return {unbalanced, orphan, tbDr, tbCr, tbDiff, empty, missingParty, gstMissing, negCash, dupNums, badGstin,
       sizeKB, auditCount:(data.auditLog||[]).length, voucherCount:active.length};
   }, [data]);
 
@@ -7730,6 +8572,9 @@ function HealthCheck({data, setPage}){
       detail: checks.gstMissing.length===0 ? 'GST on every taxable invoice hits the GST ledgers' : `${checks.gstMissing.length} invoice(s) carry tax but no GST ledger line — GSTR reports may understate: ${checks.gstMissing.slice(0,5).map(v=>v.number).join(', ')}` },
     { key:'cash', label:'No negative cash / bank balances', ok: checks.negCash.length===0, warn:true,
       detail: checks.negCash.length===0 ? 'Cash and bank balances are non-negative' : `Negative: ${checks.negCash.map(a=>a.name).join(', ')} — check for missing receipts or wrong dates` },
+    { key:'gstin', label:'All GSTINs pass the checksum', ok: checks.badGstin.length===0, warn:true,
+      detail: checks.badGstin.length===0 ? 'Every stored GSTIN is structurally valid' : `${checks.badGstin.length} invalid GSTIN(s): ${checks.badGstin.slice(0,6).join(', ')} — fix on the party / company master`,
+      fix:'parties' },
     { key:'size', label:'Data size within safe limits', ok: checks.sizeKB < 3500, warn:true,
       detail: `${checks.sizeKB.toFixed(0)} KB · ${checks.voucherCount} active vouchers · ${checks.auditCount} audit entries` + (checks.sizeKB>=3500?' — approaching local/cloud limits; export a backup or close the FY':'') },
   ];
@@ -10720,9 +11565,9 @@ function GSTR2B({data, setData, showToast}){
 
   const loadSample = () => {
     const mock=[
-      {gstin:'24AABCA9999B1Z2',partyName:'Aditya Birla Supplies',invNum:'ABS/2026/001',invDate:month+'-15',docType:'B2B',taxable:50000,igst:0,cgst:4500,sgst:4500,total:59000},
-      {gstin:'24BBCDM4321A1Z0',partyName:'Mahesh Stationers',invNum:'MS/INV/2026/88',invDate:month+'-18',docType:'B2B',taxable:8000,igst:0,cgst:720,sgst:720,total:9440},
-      {gstin:'29XYZAB1234C1Z5',partyName:'Karnataka Tech Vendor',invNum:'KTV/2026/445',invDate:month+'-22',docType:'B2B',taxable:25000,igst:4500,cgst:0,sgst:0,total:29500},
+      {gstin:'24AABCA9999B1ZJ',partyName:'Aditya Birla Supplies',invNum:'ABS/2026/001',invDate:month+'-15',docType:'B2B',taxable:50000,igst:0,cgst:4500,sgst:4500,total:59000},
+      {gstin:'24BBCDM4321A1Z5',partyName:'Mahesh Stationers',invNum:'MS/INV/2026/88',invDate:month+'-18',docType:'B2B',taxable:8000,igst:0,cgst:720,sgst:720,total:9440},
+      {gstin:'29XYZAB1234C1ZQ',partyName:'Karnataka Tech Vendor',invNum:'KTV/2026/445',invDate:month+'-22',docType:'B2B',taxable:25000,igst:4500,cgst:0,sgst:0,total:29500},
       {gstin:'27AAACR5055K1Z7',partyName:'Reliance Industries',invNum:'RIL/GST/7892',invDate:month+'-05',docType:'B2B',taxable:120000,igst:0,cgst:10800,sgst:10800,total:141600},
     ];
     const other=(data.gstr2bData||[]).filter(r=>!r.invDate.startsWith(month));
@@ -11472,6 +12317,35 @@ function MISDashboard({data, balances, setPage}){
     return Object.entries(groups).sort((a,b) => b[1] - a[1]);
   }, [data.coa, balances]);
 
+  // DSO / DPO trend — rolling receivable & payable days at each month-end (YTD basis)
+  const cycleTrend = useMemo(() => {
+    const keys = Object.keys(monthlyData);          // FY order Apr → Mar
+    const openAR =  (data.coa.find(a=>a.id==='2400')||{}).opening || 0;
+    const openAP = -((data.coa.find(a=>a.id==='1300')||{}).opening || 0);
+    const fyStart = new Date(data.company.fyStart || (keys[0]+'-01'));
+    let cumAR = openAR, cumAP = openAP, cumSales = 0, cumPurch = 0;
+    return keys.map(key => {
+      let arMove = 0, apMove = 0, saleM = 0, purM = 0;
+      (data.vouchers||[]).forEach(v => {
+        if(v.status==='Cancelled' || v.date.slice(0,7)!==key) return;
+        (v.lines||[]).forEach(l => {
+          if(l.accountId==='2400') arMove += (l.debit||0)-(l.credit||0);
+          if(l.accountId==='1300') apMove += (l.credit||0)-(l.debit||0);
+        });
+        if(v.type==='SAL') saleM += v.total||v.amount||0;
+        if(v.type==='PUR') purM += v.total||v.amount||0;
+      });
+      cumAR += arMove; cumAP += apMove; cumSales += saleM; cumPurch += purM;
+      const [y,mo] = key.split('-').map(Number);
+      const monthEnd = new Date(y, mo, 0);
+      const days = Math.max(1, Math.round((monthEnd - fyStart)/86400000));
+      return { key, mon:mo,
+        dso: cumSales>0 ? Math.max(0, Math.round(cumAR/cumSales*days)) : 0,
+        dpo: cumPurch>0 ? Math.max(0, Math.round(cumAP/cumPurch*days)) : 0,
+        active: saleM>0 || purM>0 };
+    });
+  }, [data.vouchers, data.coa, data.company.fyStart, monthlyData]);
+
   const pctOf = (part, whole) => whole ? ((part/whole)*100).toFixed(1) + '%' : '0%';
   const kpiCard = (label, value, sub, cls='') => (
     React.createElement('div', {className:'stat ' + cls},
@@ -11495,6 +12369,7 @@ function MISDashboard({data, balances, setPage}){
           <button className="btn" onClick={() => setPage('mis_ratios')}>▦ Financial Ratios</button>
           <button className="btn" onClick={() => setPage('mis_aging')}>◫ Aging</button>
           <button className="btn btn-primary" onClick={handleMISPack}>⬇ MIS Pack (Excel)</button>
+          <button className="btn btn-primary" onClick={() => generateReportBundle(data, balances)}>⎙ PDF Bundle</button>
           <button className="btn" onClick={() => window.print()}>⎙ Print</button>
         </div>
       </div>
@@ -11693,6 +12568,49 @@ function MISDashboard({data, balances, setPage}){
               </tr>
             </tbody>
           </table>
+        </div>
+      </div>
+
+      {/* Working-capital cycle — DSO vs DPO trend */}
+      <div className="card" style={{marginTop:18}}>
+        <div className="card-head"><h3 className="card-title">Working-Capital Cycle — DSO vs DPO (YTD trend)</h3></div>
+        <div className="card-body" style={{padding:'14px 18px'}}>
+          {(() => {
+            const pts = cycleTrend.filter(r=>r.active);
+            if(pts.length < 2) return <div className="empty" style={{padding:24}}>Not enough monthly data yet to plot a trend.</div>;
+            const W=680, H=210, padL=34, padR=12, padT=14, padB=26;
+            const maxV = Math.max(30, ...pts.map(r=>Math.max(r.dso, r.dpo)));
+            const xx = i => padL + (i/(pts.length-1))*(W-padL-padR);
+            const yy = v => padT + (1 - v/maxV)*(H-padT-padB);
+            const poly = key => pts.map((r,i)=>`${xx(i).toFixed(1)},${yy(r[key]).toFixed(1)}`).join(' ');
+            const grid = [0,0.25,0.5,0.75,1].map(f => ({v: Math.round(maxV*(1-f)), y: padT + f*(H-padT-padB)}));
+            const last = pts[pts.length-1];
+            return (<>
+              <div style={{display:'flex',gap:16,marginBottom:8,fontSize:11,flexWrap:'wrap'}}>
+                <span><span style={{display:'inline-block',width:12,height:3,background:'var(--info)',marginRight:5,verticalAlign:'middle'}}></span>DSO — collection days</span>
+                <span><span style={{display:'inline-block',width:12,height:3,background:'var(--accent)',marginRight:5,verticalAlign:'middle'}}></span>DPO — payment days</span>
+                <span style={{marginLeft:'auto',color:'var(--ink-3)'}}>Lower DSO & higher DPO ⇒ healthier cash cycle</span>
+              </div>
+              <svg viewBox={`0 0 ${W} ${H}`} style={{width:'100%',height:'auto'}}>
+                {grid.map((g,i)=>(
+                  <g key={i}>
+                    <line x1={padL} y1={g.y} x2={W-padR} y2={g.y} stroke="var(--line)" strokeWidth="1" />
+                    <text x={padL-6} y={g.y+3} textAnchor="end" fontSize="9" fill="var(--ink-3)">{g.v}</text>
+                  </g>
+                ))}
+                {pts.map((r,i)=>(<text key={i} x={xx(i)} y={H-8} textAnchor="middle" fontSize="9" fill="var(--ink-3)">{monthNames[r.mon]}</text>))}
+                <polyline points={poly('dpo')} fill="none" stroke="var(--accent)" strokeWidth="2" />
+                <polyline points={poly('dso')} fill="none" stroke="var(--info)" strokeWidth="2" />
+                {pts.map((r,i)=>(<circle key={'p'+i} cx={xx(i)} cy={yy(r.dpo)} r="2.5" fill="var(--accent)" />))}
+                {pts.map((r,i)=>(<circle key={'s'+i} cx={xx(i)} cy={yy(r.dso)} r="2.5" fill="var(--info)" />))}
+              </svg>
+              <div style={{display:'flex',justifyContent:'space-around',marginTop:8,fontSize:12,flexWrap:'wrap',gap:8}}>
+                <span>Latest DSO: <b style={{color:'var(--info)'}}>{last.dso} days</b></span>
+                <span>Latest DPO: <b style={{color:'var(--accent)'}}>{last.dpo} days</b></span>
+                <span>Net cash gap (DSO−DPO): <b style={{color: last.dso-last.dpo>0?'var(--danger)':'var(--primary)'}}>{last.dso-last.dpo} days</b></span>
+              </div>
+            </>);
+          })()}
         </div>
       </div>
     </>
@@ -13777,7 +14695,9 @@ function HelpGuide({setPage}){
         {type:'heading', text:'CFO Dashboard & MIS'},
         {type:'steps', items:[
           '<b>Cash Runway & Burn</b>  the CFO Dashboard now shows your average monthly burn, months of runway at the current burn rate, average monthly revenue and cash on hand  the metrics investors and founders watch first.',
+          '<b>DSO vs DPO trend</b>  a month-by-month chart of collection days (DSO) vs payment days (DPO) with the net cash gap, so you can see your working-capital cycle improving or slipping.',
           '<b>MIS Pack (Excel)</b>  one click exports a multi-sheet workbook (KPIs, monthly trend, top parties, expense breakdown) ready for a board or investor update.',
+          '<b>PDF Bundle</b>  one click opens a print-ready bundle (cover, financial summary, Profit &amp; Loss, Balance Sheet, cash position)  save as a single PDF for your board pack or bank.',
         ]},
         {type:'heading', text:'Analysis Reports (Account Manager)'},
         {type:'steps', items:[
@@ -13785,11 +14705,27 @@ function HelpGuide({setPage}){
           '<b>Profitability Analysis</b>  revenue and gross margin by Item, Customer, or HSN. COGS is estimated from your average purchase rate per HSN/item.',
           '<b>P&L Monthly Trend</b> & <b>Compare PY</b>  see month-by-month P&L and prior-year comparison.',
         ]},
+        {type:'heading', text:'Sales Pipeline & Collections'},
+        {type:'steps', items:[
+          '<b>Quotations & Challans</b> (Accountant menu)  create a Quotation or Proforma Invoice, print/WhatsApp it, track its status (Draft → Sent → Accepted), then click <b>→ Invoice</b> to convert it into a posted GST sales invoice in one click — no re-typing. Delivery Challans cover goods sent without an invoice (job work / approval).',
+          '<b>Collections / Reminders</b>  lists every invoice past the customer\'s credit period with one-click <b>💬 WhatsApp</b> / <b>📧 Email</b> payment reminders. The tone escalates automatically: gentle (≤15 days) → firm (≤45) → final notice (cites MSMED-Act interest).',
+          '<b>Credit control</b>  when you raise a sales invoice, a banner warns if the customer would exceed their credit limit or already has overdue bills.',
+          '<b>🚚 e-Way</b>  on sales rows over ₹50,000, downloads the NIC e-Way Bill bulk-upload JSON (you\'ll be prompted for vehicle no. / distance — leave blank to fill on the portal).',
+        ]},
+        {type:'heading', text:'Stock Valuation & Alerts'},
+        {type:'steps', items:[
+          '<b>Stock Valuation</b> (Cost Accountant → inventory)  weighted-average cost per item; production orders absorb the consumed material value into finished goods. Shows computed vs book value and posts the <b>closing-stock JV</b> (Dr/Cr Inventory ↔ Changes in Inventories) in one click so the P&L reflects true COGS.',
+          '<b>Low-stock alert</b>  the Dashboard flags items at or below their reorder level.',
+        ]},
         {type:'heading', text:'Faster, Safer Data Entry'},
         {type:'steps', items:[
           '<b>Duplicate-number warning</b>  the voucher screen flags in red if another live voucher of the same type already uses the number you typed, so you catch double entries before posting.',
+          '<b>GSTIN checksum validation</b>  when you type a 15-char GSTIN on a party or in Company Settings, MiyeeBooks verifies the official check digit and shows ✓ Valid / ✗ Invalid checksum instantly. The Data Health Check also batch-validates every stored GSTIN.',
           '<b>Auto-Balance</b>  on manual (JV/Payment) entries, one click sets the balancing figure (net of TDS).',
           '<b>Bulk CSV import</b> & <b>Duplicate voucher</b>  import many vouchers from a template, or copy any existing voucher as a starting point.',
+          '<b>Function keys (Tally-style)</b>  F4 Contra · F5 Payment · F6 Receipt · F7 Journal · F8 Sales · F9 Purchase open a new voucher of that type from anywhere; Esc closes the voucher window.',
+          '<b>📎 Attachments</b>  attach up to 3 bill/receipt images or PDFs (400 KB each) to any voucher; a paperclip shows on the voucher list and files open in a new tab.',
+          '<b>🌙 Dark mode</b>  toggle from the top bar; remembered per browser.',
         ]},
         {type:'heading', text:'Fixed Assets & Period-End (Cost Accountant)'},
         {type:'steps', items:[
@@ -15134,6 +16070,168 @@ function InventoryMaster({data, setData, showToast}){
 // ============================================================================
 // STOCK LEDGER  item-wise movement report
 // ============================================================================
+// ============================================================================
+// STOCK VALUATION  Weighted Average Cost
+// Chronological pass over all movements: purchases add value at cost, issues
+// (sales / production consumption) leave at the running average, production
+// receipts absorb the consumed RM value. Closing value can be posted to the
+// books as a closing-stock JV so the P&L reflects true COGS.
+// ============================================================================
+function StockValuation({data, setData, showToast, balances, readOnly=false}){
+  const items = (data.stockItems||[]).filter(i=>i.active!==false);
+  const r2 = n => Math.round(n*100)/100;
+
+  const valuation = useMemo(() => {
+    const st = {};   // itemId → {qty, value}
+    items.forEach(i => { st[i.id] = {qty:i.openingQty||0, value:i.openingValue||0}; });
+    const avg = id => st[id] && st[id].qty > 0.0001 ? st[id].value/st[id].qty : 0;
+
+    // Build one global, date-ordered movement list
+    const mvts = [];
+    (data.vouchers||[]).forEach(v => {
+      if(v.status==='Cancelled') return;
+      (v.items||[]).forEach(it => {
+        if(!it.itemId || !(it.itemId in st)) return;
+        if(v.type==='PUR') mvts.push({date:v.date, k:'in',  id:it.itemId, qty:it.qty||0, rate:it.rate||0});
+        if(v.type==='SAL') mvts.push({date:v.date, k:'out', id:it.itemId, qty:it.qty||0});
+      });
+    });
+    (data.productionOrders||[]).forEach(po => {
+      if(po.status!=='Posted' || !po.date) return;
+      mvts.push({date:po.date, k:'po', po});
+    });
+    mvts.sort((a,b) => a.date.localeCompare(b.date));
+
+    mvts.forEach(m => {
+      if(m.k==='in'){ st[m.id].qty += m.qty; st[m.id].value += m.qty*m.rate; }
+      else if(m.k==='out'){ const a=avg(m.id); const q=Math.min(m.qty, Math.max(0,st[m.id].qty)); st[m.id].qty -= m.qty; st[m.id].value = r2(st[m.id].value - q*a); if(st[m.id].qty<=0.0001) st[m.id].value = Math.max(0, st[m.id].value); }
+      else { // production order: consume RM at avg, receive FG at absorbed cost
+        let consumed = 0;
+        (m.po.consumptions||[]).forEach(c => {
+          if(!(c.itemId in st)) return;
+          const a=avg(c.itemId); const q=Math.min(c.qty||0, Math.max(0,st[c.itemId].qty));
+          st[c.itemId].qty -= c.qty||0;
+          st[c.itemId].value = r2(st[c.itemId].value - q*a);
+          consumed += q*a;
+        });
+        if(m.po.fgItemId in st){ st[m.po.fgItemId].qty += m.po.fgQty||0; st[m.po.fgItemId].value = r2(st[m.po.fgItemId].value + consumed); }
+      }
+    });
+
+    const rows = items.map(i => ({
+      ...i, closingQty: r2(st[i.id].qty), closingValue: r2(Math.max(0, st[i.id].value)),
+      avgRate: st[i.id].qty>0.0001 ? r2(st[i.id].value/st[i.id].qty) : 0,
+      isFG: i.category==='Finished Goods',
+    })).sort((a,b)=>(a.category||'').localeCompare(b.category||'') || a.name.localeCompare(b.name));
+    const totFG = rows.filter(r=>r.isFG).reduce((s,r)=>s+r.closingValue,0);
+    const totRM = rows.filter(r=>!r.isFG).reduce((s,r)=>s+r.closingValue,0);
+    return {rows, totFG:r2(totFG), totRM:r2(totRM), total:r2(totFG+totRM)};
+  }, [data.stockItems, data.vouchers, data.productionOrders]);
+
+  const bookRM = (balances['2300']||0), bookFG = (balances['2310']||0);
+  const diffRM = r2(valuation.totRM - bookRM), diffFG = r2(valuation.totFG - bookFG);
+  const needsJV = Math.abs(diffRM) > 0.5 || Math.abs(diffFG) > 0.5;
+
+  const postClosingJV = () => {
+    if(readOnly) return;
+    if(!needsJV){ showToast('Books already match the computed valuation'); return; }
+    let coa = data.coa;
+    if(!coa.find(a=>a.id==='4120')){
+      coa = [...coa, {id:'4120', name:'Changes in Inventories (Closing Stock Adj)', group:'Cost of Materials', type:'Expense', schedule:'Cost of Materials', opening:0}];
+    }
+    const lines = [];
+    // Increase in stock: Dr inventory asset, Cr 4120 (reduces expense → correct COGS)
+    if(Math.abs(diffRM)>0.5) lines.push({id:uid(), accountId:'2300', debit:diffRM>0?diffRM:0, credit:diffRM<0?-diffRM:0, narration:'RM/stores closing stock adjustment'});
+    if(Math.abs(diffFG)>0.5) lines.push({id:uid(), accountId:'2310', debit:diffFG>0?diffFG:0, credit:diffFG<0?-diffFG:0, narration:'Finished goods closing stock adjustment'});
+    const net = r2(diffRM + diffFG);
+    lines.push({id:uid(), accountId:'4120', debit:net<0?-net:0, credit:net>0?net:0, narration:'Changes in inventories'});
+    const jv = {id:uid(), type:'JV', date:today(), number:nextVoucherNumber({...data, coa}, 'JV'),
+      narration:'Closing stock valuation (weighted average) as on '+today()+' — RM ₹'+fmt(valuation.totRM)+', FG ₹'+fmt(valuation.totFG),
+      reference:'Stock Valuation', lines, amount:Math.abs(net), status:'Posted', createdAt:new Date().toISOString()};
+    if(!confirm('Post closing-stock JV?\n\nRM adjustment: ₹'+fmt(diffRM)+'\nFG adjustment: ₹'+fmt(diffFG)+'\nNet P&L impact: ₹'+fmt(net)+' '+(net>0?'(profit increases)':'(profit decreases)'))) return;
+    setData({...data, coa, vouchers:[...data.vouchers, jv],
+      auditLog:[...(data.auditLog||[]), auditEntry('STOCK_JV', 'Closing stock JV '+jv.number+' net ₹'+fmt(net))]});
+    showToast('Closing-stock JV '+jv.number+' posted');
+  };
+
+  const handleExcel = () => {
+    exportXLSX(`Stock_Valuation_${today()}.xlsx`, [{
+      name:'Stock Valuation',
+      rows:[
+        [`Stock Valuation (Weighted Average)  ${data.company.name}  as on ${today()}`],[],
+        ['Code','Item','Category','Unit','Closing Qty','Avg Rate (₹)','Closing Value (₹)'],
+        ...valuation.rows.map(r=>[r.code,r.name,r.category,r.unit,r.closingQty,r.avgRate,r.closingValue]),
+        [],['','','','','','Raw Material & Others',valuation.totRM],
+        ['','','','','','Finished Goods',valuation.totFG],
+        ['','','','','','TOTAL',valuation.total],
+      ],
+    }]);
+  };
+
+  return (<>
+    <div className="page-head">
+      <div>
+        <h1 className="page-title">Stock Valuation</h1>
+        <div className="page-sub">Weighted-average cost · production absorbs consumed material value · as on {fmtDate(today())}</div>
+      </div>
+      <div className="page-actions">
+        <button className="btn btn-sm" onClick={handleExcel}>⬇ Excel</button>
+        {!readOnly && <button className={'btn btn-sm '+(needsJV?'btn-primary':'')} onClick={postClosingJV} title="Adjust Inventory ledgers to the computed valuation via a JV">⚖ Post Closing-Stock JV</button>}
+      </div>
+    </div>
+
+    <div className="stat-grid" style={{marginBottom:14}}>
+      <div className="stat"><div className="stat-label">Raw Material & Others</div><div className="stat-value rupee">₹{fmt(valuation.totRM)}</div><div className="stat-delta">Books: ₹{fmt(bookRM)}</div></div>
+      <div className="stat stat-gold"><div className="stat-label">Finished Goods</div><div className="stat-value rupee">₹{fmt(valuation.totFG)}</div><div className="stat-delta">Books: ₹{fmt(bookFG)}</div></div>
+      <div className="stat stat-info"><div className="stat-label">Total Closing Stock</div><div className="stat-value rupee">₹{fmt(valuation.total)}</div></div>
+      <div className={'stat '+(needsJV?'stat-danger':'')}>
+        <div className="stat-label">Books vs Computed</div>
+        <div className="stat-value rupee">₹{fmt(r2(diffRM+diffFG))}</div>
+        <div className="stat-delta">{needsJV?'Post the closing-stock JV →':'✓ In sync'}</div>
+      </div>
+    </div>
+
+    <div className="table-wrap">
+      <table>
+        <thead><tr>
+          <th style={{width:90}}>Code</th><th>Item</th><th style={{width:130}}>Category</th>
+          <th className="num" style={{width:100}}>Closing Qty</th><th style={{width:56}}>Unit</th>
+          <th className="num" style={{width:110}}>Avg Rate (₹)</th><th className="num" style={{width:130}}>Closing Value (₹)</th>
+        </tr></thead>
+        <tbody>
+          {valuation.rows.length===0 ? (
+            <tr><td colSpan="7"><div className="empty"><div className="empty-ico">▣</div><div>No stock items yet — add them under Stock Items.</div></div></td></tr>
+          ) : valuation.rows.map(r=>(
+            <tr key={r.id} style={r.closingQty<0?{background:'#fef2f2'}:{}}>
+              <td style={{fontFamily:'var(--mono)',fontSize:11}}>{r.code}</td>
+              <td style={{fontWeight:500}}>{r.name}{r.closingQty<0 && <span style={{color:'var(--danger)',fontSize:10,marginLeft:6}}>⚠ negative stock</span>}</td>
+              <td><span className="badge badge-muted" style={{fontSize:10}}>{r.category}</span></td>
+              <td className="num">{r.closingQty}</td>
+              <td>{r.unit}</td>
+              <td className="num">₹{fmt(r.avgRate)}</td>
+              <td className="num bold">₹{fmt(r.closingValue)}</td>
+            </tr>
+          ))}
+        </tbody>
+        {valuation.rows.length>0 && (
+          <tfoot><tr style={{fontWeight:800,borderTop:'2px solid var(--line)'}}>
+            <td colSpan="6">TOTAL CLOSING STOCK</td>
+            <td className="num">₹{fmt(valuation.total)}</td>
+          </tr></tfoot>
+        )}
+      </table>
+    </div>
+
+    <div className="card" style={{marginTop:14,borderLeft:'4px solid var(--accent)'}}>
+      <div className="card-body" style={{fontSize:12,color:'var(--ink-2)',lineHeight:1.6}}>
+        <b>How the JV works:</b> the computed closing value is compared with the Inventory ledgers (2300 Raw Materials, 2310 Finished Goods).
+        The difference posts as Dr/Cr Inventory against <b>Changes in Inventories (4120)</b> — increasing closing stock reduces COGS (profit ↑), and vice-versa.
+        Post it at period-end (after entering all purchases, sales and production orders), typically before Period Close.
+      </div>
+    </div>
+  </>);
+}
+
 function StockLedger({data}){
   const [itemId, setItemId] = useState('');
   const [from, setFrom] = useState(data.company.fyStart || '');
