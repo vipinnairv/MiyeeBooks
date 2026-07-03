@@ -2342,16 +2342,16 @@ const buildSampleData = () => {
       {id:uid(), docType:'Quotation', number:'QTN/0001', date:'2026-02-10', validTill:'2026-03-10',
        partyId:P.acme, partyName:'Acme Engineering Co.', reference:'ACME-RFQ-88', status:'Sent',
        notes:'Prices valid 30 days. Delivery within 2 weeks of PO. Payment: 50% advance, 50% on delivery.',
-       items:[{id:uid(), description:'Water Pump 1HP', hsn:'8413', qty:25, rate:3450, gstRate:18},
-              {id:uid(), description:'Industrial Fan', hsn:'8414', qty:10, rate:2750, gstRate:18}]},
+       items:[{id:uid(), itemId:SI.pump, description:'Water Pump 1HP', hsn:'8413', qty:25, rate:3450, gstRate:18},
+              {id:uid(), itemId:SI.fan, description:'Industrial Fan', hsn:'8414', qty:10, rate:2750, gstRate:18}]},
       {id:uid(), docType:'Proforma Invoice', number:'PRF/0001', date:'2026-02-18', validTill:'2026-03-18',
        partyId:P.patel, partyName:'Patel Hardware Traders', reference:'', status:'Accepted',
        notes:'Proforma for advance payment. Goods dispatch after credit of advance.',
-       items:[{id:uid(), description:'Water Pump 1HP', hsn:'8413', qty:15, rate:3500, gstRate:18}]},
+       items:[{id:uid(), itemId:SI.pump, description:'Water Pump 1HP', hsn:'8413', qty:15, rate:3500, gstRate:18}]},
       {id:uid(), docType:'Delivery Challan', number:'DCH/0001', date:'2026-03-05',
        partyId:P.mahindra, partyName:'Mahindra & Mahindra Ltd', reference:'Job-work approval', status:'Sent',
        notes:'Goods sent on approval basis — returnable within 30 days.',
-       items:[{id:uid(), description:'Industrial Fan', hsn:'8414', qty:5, rate:2800, gstRate:18}]},
+       items:[{id:uid(), itemId:SI.fan, description:'Industrial Fan', hsn:'8414', qty:5, rate:2800, gstRate:18}]},
     ],
     costCentres, departments, bankRecon: [], allocations: [], bankRules: [],
     fixedAssets: [], budgets: {}, amortizations: [],
@@ -7604,7 +7604,17 @@ function SalesDocModal({doc, data, docTypes, onSave, onClose}){
     items:[{id:uid(), description:'', hsn:'', qty:1, rate:0, gstRate:18}],
   });
   const customers = data.parties.filter(p=>p.type==='Customer');
+  const stockItems = data.stockItems || [];
+  const hasStock = !!(data.company.modules && (data.company.modules.trader || data.company.modules.factory)) && stockItems.length>0;
   const setItem = (id, patch) => setF({...f, items:f.items.map(it=>it.id===id?{...it,...patch}:it)});
+  // Picking a stock item links it (itemId) and auto-fills description/HSN/GST — and
+  // the itemId flows through convertToInvoice so the resulting invoice moves stock.
+  const pickItem = (id, siId) => {
+    const si = stockItems.find(s=>s.id===siId);
+    setItem(id, si
+      ? {itemId:si.id, description:si.name, hsn:si.hsn||'', gstRate:si.gstRate!=null?si.gstRate:18}
+      : {itemId:''});
+  };
   const total = (f.items||[]).reduce((s,it)=>{ const amt=(it.qty||0)*(it.rate||0); return s+amt+(f.docType==='Delivery Challan'?0:amt*(it.gstRate||0)/100); },0);
   return (
     <div className="modal-overlay" onClick={e=>{if(e.target===e.currentTarget)onClose();}}>
@@ -7631,13 +7641,19 @@ function SalesDocModal({doc, data, docTypes, onSave, onClose}){
             <div className="field"><label>Reference / PO No.</label><input value={f.reference||''} onChange={e=>setF({...f, reference:e.target.value})} /></div>
           </div>
 
-          <div className="section-divider"><div className="label">Line Items</div><div className="line"></div></div>
+          <div className="section-divider"><div className="label">Line Items {hasStock && <span style={{fontWeight:400,textTransform:'none',fontSize:11,color:'var(--ink-3)'}}> · link a stock item so the invoice updates inventory</span>}</div><div className="line"></div></div>
           <table style={{fontSize:12}}>
-            <thead><tr><th>Description</th><th style={{width:80}}>HSN</th><th style={{width:70}}>Qty</th><th style={{width:100}}>Rate</th>{f.docType!=='Delivery Challan'&&<th style={{width:70}}>GST %</th>}<th className="num" style={{width:110}}>Amount</th><th style={{width:34}}></th></tr></thead>
+            <thead><tr>{hasStock && <th style={{width:150}}>Stock Item</th>}<th>Description</th><th style={{width:80}}>HSN</th><th style={{width:70}}>Qty</th><th style={{width:100}}>Rate</th>{f.docType!=='Delivery Challan'&&<th style={{width:70}}>GST %</th>}<th className="num" style={{width:110}}>Amount</th><th style={{width:34}}></th></tr></thead>
             <tbody>
               {f.items.map(it=>{
                 const amt=(it.qty||0)*(it.rate||0), tax=f.docType==='Delivery Challan'?0:amt*(it.gstRate||0)/100;
                 return (<tr key={it.id}>
+                  {hasStock && <td>
+                    <select value={it.itemId||''} onChange={e=>pickItem(it.id, e.target.value)} style={{width:'100%',fontSize:11}}>
+                      <option value="">— none —</option>
+                      {stockItems.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
+                    </select>
+                  </td>}
                   <td><input value={it.description} onChange={e=>setItem(it.id,{description:e.target.value})} placeholder="Item / service" style={{width:'100%'}} /></td>
                   <td><input value={it.hsn||''} onChange={e=>setItem(it.id,{hsn:e.target.value})} style={{width:'100%'}} /></td>
                   <td><input type="number" value={it.qty} onChange={e=>setItem(it.id,{qty:parseFloat(e.target.value)||0})} style={{width:'100%'}} /></td>
