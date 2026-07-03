@@ -126,6 +126,8 @@
   .brand-tag{font-size:10px;letter-spacing:1.5px;text-transform:uppercase;color:#c8ddf9;border-left:1px solid rgba(255,255,255,.3);padding-left:10px}
   .topbar-right{display:flex;gap:14px;align-items:center;font-size:12px;color:#dbe8fb}
   .topbar-right .pill{background:rgba(255,255,255,.18);padding:4px 10px;border-radius:20px;color:#fff;font-size:11px}
+  .topbar-right .btn{color:#eef5ff;border-color:rgba(255,255,255,.4);background:rgba(255,255,255,.08)}
+  .topbar-right .btn:hover{background:rgba(255,255,255,.2);color:#fff;border-color:rgba(255,255,255,.6)}
   body.dark .topbar{background:linear-gradient(90deg,#0f2947,#123c6e)}
   /* Layout */
   .app{display:grid;grid-template-columns:220px 1fr;min-height:calc(100vh - 45px)}
@@ -1613,6 +1615,60 @@ const DEFAULT_COMPANY = {
   numberingSeries: {},   // per voucher type: {SAL:{prefix,padding,includeFY}}
 };
 
+// A clean, fresh dataset (used on first load AND by Reset). Deep-copies seeds so
+// nothing shares a reference with the module-level constants.
+const makeFreshData = (overrides={}) => ({
+  company: {...DEFAULT_COMPANY, modules:{...DEFAULT_COMPANY.modules}, ...(overrides.company||{})},
+  coa: SEED_COA.map(a=>({...a})),
+  parties: SEED_PARTIES.map(p=>({...p})),
+  vouchers: [],
+  forexRates: FOREX_RATES,
+  gstr2bData: [],
+  employees: [],
+  payrollRuns: [],
+  tdsSections: SEED_TDS_SECTIONS,
+  stockItems: [], boms: [], productionOrders: [], quotations: [],
+  costCentres: [], departments: [],
+  bankRecon: [], allocations: [], bankRules: [],
+  auditLog: [], fixedAssets: [], budgets: {}, amortizations: [],
+  ...overrides,
+});
+
+// ── Group consolidation ──────────────────────────────────────────────────────
+// Reduce one company's full dataset to the headline figures used for group
+// consolidation. Pure & COA-agnostic (sums by account TYPE), so it works on any
+// entity's data. Intercompany eliminations are NOT applied (documented — MSME
+// groups typically post those as manual JVs before consolidating).
+const computeEntityFinancials = (d) => {
+  if(!d || !d.coa) return null;
+  const bal = {};
+  d.coa.forEach(a => { bal[a.id] = a.opening || 0; });
+  (d.vouchers||[]).forEach(v => {
+    if(v.status==='Cancelled') return;
+    (v.lines||[]).forEach(l => {
+      if(l.accountId==null) return;
+      if(!(l.accountId in bal)) bal[l.accountId] = 0;
+      bal[l.accountId] += (l.debit||0) - (l.credit||0);
+    });
+  });
+  const raw = id => bal[id] || 0;
+  const byType = (t, sign) => d.coa.filter(a=>a.type===t).reduce((s,a)=> s + sign*(bal[a.id]||0), 0);
+  const income  = byType('Income', -1);
+  const expense = byType('Expense', 1);
+  const profit  = income - expense;
+  const assets  = byType('Asset', 1);
+  const liab    = byType('Liability', -1);
+  const equity  = byType('Equity', -1) + profit;
+  const cash    = d.coa.filter(a=>a.isBank || a.id==='2500').reduce((s,a)=>s+(bal[a.id]||0),0);
+  return {
+    name:(d.company&&d.company.name)||'', gstin:(d.company&&d.company.gstin)||'',
+    groupName:((d.company&&d.company.groupName)||'').trim(), isHolding:!!(d.company&&d.company.isHolding),
+    income, expense, profit, assets, liab, equity, cash,
+    debtors: raw('2400'), creditors: -raw('1300'),
+    vouchers:(d.vouchers||[]).filter(v=>v.status!=='Cancelled').length,
+  };
+};
+
 // ── Audit trail helper ───────────────────────────────────────────────────────
 // Records who did what, when. User email is set globally by App on login.
 const auditEntry = (action, detail) => ({
@@ -2803,6 +2859,8 @@ function CompanySelector({ user, onSelect, onSignOut }){
   const [deleting,   setDeleting]   = useState(null);
   const [newName,    setNewName]    = useState('');
   const [newGstin,   setNewGstin]   = useState('');
+  const [newGroup,   setNewGroup]   = useState('');
+  const [newRole,    setNewRole]    = useState('subsidiary');
   const [error,      setError]      = useState('');
   const [loading,    setLoading]    = useState(false);
   const [focusedF,   setFocusedF]   = useState('');
@@ -2843,7 +2901,8 @@ function CompanySelector({ user, onSelect, onSignOut }){
     setLoading(true); setError('');
     try {
       const id = await fbCreateCompany(user.uid,
-        buildDefaultData({ name: newName.trim(), gstin: newGstin.trim().toUpperCase() }));
+        buildDefaultData({ name: newName.trim(), gstin: newGstin.trim().toUpperCase(),
+          groupName: newGroup.trim(), isHolding: newRole==='holding' }));
       onSelect(id, user.uid, 'owner');
     } catch(err){
       setError('Failed to create company. Please try again.');
@@ -2995,6 +3054,22 @@ function CompanySelector({ user, onSelect, onSignOut }){
                 style={{...inp(focusedF==='gstin'),fontFamily:'monospace',letterSpacing:'.5px'}}
                 placeholder="22AAAAA0000A1Z5" maxLength={15} />
             </div>
+            <div style={{marginBottom:14,display:'flex',gap:10}}>
+              <div style={{flex:1.4}}>
+                <label style={{fontSize:12,fontWeight:600,color:'#3a4f49'}}>Group Name <span style={{fontWeight:400,color:'#6b7f78'}}>(optional)</span></label>
+                <input value={newGroup} onChange={e=>setNewGroup(e.target.value)}
+                  onFocus={()=>setFocusedF('group')} onBlur={()=>setFocusedF('')}
+                  style={inp(focusedF==='group')} placeholder="e.g. Acme Group  for consolidation" />
+              </div>
+              <div style={{flex:1}}>
+                <label style={{fontSize:12,fontWeight:600,color:'#3a4f49'}}>Role</label>
+                <select value={newRole} onChange={e=>setNewRole(e.target.value)} style={inp(false)}>
+                  <option value="subsidiary">Subsidiary</option>
+                  <option value="holding">Holding</option>
+                </select>
+              </div>
+            </div>
+            {newGroup.trim() && <div style={{fontSize:11,color:'#6b7f78',marginTop:-6,marginBottom:12}}>Give every company in this group the same name to see them combined under <b>Group Consolidation</b>.</div>}
             {error && <div style={{background:'#fef2f2',color:'#b3261e',borderRadius:7,padding:'9px 12px',fontSize:12,marginBottom:12}}>⚠ {error}</div>}
             <div style={{display:'flex',gap:8}}>
               <button type="submit" disabled={loading}
@@ -3387,6 +3462,7 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
       {id:'debtor_stmt', label:'Debtors Statement', ico:'↗'},
       {id:'vendor_stmt', label:'Vendor Statement', ico:'↙'},
       {id:'mis', label:'CFO Dashboard', ico:'◇'},
+      {id:'consolidation', label:'Group Consolidation', ico:'🏢'},
       {id:'mis_ratios', label:'Financial Ratios', ico:'▦'},
       {id:'mis_aging', label:'Aging Analysis', ico:'◫'},
     ]},
@@ -3476,7 +3552,7 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
                 ⚡ Free {activeVoucherCount}/{FREE_VOUCHER_LIMIT}
               </span>
           )}
-            <span style={{fontSize:11,color:'var(--ink-3)',maxWidth:140,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}} title={user.email}>
+            <span style={{fontSize:11,color:'#eaf2fe',fontWeight:600,maxWidth:140,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}} title={user.email}>
               {user.displayName || user.email}
             </span>
             {onSwitchCompany && (
@@ -3485,7 +3561,7 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
             )}
             {onSignOut && (
               <button className="btn btn-sm btn-ghost" onClick={onSignOut}
-                style={{fontSize:11,padding:'3px 9px',color:'var(--danger)'}} title="Sign out">Sign out</button>
+                style={{fontSize:11,padding:'3px 9px',color:'#ffe1e1',borderColor:'rgba(255,180,180,.5)'}} title="Sign out">Sign out</button>
             )}
           </>)}
         </div>
@@ -3557,6 +3633,7 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
           {page==='hsn_finder' && <HSNFinder data={data} />}
           {page==='forex' && <Forex data={data} setData={setData} showToast={showToast} />}
           {page==='mis' && <MISDashboard data={data} balances={ledgerBalances} setPage={setPage} />}
+          {page==='consolidation' && <GroupConsolidation data={data} user={user} ownerId={ownerId||user?.uid} companyId={companyId} />}
           {page==='mis_ratios' && <FinancialRatios data={data} balances={ledgerBalances} />}
           {page==='mis_aging' && <AgingAnalysis data={data} balances={ledgerBalances} />}
           {page==='datamanage' && <DataManagement data={data} setData={setData} showToast={showToast} />}
@@ -5646,9 +5723,19 @@ function CompanySettings({data, setData, showToast, readOnly=false}){
     showToast('Company settings saved');
   };
   const resetData = () => {
-    if(!confirm('Reset ALL data? This cannot be undone.')) return;
-    localStorage.removeItem(STORAGE_KEY);
-    location.reload();
+    if(!confirm('Reset ALL data for this company?\n\nThis wipes every voucher, party, stock item and report back to a clean company and CANNOT be undone.')) return;
+    if(!confirm('Are you absolutely sure? Consider Export → Backup first.')) return;
+    // Reset THROUGH the app's own persistence so it works for cloud AND local:
+    // setData triggers the normal save (Firestore or localStorage). Keep the
+    // current company name/GSTIN so the user keeps their identity, just empty books.
+    const fresh = makeFreshData({ company: {...DEFAULT_COMPANY, modules:{...(data.company.modules||DEFAULT_COMPANY.modules)},
+      name:data.company.name, gstin:data.company.gstin, pan:data.company.pan, state:data.company.state,
+      stateCode:data.company.stateCode, address:data.company.address, fyStart:data.company.fyStart, fyEnd:data.company.fyEnd,
+      parentCompanyId:data.company.parentCompanyId, isHolding:data.company.isHolding },
+      auditLog:[auditEntry('RESET','All data reset to a clean company')] });
+    try { localStorage.removeItem(STORAGE_KEY); } catch(e){}
+    setData(fresh);
+    showToast('All data has been reset');
   };
 
   const handleLogoUpload = (e) => {
@@ -5758,6 +5845,40 @@ function CompanySettings({data, setData, showToast, readOnly=false}){
             })}
           </div>
           <div style={{marginTop:10,fontSize:11,color:'var(--ink-3)'}}>The selected theme recolours invoice headers, totals and accents. Click Save Settings to apply, then print any Sales invoice.</div>
+        </div>
+      </div>
+
+      {/* Company Group / Holding structure */}
+      <div className="card" style={{marginBottom:18}}>
+        <div className="card-head">
+          <h3 className="card-title">🏢 Company Group (Holding / Subsidiary)</h3>
+          <span style={{fontSize:11,color:'var(--ink-3)'}}>Tag entities into a group to see Consolidated Financials</span>
+        </div>
+        <div className="card-body">
+          <div className="form-grid">
+            <div className="field">
+              <label>Group Name</label>
+              <input value={f.groupName||''} onChange={e=>setF({...f, groupName:e.target.value})} placeholder="e.g. Acme Group" disabled={readOnly} />
+              <div className="help">Give every company in the group the <b>same</b> group name (holding + all subsidiaries).</div>
+            </div>
+            <div className="field">
+              <label>Role in Group</label>
+              <select value={f.isHolding?'holding':'subsidiary'} onChange={e=>setF({...f, isHolding:e.target.value==='holding'})} disabled={readOnly}>
+                <option value="subsidiary">Subsidiary / Operating company</option>
+                <option value="holding">Holding / Parent company</option>
+              </select>
+              <div className="help">Mark exactly one company as the Holding.</div>
+            </div>
+            <div className="field">
+              <label>Ownership % held by Holding</label>
+              <input type="number" min="0" max="100" value={f.groupOwnership!=null?f.groupOwnership:100} onChange={e=>setF({...f, groupOwnership:parseFloat(e.target.value)||0})} disabled={readOnly} />
+              <div className="help">Used to flag minority interest (informational).</div>
+            </div>
+          </div>
+          <div style={{marginTop:10,fontSize:11.5,color:'var(--ink-2)',background:'var(--info-soft)',border:'1px solid var(--line)',borderRadius:8,padding:'10px 12px',lineHeight:1.6}}>
+            To add a subsidiary: use <b>⇌ Switch → + Create Company</b>, then set the <b>same Group Name</b> here.
+            Open <b>Group Consolidation</b> (Account Manager menu) to see the combined P&amp;L, Balance Sheet and CFO dashboard across every entity in the group. Requires cloud sign-in.
+          </div>
         </div>
       </div>
 
@@ -12226,6 +12347,191 @@ function StartupReliefs({data, setData, showToast, readOnly}){
 }
 
 // ============================================================================
+// GROUP CONSOLIDATION  Holding + Subsidiaries combined financials & CFO view
+// Loads every company in the same Group Name from the cloud, reduces each to its
+// headline figures (computeEntityFinancials) and sums them. Simple aggregation —
+// intercompany balances are NOT eliminated (post those as JVs before viewing).
+// ============================================================================
+function GroupConsolidation({data, user, ownerId, companyId}){
+  const [st, setSt] = useState({loading:true, entities:[], error:''});
+  const groupName = ((data.company&&data.company.groupName)||'').trim();
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      if(!user || typeof fbListCompanies!=='function' || !fbDb){
+        if(alive) setSt({loading:false, entities:[], error:'local'});
+        return;
+      }
+      try {
+        const list = await fbListCompanies(ownerId);
+        const out = [];
+        for(const c of list){
+          // Use the live in-memory data for the current company (may have unsaved edits)
+          const d = (c.id===companyId) ? data : await fbLoadCompany(ownerId, c.id);
+          const fin = computeEntityFinancials(d);
+          if(fin) out.push({id:c.id, ...fin, isCurrent:c.id===companyId});
+        }
+        if(alive) setSt({loading:false, entities:out, error:''});
+      } catch(e){ if(alive) setSt({loading:false, entities:[], error:String(e)}); }
+    })();
+    return () => { alive = false; };
+  }, [ownerId, companyId, groupName]);
+
+  // Entities that belong to this group (same non-empty group name). If no group
+  // name is set anywhere, fall back to just the current company.
+  const group = groupName
+    ? st.entities.filter(e => (e.groupName||'').toLowerCase() === groupName.toLowerCase())
+    : st.entities.filter(e => e.isCurrent);
+
+  const sum = k => group.reduce((s,e)=>s+(e[k]||0), 0);
+  const con = {
+    income:sum('income'), expense:sum('expense'), profit:sum('profit'),
+    assets:sum('assets'), liab:sum('liab'), equity:sum('equity'),
+    cash:sum('cash'), debtors:sum('debtors'), creditors:sum('creditors'), vouchers:sum('vouchers'),
+  };
+  const holding = group.find(e=>e.isHolding);
+
+  const handleExcel = () => {
+    exportXLSX(`Consolidated_${(groupName||'Group').replace(/\W/g,'_')}_${today()}.xlsx`, [{
+      name:'Consolidation',
+      rows:[
+        [`Consolidated Financials  ${groupName||(data.company&&data.company.name)}  as on ${today()}`],[],
+        ['Entity','Holding?','Revenue','Expenses','Net Profit','Assets','Liabilities','Equity','Cash'],
+        ...group.map(e=>[e.name, e.isHolding?'Yes':'', e.income, e.expense, e.profit, e.assets, e.liab, e.equity, e.cash]),
+        [],['CONSOLIDATED (sum)','', con.income, con.expense, con.profit, con.assets, con.liab, con.equity, con.cash],
+        [],['Note','Simple aggregation — intercompany balances not eliminated.'],
+      ],
+    }]);
+  };
+
+  const kpi = (label, val, cls) => (
+    <div className={'stat '+(cls||'')}><div className="stat-label">{label}</div><div className="stat-value rupee">₹{fmt(val)}</div></div>
+  );
+
+  return (<>
+    <div className="page-head">
+      <div>
+        <h1 className="page-title">Group Consolidation</h1>
+        <div className="page-sub">{groupName ? <>Group: <b>{groupName}</b> · {group.length} entit{group.length===1?'y':'ies'}</> : 'Combined financials across your holding & subsidiaries'}</div>
+      </div>
+      {group.length>0 && <div className="page-actions">
+        <button className="btn btn-sm" onClick={handleExcel}>⬇ Excel</button>
+        <button className="btn btn-sm btn-primary" onClick={()=>window.print()}>⎙ Print</button>
+      </div>}
+    </div>
+
+    {st.loading && <div className="empty" style={{padding:50}}><div className="empty-ico">⏳</div><div>Loading group companies from the cloud…</div></div>}
+
+    {!st.loading && st.error==='local' && (
+      <div className="card" style={{borderLeft:'4px solid var(--accent)'}}>
+        <div className="card-body" style={{fontSize:13,lineHeight:1.7}}>
+          <b>Group consolidation needs cloud sign-in.</b><br/>
+          Consolidation combines <i>multiple</i> companies, so it reads them from your cloud account.
+          Sign in with Google/email, create your holding and subsidiary companies, give them all the <b>same Group Name</b>
+          (Company Settings → Company Group), then reopen this page.
+        </div>
+      </div>
+    )}
+
+    {!st.loading && st.error && st.error!=='local' && (
+      <div className="card" style={{borderLeft:'4px solid var(--danger)'}}><div className="card-body" style={{fontSize:13}}>Couldn't load group companies: {st.error}</div></div>
+    )}
+
+    {!st.loading && !st.error && !groupName && (
+      <div className="card" style={{borderLeft:'4px solid var(--accent)',marginBottom:16}}>
+        <div className="card-body" style={{fontSize:13,lineHeight:1.7}}>
+          <b>No Group Name set for this company.</b> Open <b>Company Settings → Company Group</b> and give this company
+          (and each subsidiary) the same Group Name. Showing this company only for now.
+        </div>
+      </div>
+    )}
+
+    {!st.loading && !st.error && group.length>0 && (<>
+      {holding && <div style={{fontSize:12,color:'var(--ink-3)',marginBottom:10}}>Holding: <b style={{color:'var(--ink)'}}>{holding.name}</b></div>}
+
+      {/* Consolidated CFO KPIs */}
+      <div style={{marginBottom:6,display:'flex',alignItems:'center',gap:8}}>
+        <span style={{fontSize:11,textTransform:'uppercase',letterSpacing:'1.5px',fontWeight:700,color:'var(--ink-3)'}}>Consolidated CFO Dashboard</span>
+        <span style={{flex:1,height:1,background:'var(--line)'}}></span>
+      </div>
+      <div className="stat-grid">
+        {kpi('Group Revenue', con.income, 'stat-green')}
+        {kpi('Group Expenses', con.expense, 'stat-danger')}
+        {kpi('Group Net Profit', con.profit, con.profit>=0?'stat-teal':'stat-danger')}
+        {kpi('Group Assets', con.assets, 'stat-info')}
+        {kpi('Group Equity', con.equity, 'stat-purple')}
+        {kpi('Group Cash & Bank', con.cash, 'stat-gold')}
+        {kpi('Group Receivables', con.debtors, 'stat-info')}
+        {kpi('Group Payables', con.creditors, 'stat-pink')}
+      </div>
+
+      {/* Per-entity breakdown */}
+      <div className="card" style={{marginTop:8}}>
+        <div className="card-head"><h3 className="card-title">Entity-wise Contribution</h3></div>
+        <div style={{overflowX:'auto'}}>
+          <table>
+            <thead><tr>
+              <th>Entity</th><th className="num">Revenue</th><th className="num">Expenses</th>
+              <th className="num">Net Profit</th><th className="num">Assets</th><th className="num">Equity</th><th className="num">Cash</th>
+            </tr></thead>
+            <tbody>
+              {group.map(e=>(
+                <tr key={e.id}>
+                  <td style={{fontWeight:600}}>{e.name}{e.isHolding && <span className="badge badge-info" style={{marginLeft:6,fontSize:9}}>HOLDING</span>}{e.isCurrent && <span className="badge badge-muted" style={{marginLeft:6,fontSize:9}}>CURRENT</span>}</td>
+                  <td className="num">₹{fmt(e.income)}</td>
+                  <td className="num">₹{fmt(e.expense)}</td>
+                  <td className="num" style={{color:e.profit>=0?'var(--green)':'var(--danger)',fontWeight:600}}>₹{fmt(e.profit)}</td>
+                  <td className="num">₹{fmt(e.assets)}</td>
+                  <td className="num">₹{fmt(e.equity)}</td>
+                  <td className="num">₹{fmt(e.cash)}</td>
+                </tr>
+              ))}
+            </tbody>
+            <tfoot><tr style={{fontWeight:800,borderTop:'2px solid var(--line)',background:'var(--surface-2)'}}>
+              <td>CONSOLIDATED</td>
+              <td className="num">₹{fmt(con.income)}</td>
+              <td className="num">₹{fmt(con.expense)}</td>
+              <td className="num" style={{color:con.profit>=0?'var(--green)':'var(--danger)'}}>₹{fmt(con.profit)}</td>
+              <td className="num">₹{fmt(con.assets)}</td>
+              <td className="num">₹{fmt(con.equity)}</td>
+              <td className="num">₹{fmt(con.cash)}</td>
+            </tr></tfoot>
+          </table>
+        </div>
+      </div>
+
+      {/* Consolidated P&L + BS summary */}
+      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:18,marginTop:18}}>
+        <div className="card">
+          <div className="card-head"><h3 className="card-title">Consolidated Profit &amp; Loss</h3></div>
+          <div className="card-body">
+            <div style={{display:'flex',justifyContent:'space-between',padding:'6px 0',borderBottom:'1px solid var(--line)'}}><span>Total Revenue</span><b className="rupee">₹{fmt(con.income)}</b></div>
+            <div style={{display:'flex',justifyContent:'space-between',padding:'6px 0',borderBottom:'1px solid var(--line)'}}><span>Total Expenses</span><b className="rupee">₹{fmt(con.expense)}</b></div>
+            <div style={{display:'flex',justifyContent:'space-between',padding:'8px 0',fontWeight:800,fontSize:15}}><span>Group Net Profit</span><b className="rupee" style={{color:con.profit>=0?'var(--green)':'var(--danger)'}}>₹{fmt(con.profit)}</b></div>
+          </div>
+        </div>
+        <div className="card">
+          <div className="card-head"><h3 className="card-title">Consolidated Balance Sheet</h3></div>
+          <div className="card-body">
+            <div style={{display:'flex',justifyContent:'space-between',padding:'6px 0',borderBottom:'1px solid var(--line)'}}><span>Total Assets</span><b className="rupee">₹{fmt(con.assets)}</b></div>
+            <div style={{display:'flex',justifyContent:'space-between',padding:'6px 0',borderBottom:'1px solid var(--line)'}}><span>Total Liabilities</span><b className="rupee">₹{fmt(con.liab)}</b></div>
+            <div style={{display:'flex',justifyContent:'space-between',padding:'6px 0',borderBottom:'1px solid var(--line)'}}><span>Total Equity (incl. profit)</span><b className="rupee">₹{fmt(con.equity)}</b></div>
+            <div style={{display:'flex',justifyContent:'space-between',padding:'8px 0',fontWeight:700,fontSize:12,color: Math.abs(con.assets-(con.equity+con.liab))<1?'var(--green)':'var(--danger)'}}>
+              <span>Assets − (Equity + Liab.)</span><span>₹{fmt(con.assets-(con.equity+con.liab))}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div style={{marginTop:14,fontSize:11.5,color:'var(--ink-3)',lineHeight:1.6,background:'var(--surface-2)',border:'1px solid var(--line)',borderRadius:8,padding:'10px 12px'}}>
+        <b>Note:</b> This is a straight aggregation of each entity's books. As per AS-21 / Ind-AS 110, a statutory consolidation also <b>eliminates intercompany</b> sales, balances and unrealised profit, and separates minority interest. Post those elimination JVs in the holding company's books before relying on these figures for filing.
+      </div>
+    </>)}
+  </>);
+}
+
+// ============================================================================
 // MIS DASHBOARD  CFO / Management View
 // ============================================================================
 function MISDashboard({data, balances, setPage}){
@@ -14737,6 +15043,7 @@ function HelpGuide({setPage}){
           '<b>DSO vs DPO trend</b>  a month-by-month chart of collection days (DSO) vs payment days (DPO) with the net cash gap, so you can see your working-capital cycle improving or slipping.',
           '<b>MIS Pack (Excel)</b>  one click exports a multi-sheet workbook (KPIs, monthly trend, top parties, expense breakdown) ready for a board or investor update.',
           '<b>PDF Bundle</b>  one click opens a print-ready bundle (cover, financial summary, Profit &amp; Loss, Balance Sheet, cash position)  save as a single PDF for your board pack or bank.',
+          '<b>Group Consolidation</b> (holding + subsidiaries)  tag each company with the <b>same Group Name</b> (Company Settings → Company Group) and mark one as Holding. The Group Consolidation page then loads every entity from the cloud and shows a combined CFO dashboard, consolidated P&amp;L and Balance Sheet, and each entity\'s contribution. Needs cloud sign-in. Note: it aggregates the books — post intercompany-elimination JVs before filing.',
         ]},
         {type:'heading', text:'Analysis Reports (Account Manager)'},
         {type:'steps', items:[
