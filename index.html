@@ -2852,7 +2852,7 @@ function LoginScreen({ onLogin }){
 // ============================================================================
 // COMPANY SELECTOR
 // ============================================================================
-function CompanySelector({ user, onSelect, onSignOut }){
+function CompanySelector({ user, onSelect, onSignOut, autoSelect=true }){
   const [companies,  setCompanies]  = useState(null);   // owned
   const [shared,     setShared]     = useState([]);      // shared with me
   const [creating,   setCreating]   = useState(false);
@@ -2887,7 +2887,9 @@ function CompanySelector({ user, onSelect, onSignOut }){
     ]).then(([owned, sh]) => {
       setCompanies(owned);
       setShared(sh);
-      if(owned.length + sh.length === 1){
+      // Auto-open the only company on initial login — but NOT when the user
+      // explicitly hit "Switch" (they want to see the list / add a subsidiary).
+      if(autoSelect && owned.length + sh.length === 1){
         if(owned.length === 1) onSelect(owned[0].id, user.uid, 'owner');
         else onSelect(sh[0].companyId, sh[0].ownerId, sh[0].role);
       }
@@ -3127,6 +3129,7 @@ function AuthGate(){
   const [companyId, setCompanyId] = useState(null);
   const [ownerId,   setOwnerId]   = useState(null);  // may differ from user.uid for shared companies
   const [userRole,  setUserRole]  = useState('owner'); // owner|admin|limited|viewer
+  const [switching, setSwitching] = useState(false);   // true when user explicitly hit "Switch" — suppresses auto-select
 
   useEffect(() => {
     if(!FB_CONFIGURED || !fbAuth){
@@ -3150,6 +3153,7 @@ function AuthGate(){
     setCompanyId(cId);
     setOwnerId(oId || user?.uid);
     setUserRole(role || 'owner');
+    setSwitching(false);
     setStage('ready');
   };
 
@@ -3165,12 +3169,12 @@ function AuthGate(){
   );
   if(stage==='unauth')  return <LoginScreen onLogin={u=>{ setUser(u); setStage('select'); }} />;
   if(stage==='select')  return (
-    <CompanySelector user={user} onSelect={handleSelect} onSignOut={handleSignOut} />
+    <CompanySelector user={user} onSelect={handleSelect} onSignOut={handleSignOut} autoSelect={!switching} />
   );
   if(stage==='offline') return <App />;
   return <App user={user} companyId={companyId} ownerId={ownerId||user?.uid}
     userRole={userRole} onSignOut={handleSignOut}
-    onSwitchCompany={()=>{ setCompanyId(null); setOwnerId(null); setUserRole('owner'); setStage('select'); }} />;
+    onSwitchCompany={()=>{ setCompanyId(null); setOwnerId(null); setUserRole('owner'); setSwitching(true); setStage('select'); }} />;
 }
 
 // ============================================================================
