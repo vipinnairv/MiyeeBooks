@@ -45,56 +45,73 @@
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Cormorant+Garamond:wght@500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
   :root{
-    --bg:#f4f7f5;
+    /* Zoho-inspired light theme — cool greys, blue primary, warm accents */
+    --bg:#f3f5f9;
     --surface:#ffffff;
-    --surface-2:#f9fbf9;
-    --ink:#0e2a23;
-    --ink-2:#3a4f49;
-    --ink-3:#6b7f78;
-    --line:#e3ebe7;
-    --line-2:#cfdbd5;
-    --primary:#0b6b4f;     /* MYeeCFO deep green */
-    --primary-2:#0e8a66;
-    --primary-soft:#e6f3ee;
-    --accent:#c9a227;       /* gold */
-    --accent-soft:#fbf3d9;
-    --danger:#b3261e;
-    --danger-soft:#fbe9e7;
-    --warning:#a36a00;
-    --info:#1a5fb4;
-    --info-soft:#e6eef9;
+    --surface-2:#f5f7fb;
+    --ink:#1a2733;
+    --ink-2:#3c4c5b;
+    --ink-3:#7b8b9a;
+    --line:#e6eaf1;
+    --line-2:#d3dbe6;
+    --primary:#2c7be5;     /* Zoho blue */
+    --primary-2:#1a63c9;
+    --primary-soft:#e8f1fd;
+    --accent:#f5803e;       /* Zoho warm orange */
+    --accent-soft:#fdeee2;
+    --danger:#e5484d;
+    --danger-soft:#fdeced;
+    --warning:#c26a00;
+    --info:#5b53d8;         /* indigo */
+    --info-soft:#ecebfb;
+    --teal:#0aa2a2;
+    --teal-soft:#e2f6f6;
+    --purple:#8b5cf6;
+    --purple-soft:#f1ebfe;
+    --pink:#e8508d;
+    --pink-soft:#fdeaf2;
+    --green:#12a150;
+    --green-soft:#e5f6ec;
     --radius:10px;
     --radius-sm:6px;
-    --shadow-sm:0 1px 2px rgba(14,42,35,.06), 0 1px 3px rgba(14,42,35,.04);
-    --shadow:0 4px 12px rgba(14,42,35,.07), 0 2px 4px rgba(14,42,35,.05);
-    --mono:'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
-    --serif:'Cormorant Garamond', Georgia, serif;
-    --sans:'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    --shadow-sm:0 1px 2px rgba(26,39,51,.06), 0 1px 3px rgba(26,39,51,.05);
+    --shadow:0 6px 16px rgba(26,39,51,.08), 0 2px 5px rgba(26,39,51,.05);
+    --mono:'Calibri', 'Segoe UI', ui-monospace, 'SF Mono', Menlo, monospace;
+    --serif:'Calibri', 'Segoe UI', Candara, sans-serif;
+    --sans:'Calibri', 'Segoe UI', Candara, -apple-system, BlinkMacSystemFont, sans-serif;
   }
-  /* Dark theme — variable overrides only; toggled by adding .dark on <body> */
+  /* Dark theme — Zoho-style navy; variable overrides only, toggled by .dark on <body> */
   body.dark{
-    --bg:#0f1815;
-    --surface:#16211d;
-    --surface-2:#1b2823;
-    --ink:#e2ece8;
-    --ink-2:#adbfb8;
-    --ink-3:#7d918a;
-    --line:#28362f;
-    --line-2:#33453d;
-    --primary:#2fae83;
-    --primary-2:#38c493;
-    --primary-soft:#12352a;
-    --accent:#d9b544;
-    --accent-soft:#33290e;
-    --danger:#e5695f;
-    --danger-soft:#3a1512;
-    --warning:#d99a2b;
-    --info:#5c95e0;
-    --info-soft:#12233a;
+    --bg:#0f1722;
+    --surface:#182433;
+    --surface-2:#1e2c3d;
+    --ink:#e4ebf3;
+    --ink-2:#aebdcc;
+    --ink-3:#7e90a3;
+    --line:#28374a;
+    --line-2:#344357;
+    --primary:#4b95ee;
+    --primary-2:#5ba3f5;
+    --primary-soft:#132c47;
+    --accent:#f79654;
+    --accent-soft:#3a2413;
+    --danger:#ef6a6e;
+    --danger-soft:#3a181a;
+    --warning:#e0983a;
+    --info:#8b84ec;
+    --info-soft:#1e1c3a;
+    --teal:#33bcbc;
+    --teal-soft:#123030;
+    --purple:#a684f8;
+    --purple-soft:#241a3a;
+    --pink:#f06fa5;
+    --pink-soft:#3a1626;
+    --green:#3cc072;
+    --green-soft:#123020;
     --shadow-sm:0 1px 2px rgba(0,0,0,.4);
-    --shadow:0 4px 12px rgba(0,0,0,.5);
+    --shadow:0 6px 16px rgba(0,0,0,.5);
   }
-  body.dark .topbar{background:#0a1310;border-bottom-color:#000}
+  body.dark .topbar{background:#0b1219;border-bottom-color:#000}
   body.dark table th{background:var(--surface-2)}
   body.dark input, body.dark select, body.dark textarea{background:var(--surface-2);color:var(--ink);border-color:var(--line-2)}
   *{box-sizing:border-box}
@@ -102,13 +119,14 @@
   button{font-family:inherit;cursor:pointer;border:none;background:none;color:inherit}
   input,select,textarea{font-family:inherit;font-size:13px}
   /* Top bar */
-  .topbar{background:var(--ink);color:#e8efec;display:flex;align-items:center;justify-content:space-between;padding:10px 20px;border-bottom:1px solid #0a1f1a}
+  .topbar{background:linear-gradient(90deg,#1a63c9 0%,#2c7be5 55%,#3a8ff0 100%);color:#eef5ff;display:flex;align-items:center;justify-content:space-between;padding:10px 20px;border-bottom:1px solid #1553ad}
   .brand{display:flex;align-items:baseline;gap:10px}
-  .brand-mark{font-family:var(--serif);font-weight:700;font-size:22px;letter-spacing:-.5px;color:#fff}
-  .brand-mark .dot{color:var(--accent)}
-  .brand-tag{font-size:10px;letter-spacing:1.5px;text-transform:uppercase;color:#8aa098;border-left:1px solid #2a4039;padding-left:10px}
-  .topbar-right{display:flex;gap:14px;align-items:center;font-size:12px;color:#b5c5be}
-  .topbar-right .pill{background:#10342c;padding:4px 10px;border-radius:20px;color:#b5d4c8;font-size:11px}
+  .brand-mark{font-family:var(--serif);font-weight:700;font-size:22px;letter-spacing:-.3px;color:#fff}
+  .brand-mark .dot{color:#ffd166}
+  .brand-tag{font-size:10px;letter-spacing:1.5px;text-transform:uppercase;color:#c8ddf9;border-left:1px solid rgba(255,255,255,.3);padding-left:10px}
+  .topbar-right{display:flex;gap:14px;align-items:center;font-size:12px;color:#dbe8fb}
+  .topbar-right .pill{background:rgba(255,255,255,.18);padding:4px 10px;border-radius:20px;color:#fff;font-size:11px}
+  body.dark .topbar{background:linear-gradient(90deg,#0f2947,#123c6e)}
   /* Layout */
   .app{display:grid;grid-template-columns:220px 1fr;min-height:calc(100vh - 45px)}
   .sidebar{background:var(--surface);border-right:1px solid var(--line);padding:18px 0;overflow-y:auto}
@@ -141,17 +159,22 @@
   .card-head{padding:14px 18px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:center}
   .card-title{font-weight:600;font-size:14px;color:var(--ink);margin:0;font-family:var(--serif);font-size:17px}
   .card-body{padding:18px}
-  /* Stats grid */
+  /* Stats grid — colourful tinted cards (Zoho-style dashboard) */
   .stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px;margin-bottom:22px}
-  .stat{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:16px;position:relative;overflow:hidden}
-  .stat::before{content:'';position:absolute;top:0;left:0;right:0;height:3px;background:var(--primary)}
-  .stat.stat-gold::before{background:var(--accent)}
-  .stat.stat-info::before{background:var(--info)}
-  .stat.stat-danger::before{background:var(--danger)}
-  .stat-label{font-size:10.5px;letter-spacing:.8px;text-transform:uppercase;color:var(--ink-3);font-weight:600;margin-bottom:6px}
-  .stat-value{font-family:var(--mono);font-size:22px;font-weight:600;color:var(--ink);letter-spacing:-.3px}
+  .stat{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:16px;position:relative;overflow:hidden;box-shadow:var(--shadow-sm);--sc:var(--primary);--scs:var(--primary-soft)}
+  .stat::before{content:'';position:absolute;top:0;left:0;right:0;height:4px;background:var(--sc)}
+  .stat{background:linear-gradient(180deg,var(--scs) 0%,var(--surface) 62%)}
+  .stat.stat-gold{--sc:var(--accent);--scs:var(--accent-soft)}
+  .stat.stat-info{--sc:var(--info);--scs:var(--info-soft)}
+  .stat.stat-danger{--sc:var(--danger);--scs:var(--danger-soft)}
+  .stat.stat-teal{--sc:var(--teal);--scs:var(--teal-soft)}
+  .stat.stat-purple{--sc:var(--purple);--scs:var(--purple-soft)}
+  .stat.stat-pink{--sc:var(--pink);--scs:var(--pink-soft)}
+  .stat.stat-green{--sc:var(--green);--scs:var(--green-soft)}
+  .stat-label{font-size:10.5px;letter-spacing:.8px;text-transform:uppercase;color:var(--ink-3);font-weight:700;margin-bottom:6px}
+  .stat-value{font-family:var(--mono);font-size:22px;font-weight:700;color:var(--sc);letter-spacing:-.2px;font-variant-numeric:tabular-nums}
   .stat-delta{font-size:11px;margin-top:4px;color:var(--ink-3)}
-  .stat-delta.up{color:var(--primary-2)}
+  .stat-delta.up{color:var(--green)}
   .stat-delta.down{color:var(--danger)}
   /* Table */
   .table-wrap{overflow-x:auto;border:1px solid var(--line);border-radius:var(--radius);background:var(--surface)}
@@ -4582,8 +4605,8 @@ function Dashboard({data, balances, setPage, setData=()=>{}, showToast=()=>{}}){
           if(v.status==='Cancelled') return;
           (v.items||[]).forEach(it=>{
             if(!it.itemId || !(it.itemId in qty)) return;
-            if(v.type==='PUR') qty[it.itemId]+=it.qty||0;
-            if(v.type==='SAL') qty[it.itemId]-=it.qty||0;
+            if(v.type==='PUR' || v.type==='CRN') qty[it.itemId]+=it.qty||0;
+            if(v.type==='SAL' || v.type==='DBN') qty[it.itemId]-=it.qty||0;
           });
         });
         (data.productionOrders||[]).forEach(po=>{
@@ -4611,24 +4634,24 @@ function Dashboard({data, balances, setPage, setData=()=>{}, showToast=()=>{}}){
       })()}
 
       <div className="stat-grid">
-        <div className="stat">
+        <div className="stat stat-green">
           <div className="stat-label">Revenue (YTD)</div>
           <div className="stat-value rupee">₹{fmt(stats.income)}</div>
           <div className="stat-delta">From all sales accounts</div>
         </div>
-        <div className="stat">
+        <div className="stat stat-danger">
           <div className="stat-label">Total Expenses</div>
           <div className="stat-value rupee">₹{fmt(stats.expense)}</div>
           <div className="stat-delta">Operating + finance</div>
         </div>
         <div className={'stat ' + (stats.profit>=0?'':'stat-danger')}>
           <div className="stat-label">Net Profit / (Loss)</div>
-          <div className={'stat-value rupee ' + (stats.profit<0?'neg':'pos')}>₹{fmt(stats.profit)}</div>
+          <div className="stat-value rupee">₹{fmt(stats.profit)}</div>
           <div className={'stat-delta ' + (stats.profit>=0?'up':'down')}>
             Margin: {stats.income? ((stats.profit/stats.income)*100).toFixed(1) : '0.0'}%
           </div>
         </div>
-        <div className="stat stat-gold">
+        <div className="stat stat-teal">
           <div className="stat-label">Cash + Bank</div>
           <div className="stat-value rupee">₹{fmt(stats.cash + stats.bank)}</div>
           <div className="stat-delta">Liquid position</div>
@@ -4638,7 +4661,7 @@ function Dashboard({data, balances, setPage, setData=()=>{}, showToast=()=>{}}){
           <div className="stat-value rupee">₹{fmt(stats.debtors)}</div>
           <div className="stat-delta">From customers</div>
         </div>
-        <div className="stat stat-info">
+        <div className="stat stat-purple">
           <div className="stat-label">Trade Payables</div>
           <div className="stat-value rupee">₹{fmt(stats.creditors)}</div>
           <div className="stat-delta">To vendors</div>
@@ -4648,7 +4671,7 @@ function Dashboard({data, balances, setPage, setData=()=>{}, showToast=()=>{}}){
           <div className="stat-value rupee">₹{fmt(stats.netGst)}</div>
           <div className="stat-delta">Output − Input ITC</div>
         </div>
-        <div className="stat">
+        <div className="stat stat-pink">
           <div className="stat-label">Total Vouchers</div>
           <div className="stat-value rupee">{data.vouchers.length}</div>
           <div className="stat-delta">Entries posted</div>
@@ -16094,6 +16117,8 @@ function StockValuation({data, setData, showToast, balances, readOnly=false}){
         if(!it.itemId || !(it.itemId in st)) return;
         if(v.type==='PUR') mvts.push({date:v.date, k:'in',  id:it.itemId, qty:it.qty||0, rate:it.rate||0});
         if(v.type==='SAL') mvts.push({date:v.date, k:'out', id:it.itemId, qty:it.qty||0});
+        if(v.type==='CRN') mvts.push({date:v.date, k:'in',  id:it.itemId, qty:it.qty||0, rate:it.rate||0}); // sales return → back in at return rate
+        if(v.type==='DBN') mvts.push({date:v.date, k:'out', id:it.itemId, qty:it.qty||0});                 // purchase return → out at avg
       });
     });
     (data.productionOrders||[]).forEach(po => {
@@ -16255,8 +16280,8 @@ function StockLedger({data}){
           ref: v.number || v.id.slice(0,8),
           type: v.type,
           narration: v.narration || '',
-          in: ['PUR','PROD_IN'].includes(v.type) ? (sl.qty||0) : 0,
-          out: ['SAL','CONS_OUT','PROD_OUT'].includes(v.type) ? (sl.qty||0) : 0,
+          in: ['PUR','PROD_IN','CRN'].includes(v.type) ? (sl.qty||0) : 0,   // CRN = sales return → goods back in
+          out: ['SAL','CONS_OUT','PROD_OUT','DBN'].includes(v.type) ? (sl.qty||0) : 0, // DBN = purchase return → goods out
           rate: sl.rate || 0,
         });
       });
@@ -16269,8 +16294,8 @@ function StockLedger({data}){
             ref: v.number || v.id.slice(0,8),
             type: v.type,
             narration: v.narration || '',
-            in: v.type === 'PUR' ? (it.qty||0) : 0,
-            out: v.type === 'SAL' ? (it.qty||0) : 0,
+            in: (v.type === 'PUR' || v.type === 'CRN') ? (it.qty||0) : 0,   // CRN = sales return → back in
+            out: (v.type === 'SAL' || v.type === 'DBN') ? (it.qty||0) : 0, // DBN = purchase return → out
             rate: it.rate || 0,
           });
         });
@@ -16303,15 +16328,15 @@ function StockLedger({data}){
       // Legacy stockLines path
       (v.stockLines||[]).forEach(sl => {
         if(sl.itemId!==itemId) return;
-        if(['PUR','PROD_IN'].includes(v.type)) qty += sl.qty||0;
+        if(['PUR','PROD_IN','CRN'].includes(v.type)) qty += sl.qty||0;
         else qty -= sl.qty||0;
       });
       // Current items[].itemId path
       if((v.stockLines||[]).length === 0) {
         (v.items||[]).forEach(it => {
           if(!it.itemId || it.itemId !== itemId) return;
-          if(v.type === 'PUR') qty += it.qty||0;
-          else if(v.type === 'SAL') qty -= it.qty||0;
+          if(v.type === 'PUR' || v.type === 'CRN') qty += it.qty||0;
+          else if(v.type === 'SAL' || v.type === 'DBN') qty -= it.qty||0;
         });
       }
     });
