@@ -367,6 +367,14 @@ const fmt = (n, dec=2) => {
 };
 const today = () => new Date().toISOString().slice(0,10);
 const uid = () => Math.random().toString(36).slice(2,9);
+
+// GST state codes → names, and the "24-Gujarat" Place-of-Supply label the GST
+// offline tool / GSTR templates expect.
+const STATE_NAMES = {'01':'Jammu & Kashmir','02':'Himachal Pradesh','03':'Punjab','04':'Chandigarh','05':'Uttarakhand','06':'Haryana','07':'Delhi','08':'Rajasthan','09':'Uttar Pradesh','10':'Bihar','11':'Sikkim','12':'Arunachal Pradesh','13':'Nagaland','14':'Manipur','15':'Mizoram','16':'Tripura','17':'Meghalaya','18':'Assam','19':'West Bengal','20':'Jharkhand','21':'Odisha','22':'Chhattisgarh','23':'Madhya Pradesh','24':'Gujarat','25':'Daman & Diu','26':'Dadra and Nagar Haveli and Daman and Diu','27':'Maharashtra','28':'Andhra Pradesh','29':'Karnataka','30':'Goa','31':'Lakshadweep','32':'Kerala','33':'Tamil Nadu','34':'Puducherry','35':'Andaman & Nicobar Islands','36':'Telangana','37':'Andhra Pradesh','38':'Ladakh','97':'Other Territory'};
+const posLabel = (code) => { const c = String(code||'').padStart(2,'0'); return STATE_NAMES[c] ? `${c}-${STATE_NAMES[c]}` : c; };
+// B2C-Large threshold: inter-state B2C invoices above this go to B2CL (5), else B2CS (7).
+// Reduced from ₹2,50,000 to ₹1,00,000 (Notification 12/2024-CT).
+const B2CL_THRESHOLD = 100000;
 // Next voucher number honouring per-type numbering series config (Company Settings).
 // cfg: {prefix, padding, includeFY}. Defaults to "<TYPE>/0001".
 const nextVoucherNumber = (data, type) => {
@@ -2084,6 +2092,7 @@ const buildSampleData = () => {
     reliance:'sp_rel', acme:'sp_acme', mahindra:'sp_mah', patel:'sp_patel', global:'sp_glob',
     steelco:'sp_steel', motorworld:'sp_motor', birla:'sp_birla', mahesh:'sp_mahesh',
     jio:'sp_jio', landlord:'sp_land', sharma:'sp_sharma', buildwell:'sp_build',
+    retailGj:'sp_retgj', retailMh:'sp_retmh',   // unregistered (B2C) walk-in customers
   };
   const parties = [
     {id:P.reliance, name:'Reliance Industries Ltd', type:'Customer', gstin:'27AAACR5055K1Z7', state:'Maharashtra', stateCode:'27', address:'Maker Chambers IV, Mumbai', email:'ap@ril.com', phone:'+91 22 3555 5000', currency:'INR', balance:0},
@@ -2099,6 +2108,8 @@ const buildSampleData = () => {
     {id:P.landlord, name:'Factory Landlord  Mr. Patel', type:'Vendor', gstin:'', state:'Gujarat', stateCode:'24', address:'Ahmedabad', email:'patel@landlord.in', phone:'+91 99999 11111', currency:'INR', balance:0, unregistered:true},
     {id:P.sharma, name:'Sharma & Associates (CA)', type:'Vendor', gstin:'24AAFFS1234K1ZC', state:'Gujarat', stateCode:'24', address:'Ahmedabad', email:'ca@sharma.in', phone:'+91 79 4000 1111', currency:'INR', balance:0, pan:'AAFFS1234K'},
     {id:P.buildwell, name:'BuildWell Contractors Pvt Ltd', type:'Vendor', gstin:'24AABCB7777C1ZS', state:'Gujarat', stateCode:'24', address:'Gandhinagar', email:'works@buildwell.in', phone:'+91 79 5000 2222', currency:'INR', balance:0, pan:'AABCB7777C'},
+    {id:P.retailGj, name:'Rahul Retail (Walk-in)', type:'Customer', gstin:'', state:'Gujarat', stateCode:'24', address:'Ahmedabad', email:'', phone:'+91 90000 12345', currency:'INR', balance:0, unregistered:true},
+    {id:P.retailMh, name:'Deshmukh Stores (Unregistered)', type:'Customer', gstin:'', state:'Maharashtra', stateCode:'27', address:'Nagpur', email:'', phone:'+91 90000 67890', currency:'INR', balance:0, unregistered:true},
   ];
   const partyOf = id => parties.find(p => p.id === id);
 
@@ -2385,6 +2396,35 @@ const buildSampleData = () => {
     if(i===11) mkJV(d(27), [{accountId:'4555', debit:30000},{accountId:'1330', credit:30000}], 'Year-end provision for audit fees');
     runPayroll(mo);
   });
+
+  // ================= EXTRA GST INVOICES (rich GSTR-1 / GSTR-3B demo) =================
+  // Covers B2B intra & inter, B2CL, B2CS, exports, services and multiple GST rates
+  // (5 / 12 / 18 / 28%), plus registered & unregistered credit/debit notes.
+  // ---- SALES ----
+  mkSale('2025-05-14', P.acme,     '3100', 240000, 18, {cc:CC.a});            // B2B intra 18%
+  mkSale('2025-06-09', P.patel,    '3100',  90000, 12, {cc:CC.a});            // B2B intra 12%
+  mkSale('2025-06-22', P.mahindra, '3100', 320000, 18, {inter:true, cc:CC.b});// B2B inter 18%
+  mkSale('2025-07-18', P.reliance, '3100', 180000, 28, {inter:true, cc:CC.b});// B2B inter 28%
+  mkSale('2025-08-05', P.acme,     '3100', 150000,  5, {cc:CC.a});            // B2B intra 5%
+  mkSale('2025-08-20', P.patel,    '3110',  75000, 18, {cc:CC.a, dept:D.sales}); // Services 18% intra
+  const gexp1 = mkSale('2025-09-12', P.global, '3120', 540000, 0, {exp:true});   // Export (zero-rated)
+  mkSale('2025-10-08', P.retailMh, '3100', 150000, 18, {inter:true});         // B2CL — inter-state B2C > ₹1L
+  mkSale('2025-10-08', P.retailMh, '3100', 128000, 12, {inter:true});         // B2CL — 12%
+  mkSale('2025-11-03', P.retailGj, '3100',  18000, 18, {});                    // B2CS intra 18%
+  mkSale('2025-11-03', P.retailGj, '3100',   9500, 12, {});                    // B2CS intra 12%
+  mkSale('2025-12-15', P.retailGj, '3100',   6000,  5, {});                    // B2CS intra 5%
+  const bigSale = mkSale('2026-01-10', P.mahindra, '3100', 410000, 18, {inter:true, cc:CC.b}); // B2B inter 18%
+  mkReceipt('2026-01-28', P.mahindra, bigSale.total, bigSale.id);              // ...settled
+  mkCRN('2026-02-06', P.acme, '3100', 24000, 18, {cc:CC.a});                   // Registered credit note (sales return)
+  // ---- PURCHASES ----
+  mkPurchase('2025-05-11', P.steelco,    '4100', 160000, 18, {cc:CC.a});       // B2B intra 18%
+  mkPurchase('2025-06-16', P.motorworld, '4100', 220000, 18, {inter:true});    // B2B inter 18%
+  mkPurchase('2025-07-24', P.birla,      '4100',  95000, 28, {cc:CC.a});       // B2B intra 28%
+  mkPurchase('2025-09-05', P.motorworld, '4100', 140000, 12, {inter:true});    // B2B inter 12%
+  mkPurchase('2025-10-19', P.mahesh,     '4110',  48000,  5, {cc:CC.b, dept:D.admin}); // Trading goods 5%
+  const bigPur = mkPurchase('2026-01-14', P.steelco, '4100', 120000, 18, {cc:CC.a});
+  mkPayVendor('2026-02-02', P.steelco, bigPur.total, bigPur.id);               // ...paid
+  mkDBN('2026-02-11', P.steelco, '4100', 16000, 18, {cc:CC.a});                // Debit note (purchase return)
 
   return {
     company: {...DEFAULT_COMPANY, name:'Demo Manufacturing Co Pvt Ltd',
@@ -11039,20 +11079,74 @@ function GSTR1({data}){
   const b2b = sales.filter(v => { const p=data.parties.find(x=>x.id===v.partyId); return p&&p.gstin&&!p.isForeign; });
   const exports_ = sales.filter(v => { const p=data.parties.find(x=>x.id===v.partyId); return p&&p.isForeign; });
   const b2cAll = sales.filter(v => { const p=data.parties.find(x=>x.id===v.partyId); return !p||(!p.gstin&&!p.isForeign); });
-  const b2cl = b2cAll.filter(v => v.isInterState && (v.total||0)>250000);
-  const b2cs = b2cAll.filter(v => !v.isInterState || (v.total||0)<=250000);
+  const b2cl = b2cAll.filter(v => v.isInterState && (v.total||0)>B2CL_THRESHOLD);
+  const b2cs = b2cAll.filter(v => !v.isInterState || (v.total||0)<=B2CL_THRESHOLD);
   const cdnr = cdn.filter(v => { const p=data.parties.find(x=>x.id===v.partyId); return p&&p.gstin; });
   const cdnur= cdn.filter(v => { const p=data.parties.find(x=>x.id===v.partyId); return !p||!p.gstin; });
 
+  const r2 = n => Math.round((n||0)*100)/100;
+  const posOf = (v) => { const p=data.parties.find(x=>x.id===v.partyId); return String(v.placeOfSupply||p?.stateCode||data.company.stateCode||'24').padStart(2,'0'); };
+  // Split a voucher's items into per-GST-rate tax groups (offline tool reports one row per rate).
+  const rateSplit = (v) => {
+    const g = {};
+    (v.items||[]).forEach(it => {
+      const rate = +(it.gstRate||0), tx = (it.qty||0)*(it.rate||0);
+      if(!g[rate]) g[rate] = {rate, txval:0, igst:0, cgst:0, sgst:0, cess:0, qty:0};
+      g[rate].txval += tx; g[rate].qty += it.qty||0;
+      const tax = tx*rate/100;
+      if(v.isInterState||v.isExport) g[rate].igst += tax; else { g[rate].cgst += tax/2; g[rate].sgst += tax/2; }
+    });
+    return Object.values(g).map(x=>({...x, txval:r2(x.txval), igst:r2(x.igst), cgst:r2(x.cgst), sgst:r2(x.sgst)}));
+  };
+
+  // B2CS (7): aggregate by (POS, rate) — the level GST requires (not one lump).
+  const b2csGroups = useMemo(() => {
+    const m = {};
+    b2cs.forEach(v => { const pos = posOf(v);
+      rateSplit(v).forEach(rg => {
+        const key = pos+'|'+rg.rate;
+        if(!m[key]) m[key] = {pos, rate:rg.rate, sply_ty: v.isInterState?'INTER':'INTRA', typ:'OE', txval:0, igst:0, cgst:0, sgst:0, cess:0};
+        m[key].txval=r2(m[key].txval+rg.txval); m[key].igst=r2(m[key].igst+rg.igst); m[key].cgst=r2(m[key].cgst+rg.cgst); m[key].sgst=r2(m[key].sgst+rg.sgst);
+      });
+    });
+    return Object.values(m);
+  }, [b2cs]);
+
+  // HSN (12): aggregate by (HSN, rate) — split into B2B and B2C (new GSTR-1 format).
+  const hsnAgg = (invs) => {
+    const m = {};
+    invs.forEach(v => { const inter = v.isInterState||v.isExport;
+      (v.items||[]).forEach(it => {
+        const rate=+(it.gstRate||0), hsn=it.hsn||'', tx=(it.qty||0)*(it.rate||0), tax=tx*rate/100;
+        const key = hsn+'|'+rate;
+        if(!m[key]) m[key]={hsn, desc:it.description||'', uqc:'NOS-NUMBERS', rate, qty:0, txval:0, igst:0, cgst:0, sgst:0, cess:0};
+        m[key].qty+=it.qty||0; m[key].txval+=tx;
+        if(inter) m[key].igst+=tax; else { m[key].cgst+=tax/2; m[key].sgst+=tax/2; }
+      });
+    });
+    return Object.values(m).map(h=>({...h, txval:r2(h.txval), igst:r2(h.igst), cgst:r2(h.cgst), sgst:r2(h.sgst), val:r2(h.txval+h.igst+h.cgst+h.sgst)}));
+  };
+  const hsnB2B = useMemo(()=>hsnAgg(b2b.concat(exports_).concat(cdnr)), [b2b, exports_, cdnr]);
+  const hsnB2C = useMemo(()=>hsnAgg(b2cl.concat(b2cs).concat(cdnur)), [b2cl, b2cs, cdnur]);
+  // Combined HSN for the on-screen tab (existing display)
   const hsnSummary = {};
-  sales.forEach(v => (v.items||[]).forEach(it => {
-    const hsn = it.hsn||'NA';
-    if(!hsnSummary[hsn]) hsnSummary[hsn]={hsn,desc:it.description||'',uqc:'NOS',qty:0,taxable:0,igst:0,cgst:0,sgst:0};
-    const taxable=(it.qty||0)*(it.rate||0), tax=taxable*(it.gstRate||0)/100;
-    hsnSummary[hsn].qty+=it.qty||0; hsnSummary[hsn].taxable+=taxable;
-    if(v.isInterState||v.isExport) hsnSummary[hsn].igst+=tax;
-    else { hsnSummary[hsn].cgst+=tax/2; hsnSummary[hsn].sgst+=tax/2; }
-  }));
+  hsnB2B.concat(hsnB2C).forEach(h => {
+    const k=h.hsn||'NA'; if(!hsnSummary[k]) hsnSummary[k]={hsn:h.hsn||'NA',desc:h.desc,uqc:'NOS',qty:0,taxable:0,igst:0,cgst:0,sgst:0};
+    hsnSummary[k].qty+=h.qty; hsnSummary[k].taxable+=h.txval; hsnSummary[k].igst+=h.igst; hsnSummary[k].cgst+=h.cgst; hsnSummary[k].sgst+=h.sgst;
+  });
+
+  // Nil / exempt / non-GST (8): 0% domestic supplies (informational bucket).
+  const exemptTaxable = r2(b2cAll.concat(b2b).reduce((s,v)=> s + (v.isExport?0:(v.items||[]).filter(it=>+(it.gstRate||0)===0).reduce((t,it)=>t+(it.qty||0)*(it.rate||0),0)), 0));
+
+  // Documents issued (13): serial range of outward invoices + credit/debit notes.
+  const docRanges = (() => {
+    const rng = (arr) => { const nums=arr.map(v=>v.number||'').filter(Boolean).sort(); return {from:nums[0]||'', to:nums[nums.length-1]||'', num:nums.length, cancelled:arr.filter(v=>v.status==='Cancelled').length}; };
+    return [
+      {nature:'Invoices for outward supply', ...rng(sales)},
+      {nature:'Credit Note', ...rng(cdn.filter(v=>v.type==='CRN'))},
+      {nature:'Debit Note', ...rng(cdn.filter(v=>v.type==='DBN'))},
+    ].filter(d=>d.num>0);
+  })();
 
   const sumField = (arr,f) => arr.reduce((s,v)=>s+(v[f]||0),0);
   const totalTaxable=sumField(sales,'taxable'), totalCgst=sumField(sales,'cgst'), totalSgst=sumField(sales,'sgst'), totalIgst=sumField(sales,'igst');
@@ -11061,26 +11155,67 @@ function GSTR1({data}){
     const payload = {
       gstin: data.company.gstin,
       fp: activePeriods[activePeriods.length-1].replace('-',''),
-      gt: totalTaxable+totalCgst+totalSgst+totalIgst,
+      gt: r2(totalTaxable+totalCgst+totalSgst+totalIgst), cur_gt: r2(totalTaxable+totalCgst+totalSgst+totalIgst),
       b2b: b2b.map(v => {
         const p=data.parties.find(x=>x.id===v.partyId);
         return { ctin:p?.gstin||'', inv:[{
-          inum:v.number||'', idt:v.date, val:v.total||0,
-          pos:v.placeOfSupply||p?.stateCode||'24', rchrg:'N', inv_typ:'R',
-          itms:(v.items||[]).map(it=>({num:1,itm_det:{rt:it.gstRate||0,txval:(it.qty||0)*(it.rate||0),
-            igst:v.isInterState?(it.qty||0)*(it.rate||0)*(it.gstRate||0)/100:0,
-            cgst:!v.isInterState?(it.qty||0)*(it.rate||0)*(it.gstRate||0)/200:0,
-            sgst:!v.isInterState?(it.qty||0)*(it.rate||0)*(it.gstRate||0)/200:0,cst:0}}))
+          inum:v.number||'', idt:fmtDate(v.date), val:r2(v.total||0),
+          pos:posOf(v), rchrg:'N', inv_typ:'R',
+          itms:rateSplit(v).map((rg,i)=>({num:i+1,itm_det:{rt:rg.rate,txval:rg.txval,igst:rg.igst,camt:rg.cgst,samt:rg.sgst,csamt:0}}))
         }]};
       }),
-      b2cs:[{sply_ty:'INTRA',rt:0,typ:'OE',txval:sumField(b2cs,'taxable'),igst:sumField(b2cs,'igst'),cgst:sumField(b2cs,'cgst'),sgst:sumField(b2cs,'sgst'),cst:0}],
-      exp: exports_.map(v=>({exp_typ:'WOPAY',inv:[{inum:v.number||'',idt:v.date,val:v.total||0,sbpcode:'',sbnum:'',sbdt:'',itms:[{txval:v.taxable||0,rt:0,igst:0,cess:0}]}]})),
-      cdnr: cdnr.map(v=>{const p=data.parties.find(x=>x.id===v.partyId);return{ctin:p?.gstin||'',nt:[{ntty:v.type==='CRN'?'C':'D',nt_num:v.number||'',nt_dt:v.date,val:v.total||0,pos:v.placeOfSupply||'24',rchrg:'N',inv_typ:'R',itms:(v.items||[]).map(it=>({num:1,itm_det:{rt:it.gstRate||0,txval:(it.qty||0)*(it.rate||0),igst:v.isInterState?(it.qty||0)*(it.rate||0)*(it.gstRate||0)/100:0,cgst:!v.isInterState?(it.qty||0)*(it.rate||0)*(it.gstRate||0)/200:0,sgst:!v.isInterState?(it.qty||0)*(it.rate||0)*(it.gstRate||0)/200:0,cst:0}}))}]};}),
-      hsn:{data:Object.values(hsnSummary).map(h=>({hsn_sc:h.hsn,desc:h.desc,uqc:'NOS',qty:h.qty,val:h.taxable+h.igst+h.cgst+h.sgst,txval:h.taxable,igst:h.igst,cgst:h.cgst,sgst:h.sgst,cst:0}))}
+      b2cl: b2cl.map(v=>({pos:posOf(v), inv:[{inum:v.number||'',idt:fmtDate(v.date),val:r2(v.total||0),
+        itms:rateSplit(v).map((rg,i)=>({num:i+1,itm_det:{rt:rg.rate,txval:rg.txval,igst:rg.igst,csamt:0}}))}]})),
+      b2cs: b2csGroups.map(g=>({sply_ty:g.sply_ty, pos:g.pos, typ:'OE', rt:g.rate, txval:g.txval, igst:g.igst, camt:g.cgst, samt:g.sgst, csamt:0})),
+      exp: exports_.map(v=>({exp_typ:'WOPAY',inv:[{inum:v.number||'',idt:fmtDate(v.date),val:r2(v.total||0),sbpcode:'',sbnum:'',sbdt:'',itms:[{txval:r2(v.taxable||0),rt:0,igst:0,csamt:0}]}]})),
+      cdnr: cdnr.map(v=>{const p=data.parties.find(x=>x.id===v.partyId);return{ctin:p?.gstin||'',nt:[{ntty:v.type==='CRN'?'C':'D',nt_num:v.number||'',nt_dt:fmtDate(v.date),val:r2(v.total||0),pos:posOf(v),rchrg:'N',inv_typ:'R',itms:rateSplit(v).map((rg,i)=>({num:i+1,itm_det:{rt:rg.rate,txval:rg.txval,igst:rg.igst,camt:rg.cgst,samt:rg.sgst,csamt:0}}))}]};}),
+      cdnur: cdnur.map(v=>({typ: v.isInterState?'B2CL':'B2CS', ntty:v.type==='CRN'?'C':'D', nt_num:v.number||'', nt_dt:fmtDate(v.date), val:r2(v.total||0), pos:posOf(v), itms:rateSplit(v).map((rg,i)=>({num:i+1,itm_det:{rt:rg.rate,txval:rg.txval,igst:rg.igst,camt:rg.cgst,samt:rg.sgst,csamt:0}}))})),
+      hsn:{data:hsnB2B.concat(hsnB2C).map((h,i)=>({num:i+1,hsn_sc:h.hsn,desc:h.desc,uqc:'NOS',qty:h.qty,val:h.val,txval:h.txval,iamt:h.igst,camt:h.cgst,samt:h.sgst,csamt:0,rt:h.rate}))},
+      nil:{ inv:[{sply_ty:'INTRB2C', expt_amt:exemptTaxable, nil_amt:0, ngsup_amt:0}] },
+      doc_issue:{ doc_det:[{doc_num:1, docs:docRanges.map((d,i)=>({num:i+1,from:d.from,to:d.to,totnum:d.num,cancel:d.cancelled,net_issue:d.num-d.cancelled}))}] },
     };
     const blob=new Blob([JSON.stringify(payload,null,2)],{type:'application/json'});
     const url=URL.createObjectURL(blob), a=document.createElement('a');
     a.href=url; a.download=`GSTR1_${data.company.gstin}_${periodLabel.replace(/\s/g,'_')}.json`; a.click(); URL.revokeObjectURL(url);
+  };
+
+  // Export in the GST **offline-tool** workbook layout: one sheet per section with
+  // the exact sheet names & column headers the Returns Offline Tool imports.
+  const gd = iso => { const d=new Date(iso); const M=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']; return isNaN(d)? '' : `${String(d.getDate()).padStart(2,'0')}-${M[d.getMonth()]}-${d.getFullYear()}`; };
+  const exportOfflineExcel = () => {
+    const b2bRows=[]; b2b.forEach(v=>{ const p=data.parties.find(x=>x.id===v.partyId);
+      rateSplit(v).forEach(rg=> b2bRows.push([p?.gstin||'', p?.name||v.partyName||'', v.number||'', gd(v.date), r2(v.total||0), posLabel(posOf(v)), 'N', '', 'Regular B2B', '', rg.rate, rg.txval, 0])); });
+    const b2clRows=[]; b2cl.forEach(v=> rateSplit(v).forEach(rg=> b2clRows.push([v.number||'', gd(v.date), r2(v.total||0), posLabel(posOf(v)), '', rg.rate, rg.txval, 0, ''])));
+    const b2csRows = b2csGroups.map(g=>['OE', posLabel(g.pos), '', g.rate, g.txval, 0, '']);
+    const cdnrRows=[]; cdnr.forEach(v=>{ const p=data.parties.find(x=>x.id===v.partyId);
+      rateSplit(v).forEach(rg=> cdnrRows.push([p?.gstin||'', p?.name||v.partyName||'', v.number||'', gd(v.date), v.type==='CRN'?'C':'D', posLabel(posOf(v)), 'N', 'Regular B2B', r2(v.total||0), '', rg.rate, rg.txval, 0])); });
+    const cdnurRows=[]; cdnur.forEach(v=> rateSplit(v).forEach(rg=> cdnurRows.push([v.isInterState?'B2CL':'B2CS', v.number||'', gd(v.date), v.type==='CRN'?'C':'D', posLabel(posOf(v)), r2(v.total||0), '', rg.rate, rg.txval, 0])));
+    const expRows=[]; exports_.forEach(v=> expRows.push(['WOPAY', v.number||'', gd(v.date), r2(v.total||0), '', '', '', 0, r2(v.taxable||0), 0]));
+    const hsnRow = h => [h.hsn, h.desc, 'NOS-NUMBERS', h.qty, h.val, h.rate, h.txval, h.igst, h.cgst, h.sgst, 0];
+    const docsRows = docRanges.map(d=>[d.nature, d.from, d.to, d.num, d.cancelled]);
+    const H = {
+      b2b:['GSTIN/UIN of Recipient','Receiver Name','Invoice Number','Invoice date','Invoice Value','Place Of Supply','Reverse Charge','Applicable % of Tax Rate','Invoice Type','E-Commerce GSTIN','Rate','Taxable Value','Cess Amount'],
+      b2cl:['Invoice Number','Invoice date','Invoice Value','Place Of Supply','Applicable % of Tax Rate','Rate','Taxable Value','Cess Amount','E-Commerce GSTIN'],
+      b2cs:['Type','Place Of Supply','Applicable % of Tax Rate','Rate','Taxable Value','Cess Amount','E-Commerce GSTIN'],
+      cdnr:['GSTIN/UIN of Recipient','Receiver Name','Note Number','Note Date','Note Type','Place Of Supply','Reverse Charge','Note Supply Type','Note Value','Applicable % of Tax Rate','Rate','Taxable Value','Cess Amount'],
+      cdnur:['UR Type','Note Number','Note Date','Note Type','Place Of Supply','Note Value','Applicable % of Tax Rate','Rate','Taxable Value','Cess Amount'],
+      exp:['Export Type','Invoice Number','Invoice date','Invoice Value','Port Code','Shipping Bill Number','Shipping Bill Date','Rate','Taxable Value','Cess Amount'],
+      exemp:['Description','Nil Rated Supplies','Exempted(other than nil rated/non GST supply)','Non-GST Supplies'],
+      hsn:['HSN','Description','UQC','Total Quantity','Total Value','Rate','Taxable Value','Integrated Tax Amount','Central Tax Amount','State/UT Tax Amount','Cess Amount'],
+      docs:['Nature of Document','Sr. No. From','Sr. No. To','Total Number','Cancelled'],
+    };
+    exportXLSX(`GSTR1_OfflineTool_${data.company.gstin}_${periodLabel.replace(/\s/g,'_')}.xlsx`, [
+      {name:'b2b,sez,de', rows:[H.b2b, ...b2bRows]},
+      {name:'b2cl',       rows:[H.b2cl, ...b2clRows]},
+      {name:'b2cs',       rows:[H.b2cs, ...b2csRows]},
+      {name:'cdnr',       rows:[H.cdnr, ...cdnrRows]},
+      {name:'cdnur',      rows:[H.cdnur, ...cdnurRows]},
+      {name:'exp',        rows:[H.exp, ...expRows]},
+      {name:'exemp',      rows:[H.exemp, ['Inter-State supplies to unregistered persons', 0, exemptTaxable, 0]]},
+      {name:'hsn(b2b)',   rows:[H.hsn, ...hsnB2B.map(hsnRow)]},
+      {name:'hsn(b2c)',   rows:[H.hsn, ...hsnB2C.map(hsnRow)]},
+      {name:'docs',       rows:[H.docs, ...docsRows]},
+    ]);
   };
 
   const tabs=[
@@ -11112,6 +11247,7 @@ function GSTR1({data}){
                 <option value="Q3">Q3 Oct–Dec</option><option value="Q4">Q4 Jan–Mar</option>
               </select>}
           <button className="btn" onClick={()=>window.print()}>⎙ Print</button>
+          <button className="btn" onClick={exportOfflineExcel} title="Multi-sheet workbook matching the GST Returns Offline Tool (b2b, b2cl, b2cs, cdnr, cdnur, exp, hsn, docs)">⬇ Offline-Tool Excel</button>
           <button className="btn btn-primary" onClick={exportJSON}>⬇ Export JSON</button>
         </div>
       </div>
@@ -15106,7 +15242,8 @@ function HelpGuide({setPage}){
         ]},
         {type:'heading', text:'GST & TDS Returns'},
         {type:'steps', items:[
-          '<b>GSTR-1 / GSTR-3B</b>  generate the returns and export the GSTN portal JSON. GSTR-3B shows a books-vs-return reconciliation and the correct ITC set-off order (Rule 88A).',
+          '<b>GSTR-1</b>  generate the outward-supplies return with correct section logic: B2B (per-rate lines), B2CL (inter-state B2C over ₹1,00,000 — the reduced threshold), B2CS aggregated by place-of-supply + rate, exports, credit/debit notes (registered & unregistered), and HSN split into B2B / B2C. Export the <b>GSTN portal JSON</b> or the <b>Offline-Tool Excel</b> — a workbook whose sheets (b2b,sez,de / b2cl / b2cs / cdnr / cdnur / exp / exemp / hsn(b2b) / hsn(b2c) / docs) and column headers match the official GST Returns Offline Tool, so you can import it there directly.',
+          '<b>GSTR-3B</b>  summary return with a books-vs-return reconciliation, ledger-based ITC (includes GST on expenses, not just purchase invoices), the correct ITC set-off order (Rule 88A / Sec 49A-49B), and portal JSON export.',
           '<b>GSTR-2B Recon.</b>  upload the portal 2B; match against your purchases and auto-book missing entries.',
           '<b>GSTR-9 Annual</b>  yearly outward / ITC / tax summary.',
           '<b>TDS</b>  apply TDS on vouchers (with the 206AB higher-rate toggle for non-filers), and the TDS Report gives the deducted register + Form 26Q working.',
