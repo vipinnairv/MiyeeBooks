@@ -132,6 +132,34 @@
   /* Layout */
   .app{display:grid;grid-template-columns:220px 1fr;min-height:calc(100vh - 45px)}
   .sidebar{background:var(--surface);border-right:1px solid var(--line);padding:18px 0;overflow-y:auto}
+  /* Mobile navigation (hamburger + off-canvas sidebar) */
+  .nav-toggle{display:none;background:rgba(255,255,255,.15);border:1px solid rgba(255,255,255,.35);color:#fff;border-radius:8px;padding:5px 11px;font-size:16px;line-height:1;margin-right:10px}
+  .nav-overlay{display:none}
+  @media (max-width: 860px){
+    .nav-toggle{display:inline-block}
+    .app{display:block}
+    .sidebar{position:fixed;top:0;left:-260px;width:250px;height:100vh;z-index:900;transition:left .22s ease;box-shadow:none;padding-top:14px}
+    body.navopen .sidebar{left:0;box-shadow:6px 0 30px rgba(0,0,0,.35)}
+    body.navopen .nav-overlay{display:block;position:fixed;inset:0;background:rgba(10,20,16,.45);z-index:850}
+    .main{padding:14px 12px;min-height:calc(100vh - 45px)}
+    .topbar{padding:8px 12px;flex-wrap:wrap;gap:6px}
+    .brand-tag{display:none}
+    .topbar-right{gap:8px;font-size:11px;flex-wrap:wrap}
+    .page-head{flex-direction:column;align-items:flex-start;gap:10px}
+    .page-title{font-size:22px}
+    .page-actions{flex-wrap:wrap}
+    .stat-grid{grid-template-columns:repeat(2,1fr) !important;gap:10px}
+    .form-grid{grid-template-columns:1fr}
+    .modal{max-width:96vw}
+    .modal-body{padding:14px}
+    .filter-bar .field{min-width:110px}
+    table{font-size:11.5px}
+    th,td{padding:7px 8px}
+  }
+  @media (max-width: 480px){
+    .stat-grid{grid-template-columns:1fr !important}
+    .stat-value{font-size:18px}
+  }
   .nav-section{padding:0 14px;margin-bottom:8px}
   .nav-section-title{font-size:10px;letter-spacing:1.2px;text-transform:uppercase;color:var(--ink-3);font-weight:600;padding:8px 8px 4px}
   .nav-item{display:flex;align-items:center;gap:10px;padding:7px 10px;border-radius:var(--radius-sm);color:var(--ink-2);font-size:12.5px;font-weight:500;cursor:pointer;margin-bottom:1px}
@@ -987,13 +1015,90 @@ const numberToWords = (num) => {
   return 'Indian Rupees ' + result + ' Only';
 };
 
-// Invoice template themes (Zoho-style — pick in Company Settings)
+// Invoice templates — each is a LAYOUT (page structure) + colour pair.
+// Layouts: classic (dark header band) · modern (full accent header) ·
+// minimal (letterhead, thin rules) · elegant (centered, serif, double rules) ·
+// boxed (framed page, accent side-band). Pick in Company Settings.
 const INVOICE_TEMPLATES = {
-  classic:   { name:'Classic Green',  accent:'#0b6b4f', accent2:'#c9a227' },
-  corporate: { name:'Corporate Blue', accent:'#1565c0', accent2:'#ff8f00' },
-  royal:     { name:'Royal Purple',   accent:'#6a1b9a', accent2:'#c9a227' },
-  slate:     { name:'Minimal Slate',  accent:'#37474f', accent2:'#90a4ae' },
-  crimson:   { name:'Crimson Red',    accent:'#b71c1c', accent2:'#37474f' },
+  classic:   { name:'Classic Green',  accent:'#0b6b4f', accent2:'#c9a227', layout:'classic' },
+  corporate: { name:'Corporate Blue', accent:'#1565c0', accent2:'#ff8f00', layout:'classic' },
+  royal:     { name:'Royal Purple',   accent:'#6a1b9a', accent2:'#c9a227', layout:'classic' },
+  slate:     { name:'Minimal Slate',  accent:'#37474f', accent2:'#90a4ae', layout:'classic' },
+  crimson:   { name:'Crimson Red',    accent:'#b71c1c', accent2:'#37474f', layout:'classic' },
+  modernBlue:{ name:'Modern Blue',    accent:'#2c7be5', accent2:'#ffd166', layout:'modern' },
+  modernTeal:{ name:'Modern Teal',    accent:'#0aa2a2', accent2:'#f5803e', layout:'modern' },
+  minimal:   { name:'Minimal Mono',   accent:'#1a2733', accent2:'#7b8b9a', layout:'minimal' },
+  elegant:   { name:'Elegant Gold',   accent:'#8a6d1a', accent2:'#0e2a23', layout:'elegant' },
+  boxed:     { name:'Boxed Navy',     accent:'#123c6e', accent2:'#c9a227', layout:'boxed' },
+};
+
+// Per-layout CSS overrides, appended AFTER the base stylesheet (same-specificity
+// rules later in the sheet win). They use the classic token colours (#0b6b4f /
+// #c9a227 / #0e2a23) so the accent recolouring pass applies to layouts too.
+const INVOICE_LAYOUT_CSS = {
+  classic: '',
+  modern:
+    '.header{background:#0b6b4f;border-radius:0;padding:20px 22px}' +
+    '.doc-title{font-size:22px;letter-spacing:2px}' +
+    '.copy-label{color:rgba(255,255,255,.75)}' +
+    '.co-detail{color:rgba(255,255,255,.75)}' +
+    '.meta-bar{background:#fff;border:none;border-left:5px solid #0b6b4f;box-shadow:0 1px 4px rgba(0,0,0,.08)}' +
+    '.party-box{border:none;background:#f4f7f5;border-radius:8px}' +
+    '.items-table th{background:#0b6b4f}' +
+    '.totals-box{border:none;box-shadow:0 1px 5px rgba(0,0,0,.1);border-radius:8px}' +
+    '.words-box{border:none;background:#f4f7f5;border-radius:8px}' +
+    '.footer{border-top-width:4px}',
+  minimal:
+    'body{color:#222}' +
+    '.header{background:#fff;color:#0e2a23;border-radius:0;border-bottom:2px solid #0e2a23;padding:14px 0}' +
+    '.co-detail{color:#666}' +
+    '.copy-label{color:#0b6b4f}' +
+    '.doc-title{color:#0e2a23;font-weight:600;letter-spacing:3px}' +
+    '.meta-bar{background:#fff;border:none;border-bottom:1px solid #ddd;padding:10px 0}' +
+    '.parties{gap:24px}' +
+    '.party-box{border:none;border-left:2px solid #0e2a23;border-radius:0;padding:6px 14px}' +
+    '.items-table th{background:#fff;color:#0e2a23;border-top:1.5px solid #0e2a23;border-bottom:1.5px solid #0e2a23}' +
+    '.items-table td{border-bottom:1px solid #eee}' +
+    '.items-table tr{background:#fff !important}' +
+    '.totals-box{border:none}' +
+    '.totals-box .grand{background:#fff;color:#0e2a23;border-top:2px solid #0e2a23;border-bottom:2px solid #0e2a23}' +
+    '.words-box{background:#fff;border:none;border-bottom:1px solid #ddd;padding:8px 0}' +
+    '.hsn-table th{background:#fff;border-bottom:1px solid #0e2a23}' +
+    '.bank-box,.sig-box{border-color:#ddd}' +
+    '.footer{border-top:1px solid #0e2a23}',
+  elegant:
+    'body{font-family:Georgia,\'Times New Roman\',serif}' +
+    '.header{display:block;text-align:center;background:#fff;color:#0e2a23;border-radius:0;border-top:4px double #0b6b4f;border-bottom:4px double #0b6b4f;padding:16px}' +
+    '.header-left{display:block}' +
+    '.header-left img{margin:0 auto 6px}' +
+    '.co-name{font-size:21px}' +
+    '.co-detail{color:#666}' +
+    '.header-right{text-align:center;margin-top:8px}' +
+    '.doc-title{color:#0b6b4f;letter-spacing:4px}' +
+    '.copy-label{color:#999}' +
+    '.meta-bar{background:#fff;border:none;border-bottom:1px solid #0b6b4f;text-align:center}' +
+    '.party-box{border:1px solid #0b6b4f;border-radius:0}' +
+    '.items-table th{background:#fff;color:#0b6b4f;border-top:2px solid #0b6b4f;border-bottom:2px solid #0b6b4f;font-family:Georgia,serif}' +
+    '.totals-box{border:1px solid #0b6b4f;border-radius:0}' +
+    '.totals-box .grand{background:#0b6b4f}' +
+    '.words-box{background:#fff;border:1px dashed #0b6b4f;border-radius:0}' +
+    '.sig-box{border:1px solid #0b6b4f;border-radius:0}' +
+    '.footer{border-top:4px double #0b6b4f}',
+  boxed:
+    '.pagewrap{border:1.5px solid #0e2a23;padding:14px;border-radius:2px}' +
+    '.header{background:#fff;color:#0e2a23;border-radius:0;border-left:10px solid #0b6b4f;border-bottom:1.5px solid #0e2a23;padding:12px 16px}' +
+    '.co-detail{color:#555}' +
+    '.doc-title{color:#0b6b4f}' +
+    '.copy-label{color:#888}' +
+    '.meta-bar{background:#fff;border:1px solid #0e2a23}' +
+    '.party-box{border:1px solid #0e2a23;border-radius:0}' +
+    '.items-table th{background:#0e2a23}' +
+    '.items-table td{border-bottom:1px solid #ccc}' +
+    '.totals-box{border:1px solid #0e2a23;border-radius:0}' +
+    '.words-box{border:1px solid #0e2a23;border-radius:0;background:#fff}' +
+    '.hsn-table th{background:#fff;border:1px solid #0e2a23}' +
+    '.bank-box,.sig-box{border:1px solid #0e2a23;border-radius:0}' +
+    '.footer{border-top:1.5px solid #0e2a23}',
 };
 function generateInvoicePDF(voucher, appData){
   const co = appData.company;
@@ -1012,6 +1117,14 @@ function generateInvoicePDF(voucher, appData){
   const taxableTotal = voucher.taxable || items.reduce((s,it) => s + (it.qty||0)*(it.rate||0), 0);
   const invoiceTotal = voucher.total || voucher.amount || 0;
   const words = numberToWords(Math.abs(invoiceTotal));
+
+  // Due date = invoice date + the customer's credit period (sales docs only)
+  let dueDate = '';
+  if(isSales && voucher.date){
+    const cd = party.creditDays != null ? party.creditDays : 30;
+    const d = new Date(voucher.date); d.setDate(d.getDate() + cd);
+    dueDate = d.toISOString().slice(0,10);
+  }
 
   // Share (WhatsApp / Email) — message baked at generation time
   const shareMsg = encodeURIComponent(docTitle + ' ' + (voucher.number||'') + ' from ' + (co.name||'') +
@@ -1085,6 +1198,27 @@ function generateInvoicePDF(voucher, appData){
 
   const logoHtml = co.logo ? '<img src="'+co.logo+'" style="max-height:52px;max-width:160px;object-fit:contain;" />' : '';
 
+  // UPI Pay-Now block (sales invoices only, when a UPI ID is configured).
+  // The QR encodes the standard upi://pay deep link with the exact invoice
+  // amount — scannable by GPay/PhonePe/Paytm/BHIM. Rendered by the qrcodejs
+  // CDN inside the print window; if offline, the UPI ID still prints as text.
+  const upiOk = !!(co.upiId && isSales && invoiceTotal > 0);
+  const upiLink = upiOk ? 'upi://pay?pa=' + encodeURIComponent(co.upiId) +
+    '&pn=' + encodeURIComponent((co.name||'').slice(0,40)) +
+    '&am=' + Math.abs(invoiceTotal).toFixed(2) + '&cu=INR' +
+    '&tn=' + encodeURIComponent(('Inv '+(voucher.number||'')).slice(0,40)) : '';
+  const upiHtml = upiOk ?
+    '<div class="upi-box">' +
+      '<div class="qr" id="upiqr"></div>' +
+      '<div><div class="utitle">📱 SCAN &amp; PAY — ₹'+fmt(invoiceTotal)+'</div>' +
+      '<div class="udetail">Scan with any UPI app (GPay / PhonePe / Paytm / BHIM).<br/>' +
+      'The invoice number and exact amount are pre-filled.<br/>' +
+      'UPI ID: <span class="uvpa">'+co.upiId+'</span></div></div>' +
+    '</div>' : '';
+  const upiScript = upiOk ?
+    '<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"><\/script>' +
+    '<script>try{ if(typeof QRCode!=="undefined"){ new QRCode(document.getElementById("upiqr"), {text:'+JSON.stringify(upiLink)+', width:86, height:86, correctLevel:QRCode.CorrectLevel.M}); } else { document.getElementById("upiqr").innerHTML="<div style=\\"font-size:8px;color:#999;padding-top:30px;text-align:center\\">QR needs internet<br/>Use UPI ID →</div>"; } }catch(e){}<\/script>' : '';
+
   const html = '<!DOCTYPE html><html><head><meta charset="UTF-8"><title>'+docTitle+' '+( voucher.number||'')+'</title><style>' +
     '@page{size:A4;margin:10mm 12mm}' +
     '*{box-sizing:border-box;margin:0;padding:0}' +
@@ -1097,7 +1231,8 @@ function generateInvoicePDF(voucher, appData){
     '.header-right{text-align:right}' +
     '.doc-title{font-size:15px;font-weight:700;letter-spacing:1px;text-transform:uppercase}' +
     '.copy-label{font-size:8px;color:#c9a227;margin-top:3px;letter-spacing:1px;text-transform:uppercase}' +
-    '.meta-bar{background:#f4f7f5;border:1px solid #e3ebe7;padding:10px 18px;display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:10px}' +
+    '.meta-bar{background:#f4f7f5;border:1px solid #e3ebe7;padding:10px 18px;display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:10px}' +
+    '.irn-bar{background:#fffdf2;border:1px dashed #c9a227;padding:6px 18px;font-size:8.5px;color:#5a4a12;margin-top:6px;border-radius:4px;word-break:break-all}' +
     '.meta-item .label{font-size:7.5px;text-transform:uppercase;letter-spacing:1px;color:#6b7f78;font-weight:600}' +
     '.meta-item .value{font-size:11px;font-weight:700;color:#0e2a23;margin-top:2px}' +
     '.parties{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:10px 0}' +
@@ -1127,6 +1262,12 @@ function generateInvoicePDF(voucher, appData){
     '.bank-box{border:1px solid #e3ebe7;border-radius:4px;padding:10px 14px}' +
     '.bank-box .btitle{font-size:7.5px;text-transform:uppercase;letter-spacing:1.2px;color:#0b6b4f;font-weight:700;margin-bottom:4px}' +
     '.bank-box .bdetail{font-size:9px;color:#3a4f49;line-height:1.5}' +
+    '.upi-box{border:1.5px solid #0b6b4f;border-radius:4px;padding:10px 14px;margin-bottom:8px;display:flex;gap:14px;align-items:center;background:#fbfdfc}' +
+    '.upi-box .qr{width:86px;height:86px;flex-shrink:0}' +
+    '.upi-box .qr img,.upi-box .qr canvas{width:86px !important;height:86px !important}' +
+    '.upi-box .utitle{font-size:10px;font-weight:700;color:#0b6b4f;letter-spacing:.5px}' +
+    '.upi-box .udetail{font-size:8.5px;color:#3a4f49;line-height:1.6;margin-top:3px}' +
+    '.upi-box .uvpa{font-family:monospace;font-weight:700;font-size:9.5px;color:#0e2a23}' +
     '.terms{margin-top:8px;font-size:7.5px;color:#6b7f78;line-height:1.6}' +
     '.terms .ttitle{font-weight:700;text-transform:uppercase;letter-spacing:1px;margin-bottom:3px}' +
     '.sig-box{border:1px solid #e3ebe7;border-radius:4px;padding:12px 14px;text-align:center;min-height:90px;display:flex;flex-direction:column;justify-content:space-between}' +
@@ -1135,8 +1276,9 @@ function generateInvoicePDF(voucher, appData){
     '.footer{margin-top:10px;padding-top:8px;border-top:2px solid #0b6b4f;text-align:center;font-size:7.5px;color:#6b7f78;line-height:1.6}' +
     '.footer b{color:#3a4f49}' +
     '@media print{.no-print{display:none !important}}' +
+    (INVOICE_LAYOUT_CSS[tpl.layout] || '') +
   '</style></head><body>' +
-    '<div style="max-width:210mm;margin:0 auto;">' +
+    '<div class="pagewrap" style="max-width:210mm;margin:0 auto;">' +
 
     // HEADER
     '<div class="header">' +
@@ -1156,10 +1298,16 @@ function generateInvoicePDF(voucher, appData){
     // META BAR
     '<div class="meta-bar">' +
       '<div class="meta-item"><div class="label">Invoice Number</div><div class="value">'+(voucher.number||'DRAFT')+'</div></div>' +
-      '<div class="meta-item"><div class="label">Invoice Date</div><div class="value">'+(voucher.date||'')+'</div></div>' +
+      '<div class="meta-item"><div class="label">Invoice Date</div><div class="value">'+fmtDate(voucher.date||'')+'</div></div>' +
+      (dueDate ? '<div class="meta-item"><div class="label">Due Date</div><div class="value">'+fmtDate(dueDate)+'</div></div>' : '') +
       '<div class="meta-item"><div class="label">Place of Supply</div><div class="value">'+(voucher.placeOfSupply||'')+( party.state?' - '+party.state:'')+'</div></div>' +
-      '<div class="meta-item"><div class="label">Reference</div><div class="value">'+(voucher.reference||'')+'</div></div>' +
+      (voucher.reference ? '<div class="meta-item"><div class="label">Reference</div><div class="value">'+voucher.reference+'</div></div>' : '') +
     '</div>' +
+
+    // e-INVOICE IRN (when the invoice has been registered on the IRP)
+    (voucher.irn ? '<div class="irn-bar"><b>e-Invoice</b> &nbsp; IRN: '+voucher.irn+
+      (voucher.ackNo ? ' &nbsp;·&nbsp; Ack No: '+voucher.ackNo : '')+
+      (voucher.ackDate ? ' &nbsp;·&nbsp; Ack Date: '+fmtDate(voucher.ackDate) : '')+'</div>' : '') +
 
     // PARTIES
     '<div class="parties">' +
@@ -1195,16 +1343,18 @@ function generateInvoicePDF(voucher, appData){
     // HSN SUMMARY
     (items.length > 0 ? '<div class="hsn-section"><div class="stitle">HSN/SAC Summary</div><table class="hsn-table"><thead><tr>'+hsnHeader+'</tr></thead><tbody>'+hsnHtml+'</tbody></table></div>' : '') +
 
-    // BOTTOM: BANK + TERMS + SIGNATURE
+    // BOTTOM: UPI PAY-NOW + BANK + TERMS + SIGNATURE
     '<div class="bottom">' +
       '<div>' +
+        upiHtml +
         (co.bankDetails ? '<div class="bank-box"><div class="btitle">Bank Details for Payment</div><div class="bdetail">'+co.bankDetails.replace(/\|/g,'<br/>')+'</div></div>' : '') +
         '<div class="terms"><div class="ttitle">Terms & Conditions</div>' +
-          '1. Payment due within 30 days from invoice date.<br/>' +
+          '1. Payment due within '+(party.creditDays!=null?party.creditDays:30)+' days from invoice date'+(dueDate?' (by '+fmtDate(dueDate)+')':'')+'.<br/>' +
           '2. Interest @ 18% p.a. will be charged on delayed payments.<br/>' +
-          '3. Subject to '+(co.state||'Gujarat')+' jurisdiction.<br/>' +
+          '3. Subject to '+(co.state||'Gujarat')+' jurisdiction. &nbsp; E. & O.E.<br/>' +
           (isExport ? '4. Supply meant for export under LUT/Bond without payment of IGST.<br/>' : '') +
           (voucher.narration ? '<br/><b>Narration:</b> '+voucher.narration : '') +
+          '<br/><b>Declaration:</b> We declare that this invoice shows the actual price of the goods/services described and that all particulars are true and correct.' +
         '</div>' +
       '</div>' +
       '<div class="sig-box">' +
@@ -1230,7 +1380,7 @@ function generateInvoicePDF(voucher, appData){
     '</div>' +
     '<div class="no-print" style="text-align:center;font-size:11px;color:#888;margin-bottom:20px">Tip: after clicking Print → Save as PDF, attach the saved file to the WhatsApp/email draft.</div>' +
 
-    '</div></body></html>';
+    '</div>' + upiScript + '</body></html>';
 
   // Open in new window
   const win = window.open('', '_blank', 'width=900,height=1000');
@@ -1620,6 +1770,7 @@ const DEFAULT_COMPANY = {
   premiumSince: '',
   booksLockedUpto: '',   // vouchers on/before this date cannot be added/edited/cancelled
   invoiceTemplate: 'classic',
+  upiId: '',             // e.g. name@okhdfcbank — prints a Pay-Now QR on sales invoices
   numberingSeries: {},   // per voucher type: {SAL:{prefix,padding,includeFY}}
 };
 
@@ -2427,7 +2578,7 @@ const buildSampleData = () => {
   mkDBN('2026-02-11', P.steelco, '4100', 16000, 18, {cc:CC.a});                // Debit note (purchase return)
 
   return {
-    company: {...DEFAULT_COMPANY, name:'Demo Manufacturing Co Pvt Ltd',
+    company: {...DEFAULT_COMPANY, name:'Demo Manufacturing Co Pvt Ltd', upiId:'demomfg@okhdfcbank',
       modules:{gst:true, tds:true, payroll:true, factory:true, trader:true, service:false}},
     coa, parties, vouchers,
     forexRates: FOREX_RATES, gstr2bData: [],
@@ -3500,6 +3651,7 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
       {id:'pnl_trend', label:'P&L Monthly Trend', ico:'📈'},
       {id:'bs', label:'Balance Sheet', ico:'⊠'},
       {id:'cashflow', label:'Cash Flow (AS-3)', ico:'⊜'},
+      {id:'cash_forecast', label:'13-Week Cash Forecast', ico:'⛅'},
       {id:'budget', label:'Budget vs Actual', ico:'◳'},
       {id:'profitability', label:'Profitability Analysis', ico:'◴'},
       {id:'ledger_stmt', label:'Ledger Statement', ico:'≡'},
@@ -3563,6 +3715,7 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
     <>
       <div className="topbar">
         <div className="brand">
+          <button className="nav-toggle" onClick={()=>document.body.classList.toggle('navopen')} title="Menu">☰</button>
           <span className="brand-mark">Miyee<span className="dot">·</span>Books</span>
           <span className="brand-tag">MSME Accounting Suite</span>
         </div>
@@ -3616,7 +3769,7 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
             <div className="nav-section" key={sec.section}>
               <div className="nav-section-title">{sec.section}</div>
               {sec.items.map(it => (
-                <div key={it.id} className={'nav-item' + (page===it.id?' active':'')} onClick={() => setPage(it.id)}>
+                <div key={it.id} className={'nav-item' + (page===it.id?' active':'')} onClick={() => { setPage(it.id); document.body.classList.remove('navopen'); }}>
                   <span className="ico">{it.ico}</span>
                   <span>{it.label}</span>
                 </div>
@@ -3647,6 +3800,7 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
             )}
           </div>}
         </aside>
+        <div className="nav-overlay" onClick={()=>document.body.classList.remove('navopen')}></div>
         <main className="main">
           {page==='dashboard' && <Dashboard data={data} balances={ledgerBalances} setPage={setPage} setData={canWrite?setData:()=>{}} showToast={showToast} />}
           {page==='coa' && <ChartOfAccounts data={data} setData={canWrite?setData:()=>{}} balances={ledgerBalances} showToast={showToast} readOnly={isViewer} />}
@@ -3665,6 +3819,7 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
           {page==='pnl' && <ProfitLoss data={data} balances={ledgerBalances} />}
           {page==='bs' && <BalanceSheet data={data} balances={ledgerBalances} />}
           {page==='cashflow' && <CashFlow data={data} balances={ledgerBalances} />}
+          {page==='cash_forecast' && <CashForecast data={data} balances={ledgerBalances} />}
           {page==='gstr1' && <GSTR1 data={data} />}
           {page==='gstr3b' && <GSTR3B data={data} balances={ledgerBalances} />}
           {page==='gstr2b' && <GSTR2B data={data} setData={setData} showToast={showToast} />}
@@ -5867,28 +6022,39 @@ function CompanySettings({data, setData, showToast, readOnly=false}){
           <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(180px,1fr))',gap:12}}>
             {Object.entries(INVOICE_TEMPLATES).map(([key,t]) => {
               const sel = (f.invoiceTemplate||'classic') === key;
+              const ly = t.layout||'classic';
+              // Mini header preview mirrors the actual LAYOUT (not just the colour)
+              const hdrStyle =
+                ly==='minimal' ? {background:'#fff', color:'#1a2733', borderBottom:`2px solid ${t.accent}`} :
+                ly==='elegant' ? {background:'#fff', color:t.accent, borderTop:`3px double ${t.accent}`, borderBottom:`3px double ${t.accent}`, justifyContent:'center'} :
+                ly==='boxed'   ? {background:'#fff', color:t.accent, borderLeft:`6px solid ${t.accent}`, borderBottom:`1.5px solid #1a2733`} :
+                ly==='modern'  ? {background:`linear-gradient(120deg, ${t.accent}, ${t.accent}cc)`, color:'#fff'} :
+                                 {background:t.accent, color:'#fff'};
               return (
                 <div key={key} onClick={() => setF({...f, invoiceTemplate:key})}
                   style={{cursor:'pointer',border:`2px solid ${sel?t.accent:'var(--line-2)'}`,borderRadius:8,overflow:'hidden',
                     boxShadow:sel?`0 2px 10px ${t.accent}33`:'none',background:'#fff'}}>
                   {/* mini invoice preview */}
-                  <div style={{background:t.accent,color:'#fff',padding:'8px 10px',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
-                    <span style={{fontWeight:700,fontSize:11}}>TAX INVOICE</span>
-                    <span style={{width:14,height:14,borderRadius:'50%',background:t.accent2}}></span>
+                  <div style={{padding:'8px 10px',display:'flex',justifyContent:'space-between',alignItems:'center',...hdrStyle}}>
+                    <span style={{fontWeight:700,fontSize:11,fontFamily:ly==='elegant'?'Georgia,serif':'inherit'}}>TAX INVOICE</span>
+                    {ly!=='elegant' && <span style={{width:14,height:14,borderRadius:'50%',background:t.accent2}}></span>}
                   </div>
                   <div style={{padding:'8px 10px'}}>
                     <div style={{height:5,background:'#eee',borderRadius:3,marginBottom:5,width:'70%'}}></div>
                     <div style={{height:5,background:'#eee',borderRadius:3,marginBottom:8,width:'45%'}}></div>
-                    <div style={{borderTop:`2px solid ${t.accent}`,paddingTop:6,display:'flex',justifyContent:'space-between',fontSize:10}}>
+                    <div style={{borderTop:`2px solid ${t.accent}`,paddingTop:6,display:'flex',justifyContent:'space-between',alignItems:'center',fontSize:10}}>
                       <span style={{color:t.accent,fontWeight:700}}>{t.name}</span>
-                      {sel && <span style={{color:t.accent,fontWeight:700}}>✓</span>}
+                      <span style={{display:'flex',gap:4,alignItems:'center'}}>
+                        <span style={{fontSize:8,background:'var(--surface-2)',border:'1px solid var(--line)',borderRadius:8,padding:'1px 6px',color:'var(--ink-3)',textTransform:'uppercase',letterSpacing:'.5px'}}>{ly}</span>
+                        {sel && <span style={{color:t.accent,fontWeight:700}}>✓</span>}
+                      </span>
                     </div>
                   </div>
                 </div>
               );
             })}
           </div>
-          <div style={{marginTop:10,fontSize:11,color:'var(--ink-3)'}}>The selected theme recolours invoice headers, totals and accents. Click Save Settings to apply, then print any Sales invoice.</div>
+          <div style={{marginTop:10,fontSize:11,color:'var(--ink-3)'}}>10 templates across 5 layouts — <b>classic</b> (dark header band), <b>modern</b> (full-colour header), <b>minimal</b> (letterhead rules), <b>elegant</b> (centered serif), <b>boxed</b> (framed page). Click Save Settings, then print any Sales invoice.</div>
         </div>
       </div>
 
@@ -6039,6 +6205,10 @@ function CompanySettings({data, setData, showToast, readOnly=false}){
             <div className="field"><label>FY Start</label><input type="date" value={f.fyStart} onChange={e => setF({...f, fyStart:e.target.value})} /></div>
             <div className="field"><label>FY End</label><input type="date" value={f.fyEnd} onChange={e => setF({...f, fyEnd:e.target.value})} /></div>
             <div className="field" style={{gridColumn:'span 2'}}><label>Bank Details (for invoices)</label><input value={f.bankDetails||''} onChange={e => setF({...f, bankDetails:e.target.value})} placeholder="A/c No: XXXX | Bank: Kotak | IFSC: KKBK..." /></div>
+            <div className="field"><label>UPI ID (prints a Pay-Now QR on invoices)</label>
+              <input value={f.upiId||''} onChange={e => setF({...f, upiId:e.target.value.trim()})} placeholder="yourname@okhdfcbank" style={{fontFamily:'var(--mono)'}} />
+              <div className="help">Customers scan the QR on the invoice and pay the exact amount via any UPI app. Leave blank to hide.</div>
+            </div>
           </div>
           <div style={{marginTop:18, display:'flex', gap:8, justifyContent:'space-between'}}>
             {!readOnly && <button className="btn btn-danger" onClick={resetData}>⚠ Reset All Data</button>}
@@ -12487,6 +12657,182 @@ function StartupReliefs({data, setData, showToast, readOnly}){
 }
 
 // ============================================================================
+// 13-WEEK CASH-FLOW FORECAST  the classic CFO survival tool
+// Projects weekly cash: opening bank+cash, receivable inflows on their due
+// dates (invoice date + customer credit days), payable outflows likewise,
+// recurring monthly entries, average payroll, and GST/TDS statutory dues.
+// ============================================================================
+function CashForecast({data, balances}){
+  const r2 = n => Math.round((n||0)*100)/100;
+  const addDays = (iso, n) => { const d = new Date(iso); d.setDate(d.getDate()+n); return d.toISOString().slice(0,10); };
+
+  const fc = useMemo(() => {
+    // Week buckets: 13 weeks starting Monday of the current week
+    const now = new Date(today());
+    const monday = new Date(now); monday.setDate(now.getDate() - ((now.getDay()+6)%7));
+    const weeks = [];
+    for(let i=0;i<13;i++){
+      const from = new Date(monday); from.setDate(monday.getDate()+i*7);
+      const to = new Date(from); to.setDate(from.getDate()+6);
+      weeks.push({ i, from:from.toISOString().slice(0,10), to:to.toISOString().slice(0,10),
+        arIn:0, recIn:0, apOut:0, recOut:0, payroll:0, statutory:0 });
+    }
+    const bucketOf = (iso) => {
+      if(!iso) return null;
+      if(iso < weeks[0].from) return weeks[0];              // overdue → assume now
+      return weeks.find(w => iso >= w.from && iso <= w.to) || null;  // beyond horizon → ignored
+    };
+    const partyById = {}; (data.parties||[]).forEach(p => partyById[p.id]=p);
+
+    // Opening cash & bank
+    const opening = (data.coa||[]).filter(a => a.isBank || a.id==='2500').reduce((s,a)=>s+(balances[a.id]||0),0);
+
+    // Bill-tag allocations (settled amounts)
+    const alloc = {};
+    (data.vouchers||[]).forEach(v => { if(v.status==='Cancelled') return;
+      (v.billTags||[]).forEach(bt => { alloc[bt.voucherId]=(alloc[bt.voucherId]||0)+(bt.allocated||0); }); });
+
+    // Open receivables / payables on their due dates
+    (data.vouchers||[]).forEach(v => {
+      if(v.status==='Cancelled' || (v.type!=='SAL' && v.type!=='PUR')) return;
+      const isAR = v.type==='SAL';
+      const ctrl = (v.lines||[]).reduce((s,l)=> s + (l.accountId===(isAR?'2400':'1300') ? (isAR?(l.debit||0):(l.credit||0)) : 0), 0);
+      const out = Math.max(0, (ctrl || v.total || v.amount || 0) - (alloc[v.id]||0));
+      if(out <= 0.01) return;
+      const p = partyById[v.partyId];
+      const cd = p && p.creditDays != null ? p.creditDays : 30;
+      const w = bucketOf(addDays(v.date, cd));
+      if(w){ if(isAR) w.arIn += out; else w.apOut += out; }
+    });
+
+    // Recurring monthly entries → repeat on the same day-of-month across the horizon
+    (data.vouchers||[]).forEach(v => {
+      if(!v.recurringMonthly || v.status==='Cancelled') return;
+      const amt = v.total || v.amount || 0; if(amt<=0) return;
+      const day = parseInt((v.date||'').slice(8,10)) || 1;
+      for(let m=0;m<4;m++){
+        const base = new Date(weeks[0].from); base.setMonth(base.getMonth()+m);
+        const dt = new Date(base.getFullYear(), base.getMonth(), Math.min(day,28)).toISOString().slice(0,10);
+        const w = bucketOf(dt); if(!w || dt < weeks[0].from) continue;
+        if(v.type==='SAL'||v.type==='REC') w.recIn += amt;
+        else if(v.type==='PUR'||v.type==='PAY') w.recOut += amt;
+      }
+    });
+
+    // Payroll: average net of the last 3 runs, on the 30th (capped 28th) monthly
+    const runs = (data.payrollRuns||[]).slice(-3);
+    const avgPayroll = runs.length ? runs.reduce((s,r)=>s+(r.totalNet||0),0)/runs.length : 0;
+    if(avgPayroll>0) for(let m=0;m<4;m++){
+      const base = new Date(weeks[0].from); base.setMonth(base.getMonth()+m);
+      const dt = new Date(base.getFullYear(), base.getMonth(), 28).toISOString().slice(0,10);
+      const w = bucketOf(dt); if(w && dt >= weeks[0].from) w.payroll += avgPayroll;
+    }
+
+    // Statutory: current net GST payable due next 20th; TDS payable due next 7th
+    const gstOut = -( (balances['1310']||0)+(balances['1311']||0)+(balances['1312']||0) );
+    const gstItc = (balances['2600']||0)+(balances['2601']||0)+(balances['2602']||0);
+    const gstNet = Math.max(0, gstOut - gstItc);
+    const tdsNet = Math.max(0, -(data.coa||[]).filter(a=>/tds\s*payable/i.test(a.name||'')).reduce((s,a)=>s+(balances[a.id]||0),0));
+    const nextDue = (dayN) => { const d=new Date(weeks[0].from); const dt=new Date(d.getFullYear(), d.getMonth(), dayN); if(dt < d) dt.setMonth(dt.getMonth()+1); return dt.toISOString().slice(0,10); };
+    if(gstNet>0){ const w=bucketOf(nextDue(20)); if(w) w.statutory += gstNet; }
+    if(tdsNet>0){ const w=bucketOf(nextDue(7));  if(w) w.statutory += tdsNet; }
+
+    // Running closing balance
+    let run = opening; let minClose = {bal:Infinity, week:null};
+    weeks.forEach(w => {
+      w.in  = r2(w.arIn + w.recIn);
+      w.out = r2(w.apOut + w.recOut + w.payroll + w.statutory);
+      w.net = r2(w.in - w.out);
+      run = r2(run + w.net); w.close = run;
+      if(run < minClose.bal) minClose = {bal:run, week:w};
+    });
+    const totIn = r2(weeks.reduce((s,w)=>s+w.in,0)), totOut = r2(weeks.reduce((s,w)=>s+w.out,0));
+    return { weeks, opening:r2(opening), totIn, totOut, closing:run, minClose, gstNet, tdsNet, avgPayroll:r2(avgPayroll) };
+  }, [data, balances]);
+
+  const handleExcel = () => exportXLSX(`Cash_Forecast_13W_${today()}.xlsx`, [{
+    name:'13-Week Forecast',
+    rows:[
+      [`13-Week Cash-Flow Forecast  ${data.company.name}  prepared ${today()}`],[],
+      ['Week','From','To','AR Collections','Recurring In','Total In','AP Payments','Recurring Out','Payroll','GST/TDS','Total Out','Net','Closing Cash'],
+      ...fc.weeks.map(w=>[`W${w.i+1}`, w.from, w.to, w.arIn, w.recIn, w.in, w.apOut, w.recOut, w.payroll, w.statutory, w.out, w.net, w.close]),
+      [],['Opening Cash', fc.opening],['Total Inflows', fc.totIn],['Total Outflows', fc.totOut],['Closing (W13)', fc.closing],
+    ],
+  }]);
+
+  const neg = fc.minClose.bal < 0;
+  return (<>
+    <div className="page-head">
+      <div>
+        <h1 className="page-title">13-Week Cash Forecast</h1>
+        <div className="page-sub">Weekly cash runway from receivable/payable due dates, recurring entries, payroll & statutory dues</div>
+      </div>
+      <div className="page-actions">
+        <button className="btn btn-sm" onClick={handleExcel}>⬇ Excel</button>
+        <button className="btn btn-sm btn-primary" onClick={()=>window.print()}>⎙ Print</button>
+      </div>
+    </div>
+
+    <div className="stat-grid" style={{marginBottom:14}}>
+      <div className="stat stat-teal"><div className="stat-label">Opening Cash & Bank</div><div className="stat-value rupee">₹{fmt(fc.opening)}</div></div>
+      <div className="stat stat-green"><div className="stat-label">Expected Inflows (13w)</div><div className="stat-value rupee">₹{fmt(fc.totIn)}</div></div>
+      <div className="stat stat-danger"><div className="stat-label">Expected Outflows (13w)</div><div className="stat-value rupee">₹{fmt(fc.totOut)}</div></div>
+      <div className={'stat '+(neg?'stat-danger':'stat-info')}>
+        <div className="stat-label">Lowest Point</div>
+        <div className="stat-value rupee">₹{fmt(fc.minClose.bal===Infinity?0:fc.minClose.bal)}</div>
+        <div className="stat-delta">{fc.minClose.week ? 'Week of '+fmtDate(fc.minClose.week.from) : ''}{neg ? ' — cash gap!' : ''}</div>
+      </div>
+    </div>
+
+    {neg && (
+      <div className="card" style={{marginBottom:14,borderLeft:'4px solid var(--danger)'}}>
+        <div className="card-body" style={{fontSize:12.5,lineHeight:1.6}}>
+          ⚠ <b>Projected cash gap of ₹{fmt(Math.abs(fc.minClose.bal))}</b> in the week of {fmtDate(fc.minClose.week.from)}.
+          Options: chase overdue receivables (Collections page), delay discretionary payables, or arrange a short-term facility before that week.
+        </div>
+      </div>
+    )}
+
+    <div className="table-wrap">
+      <table>
+        <thead><tr>
+          <th style={{width:52}}>Week</th><th style={{width:100}}>Starting</th>
+          <th className="num">AR In</th><th className="num">Recur. In</th>
+          <th className="num">AP Out</th><th className="num">Recur. Out</th>
+          <th className="num">Payroll</th><th className="num">GST/TDS</th>
+          <th className="num" style={{width:110}}>Net</th><th className="num" style={{width:120}}>Closing</th>
+        </tr></thead>
+        <tbody>
+          {fc.weeks.map(w=>(
+            <tr key={w.i} style={w.close<0?{background:'var(--danger-soft)'}:{}}>
+              <td style={{fontWeight:700}}>W{w.i+1}</td>
+              <td>{fmtDate(w.from)}</td>
+              <td className="num" style={{color:w.arIn>0?'var(--green)':'var(--ink-3)'}}>{w.arIn>0?fmt(w.arIn):'—'}</td>
+              <td className="num" style={{color:w.recIn>0?'var(--green)':'var(--ink-3)'}}>{w.recIn>0?fmt(w.recIn):'—'}</td>
+              <td className="num" style={{color:w.apOut>0?'var(--danger)':'var(--ink-3)'}}>{w.apOut>0?fmt(w.apOut):'—'}</td>
+              <td className="num" style={{color:w.recOut>0?'var(--danger)':'var(--ink-3)'}}>{w.recOut>0?fmt(w.recOut):'—'}</td>
+              <td className="num" style={{color:w.payroll>0?'var(--danger)':'var(--ink-3)'}}>{w.payroll>0?fmt(w.payroll):'—'}</td>
+              <td className="num" style={{color:w.statutory>0?'var(--warning)':'var(--ink-3)'}}>{w.statutory>0?fmt(w.statutory):'—'}</td>
+              <td className="num bold" style={{color:w.net>=0?'var(--green)':'var(--danger)'}}>{fmt(w.net)}</td>
+              <td className="num bold" style={{color:w.close>=0?'var(--ink)':'var(--danger)'}}>₹{fmt(w.close)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+
+    <div className="card" style={{marginTop:14,borderLeft:'4px solid var(--info)'}}>
+      <div className="card-body" style={{fontSize:11.5,color:'var(--ink-2)',lineHeight:1.7}}>
+        <b>Assumptions:</b> receivables collect on invoice date + the customer's credit days (overdue → this week);
+        payables paid likewise; recurring-monthly vouchers repeat on their day-of-month; payroll = average of the last 3 runs (₹{fmt(fc.avgPayroll)}/month, on the 28th);
+        current GST net payable (₹{fmt(fc.gstNet)}) hits the next 20th and TDS payable (₹{fmt(fc.tdsNet)}) the next 7th.
+        It's a projection — actual collections depend on customer behaviour; tighten it weekly.
+      </div>
+    </div>
+  </>);
+}
+
+// ============================================================================
 // GROUP CONSOLIDATION  Holding + Subsidiaries combined financials & CFO view
 // Loads every company in the same Group Name from the cloud, reduces each to its
 // headline figures (computeEntityFinancials) and sums them. Simple aggregation —
@@ -15162,7 +15508,13 @@ function HelpGuide({setPage}){
         {type:'heading', text:'TDS in Vouchers'},
         {type:'text', text:'When posting Purchase, JV, or Payment vouchers, check "<b>Apply TDS</b>" at the bottom. Select the TDS section  rate and amount auto-calculate. The TDS amount credits the linked TDS Payable ledger. Net payable = Invoice amount − TDS.'},
         {type:'heading', text:'Printing & Sharing Invoices'},
-        {type:'text', text:'Click <b>⎙ PDF</b> on any Sales/Purchase/CN/DN row. The invoice opens in a new window with <b>💬 WhatsApp</b> and <b>📧 Email</b> buttons (pre-filled message  attach the saved PDF) plus Print/Save-as-PDF. Choose your invoice design under Company Settings → GST Invoice Template. Use <b>⊕ e-Inv</b> to download the IRP e-invoice JSON.'},
+        {type:'text', text:'Click <b>⎙ PDF</b> on any Sales/Purchase/CN/DN row. The invoice opens in a new window with <b>💬 WhatsApp</b> and <b>📧 Email</b> buttons (pre-filled message  attach the saved PDF) plus Print/Save-as-PDF. Use <b>⊕ e-Inv</b> to download the IRP e-invoice JSON.'},
+        {type:'heading', text:'UPI Pay-Now QR on Invoices'},
+        {type:'text', text:'Set your <b>UPI ID</b> in Company Settings (next to Bank Details). Every sales invoice then prints a <b>📱 Scan &amp; Pay QR</b> with the exact invoice amount and number pre-filled — customers scan with GPay/PhonePe/Paytm/BHIM and pay instantly. (QR renders when online; the UPI ID always prints as text.)'},
+        {type:'heading', text:'Works on Mobile'},
+        {type:'text', text:'On phones and small screens the sidebar becomes a <b>☰ menu</b>, dashboards stack into two columns, and tables scroll sideways — check cash, chase payments or raise an invoice from anywhere.'},
+        {type:'heading', text:'Invoice Templates (10 designs)'},
+        {type:'text', text:'Company Settings → <b>GST Invoice Template</b> now offers <b>10 templates across 5 layouts</b>: <b>Classic</b> (dark header band  5 colourways), <b>Modern</b> (full-colour header, soft cards  Blue/Teal), <b>Minimal Mono</b> (letterhead-style thin rules), <b>Elegant Gold</b> (centered serif with double rules) and <b>Boxed Navy</b> (framed page with accent side-band). Every invoice also prints the <b>Due Date</b> (invoice date + the customer\'s credit days), the <b>e-Invoice IRN/Ack strip</b> when the voucher carries an IRN, amount in words, HSN summary, bank details, a declaration and E.&amp;O.E.'},
         {type:'heading', text:'Time-savers'},
         {type:'steps', items:[
           '<b>⧉ Copy</b>  duplicate any voucher into a new one, pre-filled, so you only change what differs. Great for repeat invoices/payments.',
@@ -15179,6 +15531,7 @@ function HelpGuide({setPage}){
         {type:'text', text:'Beyond core accounting, MiyeeBooks includes analysis and automation tools to save time and add insight.'},
         {type:'heading', text:'CFO Dashboard & MIS'},
         {type:'steps', items:[
+          '<b>13-Week Cash Forecast</b>  weekly cash projection: receivables collect on due date (invoice + credit days), payables go out likewise, plus recurring entries, average payroll and the next GST/TDS dues. Highlights the lowest-cash week and warns of a projected gap  the classic CFO survival tool.',
           '<b>Cash Runway & Burn</b>  the CFO Dashboard now shows your average monthly burn, months of runway at the current burn rate, average monthly revenue and cash on hand  the metrics investors and founders watch first.',
           '<b>DSO vs DPO trend</b>  a month-by-month chart of collection days (DSO) vs payment days (DPO) with the net cash gap, so you can see your working-capital cycle improving or slipping.',
           '<b>MIS Pack (Excel)</b>  one click exports a multi-sheet workbook (KPIs, monthly trend, top parties, expense breakdown) ready for a board or investor update.',
