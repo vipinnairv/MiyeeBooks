@@ -638,7 +638,8 @@ const fbListCompanies = async (uid) => {
   try {
     const snap = await fbDb.collection('users').doc(uid).collection('companies')
       .orderBy('updatedAt','desc').get();
-    return snap.docs.map(d => ({ id: d.id, name: d.data().name||'Unnamed', gstin: d.data().gstin||'' }));
+    return snap.docs.map(d => ({ id: d.id, name: d.data().name||'Unnamed', gstin: d.data().gstin||'',
+      groupName: d.data().groupName||'', isHolding: !!d.data().isHolding, parentCompanyId: d.data().parentCompanyId||'' }));
   } catch(e){ console.warn('fbListCompanies:', e); return []; }
 };
 
@@ -700,6 +701,11 @@ const fbSaveCompany = async (uid, companyId, data) => {
   const meta = {
     name:      data.company?.name  || 'My Company',
     gstin:     data.company?.gstin || '',
+    // group metadata mirrored to the doc so the company list can show the
+    // holding/subsidiary tree without loading full payloads
+    groupName:       data.company?.groupName || '',
+    isHolding:       !!data.company?.isHolding,
+    parentCompanyId: data.company?.parentCompanyId || '',
     updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
     // top-level premium flag (developer-set) — only ever written true, never downgraded here
     ...(data.company?.isPremium ? { isPremium: true, premiumSince: data.company.premiumSince || '' } : {}),
@@ -724,6 +730,9 @@ const fbCreateCompany = async (uid, initialData) => {
   await ref.set({
     name:      initialData.company?.name  || 'My Company',
     gstin:     initialData.company?.gstin || '',
+    groupName:       initialData.company?.groupName || '',
+    isHolding:       !!initialData.company?.isHolding,
+    parentCompanyId: initialData.company?.parentCompanyId || '',
     createdAt: firebase.firestore.FieldValue.serverTimestamp(),
     updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
     payload:   JSON.stringify(initialData),
@@ -1914,6 +1923,88 @@ const computeEntityFinancials = (d) => {
   };
 };
 
+// Account-level balances for one entity: raw balance (opening + Dr − Cr) per
+// account id, plus name/type/group metadata — the building block for the
+// consolidated Trial Balance / P&L / Balance Sheet.
+function computeEntityBalances(d){
+  if(!d || !d.coa) return null;
+  const bal = {}, meta = {};
+  d.coa.forEach(a => { bal[a.id] = a.opening || 0; meta[a.id] = {name:a.name, type:a.type, group:a.group||''}; });
+  (d.vouchers||[]).forEach(v => {
+    if(v.status==='Cancelled') return;
+    (v.lines||[]).forEach(l => {
+      if(l.accountId==null) return;
+      if(!(l.accountId in bal)){ bal[l.accountId]=0; meta[l.accountId]={name:String(l.accountId), type:'Asset', group:''}; }
+      bal[l.accountId] += (l.debit||0) - (l.credit||0);
+    });
+  });
+  return {bal, meta};
+}
+
+// Intercompany elimination engine (AS-21 style consolidation worksheet).
+// entities: [{id, name, gstin, data}]. A party inside entity A is recognised as
+// "intercompany" when its GSTIN matches another group entity's GSTIN (fallback:
+// exact name match). For each entity pair it measures both trading directions
+// (A→B sales vs B's recorded purchases) and the AR↔AP mirror balances, and
+// eliminates the MATCHED amount (the lower of the two sides — the difference is
+// reported as a mismatch for the accountant to fix, never silently eliminated).
+// Returns {rows, adj} where adj is a per-account raw-balance adjustment map that
+// always nets to zero (so the consolidated TB still tallies after applying it).
+function computeEliminations(entities){
+  const r2 = n => Math.round((n||0)*100)/100;
+  const legs = [];
+  entities.forEach(A => {
+    (A.data.parties||[]).forEach(p => {
+      const B = entities.find(e => e.id !== A.id && (
+        (p.gstin && e.gstin && String(p.gstin).toUpperCase() === String(e.gstin).toUpperCase()) ||
+        ((p.name||'').trim().toLowerCase() !== '' && (p.name||'').trim().toLowerCase() === (e.name||'').trim().toLowerCase())));
+      if(!B) return;
+      let sales=0, purch=0, ar=0, ap=0;
+      (A.data.vouchers||[]).forEach(v => {
+        if(v.status==='Cancelled' || v.partyId !== p.id) return;
+        if(v.type==='SAL') sales += v.taxable||0;
+        if(v.type==='CRN') sales -= v.taxable||0;
+        if(v.type==='PUR') purch += v.taxable||0;
+        if(v.type==='DBN') purch -= v.taxable||0;
+        (v.lines||[]).forEach(l => {
+          if(l.accountId==='2400') ar += (l.debit||0)-(l.credit||0);
+          if(l.accountId==='1300') ap += (l.credit||0)-(l.debit||0);
+        });
+      });
+      legs.push({fromId:A.id, fromName:A.name, toId:B.id, toName:B.name, party:p.name,
+        sales:r2(sales), purch:r2(purch), ar:r2(Math.max(0,ar)), ap:r2(Math.max(0,ap))});
+    });
+  });
+  const rows = [], adj = {};
+  const add = (id, delta) => { adj[id] = r2((adj[id]||0) + delta); };
+  const seen = new Set();
+  legs.forEach(L => {
+    const k1 = L.fromId+'>'+L.toId, k2 = L.toId+'>'+L.fromId;
+    if(seen.has(k1) || seen.has(k2)) return;
+    seen.add(k1); seen.add(k2);
+    const M = legs.find(x => x.fromId===L.toId && x.toId===L.fromId) || {sales:0, purch:0, ar:0, ap:0};
+    // Direction 1: L.from sells to L.to (matched against M's purchases)
+    const t1 = r2(Math.min(L.sales, M.purch));
+    // Direction 2: L.to sells to L.from
+    const t2 = r2(Math.min(M.sales, L.purch));
+    // Balances: L.from's receivable vs L.to's payable, and vice-versa
+    const b1 = r2(Math.min(L.ar, M.ap));
+    const b2 = r2(Math.min(M.ar, L.ap));
+    // Raw-balance sign convention: income negative → +T shrinks it; expense positive → −T;
+    // asset positive → −B; liability negative → +B. Each pair nets to zero → TB stays tallied.
+    if(t1>0){ add('3100', t1); add('4100', -t1); }
+    if(t2>0){ add('3100', t2); add('4100', -t2); }
+    if(b1>0){ add('2400', -b1); add('1300', b1); }
+    if(b2>0){ add('2400', -b2); add('1300', b2); }
+    rows.push({a:L.fromName, b:L.toName,
+      salesAB:L.sales, purchBA:M.purch, elimTradeAB:t1, tradeMismatchAB:r2(Math.abs(L.sales-M.purch)),
+      salesBA:M.sales, purchAB:L.purch, elimTradeBA:t2, tradeMismatchBA:r2(Math.abs(M.sales-L.purch)),
+      arAB:L.ar, apBA:M.ap, elimBalAB:b1, balMismatchAB:r2(Math.abs(L.ar-M.ap)),
+      arBA:M.ar, apAB:L.ap, elimBalBA:b2, balMismatchBA:r2(Math.abs(M.ar-L.ap))});
+  });
+  return {rows, adj};
+}
+
 // ── Audit trail helper ───────────────────────────────────────────────────────
 // Records who did what, when. User email is set globally by App on login.
 const auditEntry = (action, detail) => ({
@@ -2310,7 +2401,7 @@ const buildDefaultData = (companyOverrides = {}) => ({
 //  payroll with PF/PT/TDS, cost centres, departments, bill tagging)
 // Invariant: sum(openings)=0 and every voucher Dr=Cr → Trial Balance & BS tally.
 // ============================================================================
-const buildSampleData = () => {
+function buildSampleData(){
   const r2 = n => Math.round(n*100)/100;
   const gst = (t, rate, inter) => inter
     ? {cgst:0, sgst:0, igst:r2(t*rate/100)}
@@ -2330,6 +2421,7 @@ const buildSampleData = () => {
     steelco:'sp_steel', motorworld:'sp_motor', birla:'sp_birla', mahesh:'sp_mahesh',
     jio:'sp_jio', landlord:'sp_land', sharma:'sp_sharma', buildwell:'sp_build',
     retailGj:'sp_retgj', retailMh:'sp_retmh',   // unregistered (B2C) walk-in customers
+    subco:'sp_subco',                            // group subsidiary (intercompany demo)
   };
   const parties = [
     {id:P.reliance, name:'Reliance Industries Ltd', type:'Customer', gstin:'27AAACR5055K1Z7', state:'Maharashtra', stateCode:'27', address:'Maker Chambers IV, Mumbai', email:'ap@ril.com', phone:'+91 22 3555 5000', currency:'INR', balance:0},
@@ -2347,6 +2439,9 @@ const buildSampleData = () => {
     {id:P.buildwell, name:'BuildWell Contractors Pvt Ltd', type:'Vendor', gstin:'24AABCB7777C1ZS', state:'Gujarat', stateCode:'24', address:'Gandhinagar', email:'works@buildwell.in', phone:'+91 79 5000 2222', currency:'INR', balance:0, pan:'AABCB7777C'},
     {id:P.retailGj, name:'Rahul Retail (Walk-in)', type:'Customer', gstin:'', state:'Gujarat', stateCode:'24', address:'Ahmedabad', email:'', phone:'+91 90000 12345', currency:'INR', balance:0, unregistered:true},
     {id:P.retailMh, name:'Deshmukh Stores (Unregistered)', type:'Customer', gstin:'', state:'Maharashtra', stateCode:'27', address:'Nagpur', email:'', phone:'+91 90000 67890', currency:'INR', balance:0, unregistered:true},
+    // Group subsidiary — its GSTIN matches the subsidiary sample company's GSTIN,
+    // so Group Consolidation auto-detects the intercompany relationship.
+    {id:P.subco, name:'Demo Trading Co Pvt Ltd', type:'Customer', gstin:'24AABCD5678T1ZV', state:'Gujarat', stateCode:'24', address:'Vatva GIDC, Ahmedabad', email:'accounts@demotrading.in', phone:'+91 79 4900 5000', currency:'INR', balance:0},
   ];
   const partyOf = id => parties.find(p => p.id === id);
 
@@ -2663,10 +2758,18 @@ const buildSampleData = () => {
   mkPayVendor('2026-02-02', P.steelco, bigPur.total, bigPur.id);               // ...paid
   mkDBN('2026-02-11', P.steelco, '4100', 16000, 18, {cc:CC.a});                // Debit note (purchase return)
 
+  // ================= INTERCOMPANY (with Demo Trading Co — the subsidiary) =================
+  // Mirrored in buildSampleSubsidiaryData(): load that sample in a company created as
+  // "Subsidiary of Demo Manufacturing Co", then open Group Consolidation → Eliminations.
+  const icSale = mkSale('2026-01-20', P.subco, '3100', 200000, 18, {cc:CC.a}); // H sells goods ₹2,00,000+18% to sub → total 2,36,000
+  mkReceipt('2026-02-10', P.subco, 118000, icSale.id);                          // part collection → AR ₹1,18,000 stays open
+  mkPurchase('2026-02-05', P.subco, '4110', 50000, 18, {cc:CC.b, dept:D.admin});// H buys services/goods ₹50,000+18% from sub → AP ₹59,000 open
+
   return {
     // NOTE: upiId left blank intentionally — a fake demo VPA makes UPI apps show
     // "payee not registered" when scanned. Users must enter their own active ID.
     company: {...DEFAULT_COMPANY, name:'Demo Manufacturing Co Pvt Ltd', upiId:'',
+      groupName:'Demo Group', isHolding:true,
       modules:{gst:true, tds:true, payroll:true, factory:true, trader:true, service:false}},
     coa, parties, vouchers,
     forexRates: FOREX_RATES, gstr2bData: [],
@@ -2693,6 +2796,93 @@ const buildSampleData = () => {
     auditLog: [auditEntry('SAMPLE_DATA', `Loaded factory sample dataset · ${vouchers.length} vouchers · FY 2025-26`)],
   };
 };
+
+// ============================================================================
+// SUBSIDIARY SAMPLE DATA  "Demo Trading Co Pvt Ltd"
+// The mirror side of the holding sample's intercompany entries. Setup flow:
+// 1) Load the main sample in the holding company. 2) ⇌ Switch → + Add New
+// Company → "Subsidiary of Demo Manufacturing Co". 3) In the new company:
+// Export/Import → Load Subsidiary Sample. 4) Open Group Consolidation →
+// Eliminations: sales↔purchases (₹2,00,000 & ₹50,000) and AR↔AP (₹1,18,000 &
+// ₹59,000) auto-match via GSTIN and eliminate cleanly.
+// ============================================================================
+function buildSampleSubsidiaryData(){
+  const r2 = n => Math.round(n*100)/100;
+  const stamp = new Date().toISOString();
+  const ctr = {}; const vnum = t => { ctr[t]=(ctr[t]||0)+1; return t+'/'+String(ctr[t]).padStart(4,'0'); };
+  // Clean COA: zero every seed opening, then Capital −3L / Bank +3L (sums to 0 → tallies)
+  const coa = SEED_COA.map(a => ({...a, opening: a.id==='1100' ? -300000 : a.id==='2510' ? 300000 : 0}));
+  const P_HOLD = 'sp_hold', P_CUST = 'sp_cust';
+  const parties = [
+    // The holding company — GSTIN matches Demo Manufacturing's, enabling auto-detection
+    {id:P_HOLD, name:'Demo Manufacturing Co Pvt Ltd', type:'Vendor', gstin:'24ABCDE1234F1Z6', state:'Gujarat', stateCode:'24', address:'45 Industrial Estate, Ahmedabad', email:'accounts@mymsme.in', phone:'+91 79 2658 9999', currency:'INR', balance:0},
+    {id:P_CUST, name:'Shree Distributors', type:'Customer', gstin:'24AAEPP8765R1ZR', state:'Gujarat', stateCode:'24', address:'Naroda, Ahmedabad', email:'shree@dist.in', phone:'+91 98790 11111', currency:'INR', balance:0, creditDays:30},
+  ];
+  const vouchers = [];
+  // ── Intercompany purchase from the holding: ₹2,00,000 + 18% GST (mirrors the holding's sale)
+  const icPur = {id:uid(), type:'PUR', date:'2026-01-20', number:vnum('PUR'), partyId:P_HOLD, partyName:'Demo Manufacturing Co Pvt Ltd',
+    narration:'Purchase of pumps & fans from group holding', reference:'IC-2026-01', placeOfSupply:'24',
+    items:[{id:uid(), description:'Water Pumps & Fans (group transfer)', hsn:'8413', qty:60, rate:3333.33, gstRate:18, accountId:'4110'}],
+    taxable:200000, cgst:18000, sgst:18000, igst:0, total:236000, amount:236000, isInterState:false,
+    lines:[{id:uid(), accountId:'4110', debit:200000, credit:0, narration:'Trading goods from holding'},
+           {id:uid(), accountId:'2600', debit:18000, credit:0, narration:'CGST Input'},
+           {id:uid(), accountId:'2601', debit:18000, credit:0, narration:'SGST Input'},
+           {id:uid(), accountId:'1300', debit:0, credit:236000, narration:'To Demo Manufacturing Co', partyId:P_HOLD}],
+    status:'Posted', createdAt:stamp};
+  vouchers.push(icPur);
+  // Part payment ₹1,18,000 → AP to holding stays at ₹1,18,000 (mirrors holding's open AR)
+  vouchers.push({id:uid(), type:'PAY', date:'2026-02-10', number:vnum('PAY'), partyId:P_HOLD, partyName:'Demo Manufacturing Co Pvt Ltd',
+    narration:'Part payment to holding against IC-2026-01', amount:118000, billTags:[{voucherId:icPur.id, allocated:118000}],
+    lines:[{id:uid(), accountId:'1300', debit:118000, credit:0, narration:'Paid to holding', partyId:P_HOLD},
+           {id:uid(), accountId:'2510', debit:0, credit:118000, narration:'Bank payment'}],
+    status:'Posted', createdAt:stamp});
+  // ── Intercompany sale of services to the holding: ₹50,000 + 18% (mirrors holding's purchase) — unpaid
+  vouchers.push({id:uid(), type:'SAL', date:'2026-02-05', number:vnum('SAL'), partyId:P_HOLD, partyName:'Demo Manufacturing Co Pvt Ltd',
+    narration:'Logistics & distribution services to holding', reference:'IC-SVC-01', placeOfSupply:'24',
+    items:[{id:uid(), description:'Distribution & logistics services', hsn:'9967', qty:1, rate:50000, gstRate:18, accountId:'3110'}],
+    taxable:50000, cgst:4500, sgst:4500, igst:0, total:59000, amount:59000, isInterState:false,
+    lines:[{id:uid(), accountId:'2400', debit:59000, credit:0, narration:'To Demo Manufacturing Co', partyId:P_HOLD},
+           {id:uid(), accountId:'3110', debit:0, credit:50000, narration:'Service income'},
+           {id:uid(), accountId:'1310', debit:0, credit:4500, narration:'CGST Output'},
+           {id:uid(), accountId:'1311', debit:0, credit:4500, narration:'SGST Output'}],
+    status:'Posted', createdAt:stamp});
+  // ── External trade so the subsidiary has its own P&L
+  const extSale = {id:uid(), type:'SAL', date:'2026-02-15', number:vnum('SAL'), partyId:P_CUST, partyName:'Shree Distributors',
+    narration:'Sale of pumps to Shree Distributors', reference:'', placeOfSupply:'24',
+    items:[{id:uid(), description:'Water Pump 1HP', hsn:'8413', qty:60, rate:4166.67, gstRate:18, accountId:'3100'}],
+    taxable:250000, cgst:22500, sgst:22500, igst:0, total:295000, amount:295000, isInterState:false,
+    lines:[{id:uid(), accountId:'2400', debit:295000, credit:0, narration:'To Shree Distributors', partyId:P_CUST},
+           {id:uid(), accountId:'3100', debit:0, credit:250000, narration:'Sales'},
+           {id:uid(), accountId:'1310', debit:0, credit:22500, narration:'CGST Output'},
+           {id:uid(), accountId:'1311', debit:0, credit:22500, narration:'SGST Output'}],
+    status:'Posted', createdAt:stamp};
+  vouchers.push(extSale);
+  vouchers.push({id:uid(), type:'REC', date:'2026-03-01', number:vnum('REC'), partyId:P_CUST, partyName:'Shree Distributors',
+    narration:'Receipt from Shree Distributors', amount:295000, billTags:[{voucherId:extSale.id, allocated:295000}],
+    lines:[{id:uid(), accountId:'2510', debit:295000, credit:0, narration:'Bank receipt'},
+           {id:uid(), accountId:'2400', debit:0, credit:295000, narration:'From Shree Distributors', partyId:P_CUST}],
+    status:'Posted', createdAt:stamp});
+  vouchers.push({id:uid(), type:'PAY', date:'2026-02-28', number:vnum('PAY'), partyName:'',
+    narration:'Godown rent February', amount:20000,
+    lines:[{id:uid(), accountId:'4500', debit:20000, credit:0, narration:'Godown rent'},
+           {id:uid(), accountId:'2510', debit:0, credit:20000, narration:'Bank payment'}],
+    status:'Posted', createdAt:stamp});
+
+  return {
+    company: {...DEFAULT_COMPANY, name:'Demo Trading Co Pvt Ltd', gstin:'24AABCD5678T1ZV',
+      address:'Vatva GIDC, Ahmedabad, Gujarat 382445', upiId:'',
+      groupName:'Demo Group', isHolding:false,
+      modules:{gst:true, tds:true, payroll:false, factory:false, trader:true, service:false}},
+    coa, parties, vouchers,
+    forexRates: FOREX_RATES, gstr2bData: [],
+    employees: [], payrollRuns: [],
+    tdsSections: SEED_TDS_SECTIONS.map(s => ({...s, id: uid()})),
+    stockItems: [], boms: [], productionOrders: [], quotations: [],
+    costCentres: [], departments: [], bankRecon: [], allocations: [], bankRules: [],
+    fixedAssets: [], budgets: {}, amortizations: [],
+    auditLog: [auditEntry('SAMPLE_DATA', `Loaded subsidiary sample dataset · ${vouchers.length} vouchers · intercompany with Demo Manufacturing Co`)],
+  };
+}
 
 // ============================================================================
 // UPGRADE MODAL  shown when free tier limit is reached or from settings
@@ -3138,8 +3328,7 @@ function CompanySelector({ user, onSelect, onSignOut, autoSelect=true }){
   const [deleting,   setDeleting]   = useState(null);
   const [newName,    setNewName]    = useState('');
   const [newGstin,   setNewGstin]   = useState('');
-  const [newGroup,   setNewGroup]   = useState('');
-  const [newRole,    setNewRole]    = useState('subsidiary');
+  const [newParent,  setNewParent]  = useState('');   // ''=auto · 'holding' · 'standalone' · 'sub:<companyId>'
   const [error,      setError]      = useState('');
   const [loading,    setLoading]    = useState(false);
   const [focusedF,   setFocusedF]   = useState('');
@@ -3176,14 +3365,27 @@ function CompanySelector({ user, onSelect, onSignOut, autoSelect=true }){
   };
   useEffect(load, [user.uid]);
 
+  // Group structure at creation (user's model): the FIRST company becomes the
+  // Holding company automatically; every later company picks its parent Holding
+  // from a list (inheriting the group), or can be another Holding / standalone.
+  const holdings = (companies||[]).filter(c => c.isHolding);
+  const isFirstCompany = (companies||[]).length === 0;
+  const effParent = newParent || (isFirstCompany ? 'holding' : (holdings.length ? 'sub:'+holdings[0].id : 'holding'));
+
   const handleCreate = async (e) => {
     e.preventDefault();
     if(!newName.trim()){ setError('Business name is required.'); return; }
     setLoading(true); setError('');
     try {
+      let grp = {};
+      if(effParent === 'holding'){
+        grp = { groupName: newName.trim(), isHolding: true };
+      } else if(effParent.startsWith('sub:')){
+        const parent = (companies||[]).find(c => c.id === effParent.slice(4));
+        if(parent) grp = { groupName: parent.groupName || parent.name, isHolding: false, parentCompanyId: parent.id };
+      } // 'standalone' → no group fields
       const id = await fbCreateCompany(user.uid,
-        buildDefaultData({ name: newName.trim(), gstin: newGstin.trim().toUpperCase(),
-          groupName: newGroup.trim(), isHolding: newRole==='holding' }));
+        buildDefaultData({ name: newName.trim(), gstin: newGstin.trim().toUpperCase(), ...grp }));
       onSelect(id, user.uid, 'owner');
     } catch(err){
       setError('Failed to create company. Please try again.');
@@ -3233,7 +3435,12 @@ function CompanySelector({ user, onSelect, onSignOut, autoSelect=true }){
         onMouseEnter={e=>{e.currentTarget.style.borderColor='#0b6b4f';e.currentTarget.style.background='#e6f3ee';}}
         onMouseLeave={e=>{e.currentTarget.style.borderColor='#e3ebe7';e.currentTarget.style.background='#fff';}}>
         <div>
-          <div style={{fontWeight:700,fontSize:14,color:'#0e2a23'}}>{c.name||c.companyName}</div>
+          <div style={{fontWeight:700,fontSize:14,color:'#0e2a23'}}>
+            {c.subLabel && <span style={{color:'#8aa098',fontWeight:400}}>↳ </span>}
+            {c.name||c.companyName}
+            {c.isHolding && <span style={{fontSize:9,background:'#fbf3d9',color:'#8a6d1a',borderRadius:20,padding:'2px 8px',fontWeight:800,marginLeft:8,letterSpacing:'.5px'}}>HOLDING</span>}
+          </div>
+          {c.subLabel && <div style={{fontSize:10,color:'#8aa098',marginTop:1}}>Subsidiary of {c.subLabel}</div>}
           {c.gstin && <div style={{fontSize:11,color:'#6b7f78',fontFamily:'monospace',marginTop:2}}>{c.gstin}</div>}
           {role && role !== 'owner' && (
             <span style={{fontSize:10,background:ROLE_CLR[role]+'22',color:ROLE_CLR[role],borderRadius:20,padding:'2px 8px',fontWeight:700,display:'inline-block',marginTop:4}}>
@@ -3279,12 +3486,24 @@ function CompanySelector({ user, onSelect, onSignOut, autoSelect=true }){
           <>
             <div style={{fontSize:11,fontWeight:700,color:'#6b7f78',letterSpacing:'.8px',textTransform:'uppercase',marginBottom:8}}>My Companies</div>
             <div style={{display:'flex',flexDirection:'column',gap:7,marginBottom:16}}>
-              {companies.map(c => (
-                <CompanyBtn key={c.id} c={c} role="owner"
-                  onClick={()=>onSelect(c.id, user.uid, 'owner')}
-                  onDel={()=>handleDelete(c.id)}
-                  showDel={deleting !== c.id} />
-              ))}
+              {(() => {
+                // Tree order: each holding followed by its subsidiaries, then the rest
+                const byId = {}; companies.forEach(c => byId[c.id]=c);
+                const subLabelOf = c => (c.parentCompanyId && byId[c.parentCompanyId]) ? byId[c.parentCompanyId].name
+                  : (!c.isHolding && c.groupName) ? c.groupName : '';
+                const ordered = [];
+                companies.filter(c=>c.isHolding).forEach(h => {
+                  ordered.push(h);
+                  companies.filter(c => !c.isHolding && (c.parentCompanyId===h.id || (c.groupName && c.groupName===h.groupName))).forEach(s => ordered.push({...s, subLabel:subLabelOf(s)}));
+                });
+                companies.forEach(c => { if(!ordered.some(o=>o.id===c.id)) ordered.push(c.isHolding?c:{...c, subLabel:subLabelOf(c)}); });
+                return ordered.map(c => (
+                  <CompanyBtn key={c.id} c={c} role="owner"
+                    onClick={()=>onSelect(c.id, user.uid, 'owner')}
+                    onDel={()=>handleDelete(c.id)}
+                    showDel={deleting !== c.id} />
+                ));
+              })()}
             </div>
           </>
         )}
@@ -3335,22 +3554,28 @@ function CompanySelector({ user, onSelect, onSignOut, autoSelect=true }){
                 style={{...inp(focusedF==='gstin'),fontFamily:'monospace',letterSpacing:'.5px'}}
                 placeholder="22AAAAA0000A1Z5" maxLength={15} />
             </div>
-            <div style={{marginBottom:14,display:'flex',gap:10}}>
-              <div style={{flex:1.4}}>
-                <label style={{fontSize:12,fontWeight:600,color:'#3a4f49'}}>Group Name <span style={{fontWeight:400,color:'#6b7f78'}}>(optional)</span></label>
-                <input value={newGroup} onChange={e=>setNewGroup(e.target.value)}
-                  onFocus={()=>setFocusedF('group')} onBlur={()=>setFocusedF('')}
-                  style={inp(focusedF==='group')} placeholder="e.g. Acme Group  for consolidation" />
+            {isFirstCompany ? (
+              <div style={{background:'#e6f3ee',border:'1px solid #0b6b4f55',borderRadius:8,padding:'10px 12px',fontSize:12,color:'#0b6b4f',marginBottom:14,lineHeight:1.5}}>
+                🏢 <b>Your first company becomes the Holding (parent) company.</b><br/>
+                <span style={{color:'#3a4f49'}}>Add subsidiaries under it later — they appear together in Group Consolidation.</span>
               </div>
-              <div style={{flex:1}}>
-                <label style={{fontSize:12,fontWeight:600,color:'#3a4f49'}}>Role</label>
-                <select value={newRole} onChange={e=>setNewRole(e.target.value)} style={inp(false)}>
-                  <option value="subsidiary">Subsidiary</option>
-                  <option value="holding">Holding</option>
+            ) : (
+              <div style={{marginBottom:14}}>
+                <label style={{fontSize:12,fontWeight:600,color:'#3a4f49'}}>Company Structure</label>
+                <select value={effParent} onChange={e=>setNewParent(e.target.value)} style={inp(false)}>
+                  {holdings.map(h => <option key={h.id} value={'sub:'+h.id}>Subsidiary of {h.name}</option>)}
+                  <option value="holding">New Holding company (starts its own group)</option>
+                  <option value="standalone">Standalone (no group)</option>
                 </select>
+                <div style={{fontSize:11,color:'#6b7f78',marginTop:5,lineHeight:1.5}}>
+                  {effParent.startsWith('sub:')
+                    ? <>Will join <b>{(holdings.find(h=>'sub:'+h.id===effParent)||{}).name}</b>'s group — consolidated financials include it automatically.</>
+                    : effParent==='holding'
+                      ? 'This company will head its own group; add subsidiaries under it later.'
+                      : 'Not part of any group — excluded from consolidation.'}
+                </div>
               </div>
-            </div>
-            {newGroup.trim() && <div style={{fontSize:11,color:'#6b7f78',marginTop:-6,marginBottom:12}}>Give every company in this group the same name to see them combined under <b>Group Consolidation</b>.</div>}
+            )}
             {error && <div style={{background:'#fef2f2',color:'#b3261e',borderRadius:7,padding:'9px 12px',fontSize:12,marginBottom:12}}>⚠ {error}</div>}
             <div style={{display:'flex',gap:8}}>
               <button type="submit" disabled={loading}
@@ -6175,8 +6400,8 @@ function CompanySettings({data, setData, showToast, readOnly=false}){
             </div>
           </div>
           <div style={{marginTop:10,fontSize:11.5,color:'var(--ink-2)',background:'var(--info-soft)',border:'1px solid var(--line)',borderRadius:8,padding:'10px 12px',lineHeight:1.6}}>
-            To add a subsidiary: use <b>⇌ Switch → + Create Company</b>, then set the <b>same Group Name</b> here.
-            Open <b>Group Consolidation</b> (Account Manager menu) to see the combined P&amp;L, Balance Sheet and CFO dashboard across every entity in the group. Requires cloud sign-in.
+            To add a subsidiary: use <b>⇌ Switch → + Add New Company</b> and pick <b>“Subsidiary of {'{this company}'}”</b> — it inherits the group automatically.
+            Then open <b>Group Consolidation</b> (Account Manager menu) for the consolidated Trial Balance, P&amp;L, Balance Sheet and intercompany eliminations. Requires cloud sign-in. These fields are for manual overrides.
           </div>
         </div>
       </div>
@@ -6994,6 +7219,36 @@ function VoucherModal({vtype, voucher, prefill, data, onSave, onClose, showToast
       hasOverdue: oldestOverdue > 0 };
   }, [vtype, f.partyId, f.total, f.amount, data.vouchers, data.parties]);
 
+  // ── Smart suggestion: repeat the last similar entry ────────────────────────
+  // When a party is picked on a NEW voucher, offer the most recent voucher of
+  // the same type for that party as a one-click template (items, accounts,
+  // narration, TDS setup) — most business entries repeat month after month.
+  const [tplUsed, setTplUsed] = useState(false);
+  const lastSimilar = useMemo(() => {
+    if(voucher || !f.partyId) return null;
+    const past = (data.vouchers||[])
+      .filter(v => v.type === vtype && v.partyId === f.partyId && v.status !== 'Cancelled')
+      .sort((a,b) => (b.date||'').localeCompare(a.date||''));
+    return past[0] || null;
+  }, [voucher, vtype, f.partyId, data.vouchers]);
+  const applyTemplate = () => {
+    if(!lastSimilar) return;
+    const L = lastSimilar;
+    setF(prev => ({...prev,
+      narration: L.narration || prev.narration,
+      costCentreId: L.costCentreId || prev.costCentreId || '',
+      departmentId: L.departmentId || prev.departmentId || '',
+      items: (L.items||[]).map(it => ({...it, id:uid()})),
+      lines: (L.lines||[]).map(l => ({...l, id:uid()})),
+      amount: L.amount||0, taxable: L.taxable, cgst: L.cgst, sgst: L.sgst, igst: L.igst, total: L.total,
+      isInterState: L.isInterState, isExport: L.isExport,
+      tdsApplicable: L.tdsApplicable||false, tdsSection: L.tdsSection||'', tdsRate: L.tdsRate||0,
+      tdsAmount: L.tdsAmount||0, tdsLedgerId: L.tdsLedgerId||'', tdsBaseAmount: L.tdsBaseAmount||0,
+    }));
+    setTplUsed(true);
+  };
+  useEffect(() => { setTplUsed(false); }, [f.partyId]);
+
   // ── Bill Tagging (PAY / REC) ─────────────────────────────────────────────
   const isBillType = ['PAY','REC'].includes(vtype);
   // PAY → outstanding PUR invoices; REC → outstanding SAL invoices
@@ -7198,6 +7453,17 @@ function VoucherModal({vtype, voucher, prefill, data, onSave, onClose, showToast
               {creditCheck.limit > 0 && <> · Credit limit: <b>₹{fmt(creditCheck.limit)}</b></>}
               {creditCheck.overLimit && <span style={{color:'var(--danger)',fontWeight:700}}> — exceeds the limit by ₹{fmt(creditCheck.projected - creditCheck.limit)}</span>}
               {creditCheck.hasOverdue && <><br/>Oldest bill is <b>{creditCheck.oldestOverdue} days</b> past the {creditCheck.creditDays}-day credit period — consider collecting before extending more credit (see Collections page).</>}
+            </div>
+          )}
+          {lastSimilar && !tplUsed && (
+            <div style={{display:'flex',alignItems:'center',gap:10,background:'var(--info-soft)',border:'1px solid var(--info)',
+              borderRadius:8,padding:'8px 14px',marginBottom:14,fontSize:12,flexWrap:'wrap'}}>
+              <span>💡 Last {VOUCHER_TYPES.find(x=>x.code===vtype)?.name || vtype} for this party:
+                <b> ₹{fmt(lastSimilar.total||lastSimilar.amount||0)}</b> on {fmtDate(lastSimilar.date)}
+                {lastSimilar.narration ? <span style={{color:'var(--ink-3)'}}> · “{lastSimilar.narration.slice(0,50)}{lastSimilar.narration.length>50?'…':''}”</span> : ''}
+              </span>
+              <button className="btn btn-sm btn-primary" style={{marginLeft:'auto'}} onClick={applyTemplate}
+                title="Copies the items, accounts, narration and TDS setup — today's date, new number">↺ Use as template</button>
             </div>
           )}
           <div className="form-grid" style={{marginBottom:14}}>
@@ -12934,7 +13200,10 @@ function CashForecast({data, balances}){
 // ============================================================================
 function GroupConsolidation({data, user, ownerId, companyId}){
   const [st, setSt] = useState({loading:true, entities:[], error:''});
+  const [tab, setTab] = useState('overview');
+  const [applyElim, setApplyElim] = useState(true);
   const groupName = ((data.company&&data.company.groupName)||'').trim();
+  const r2 = n => Math.round((n||0)*100)/100;
 
   useEffect(() => {
     let alive = true;
@@ -12950,7 +13219,7 @@ function GroupConsolidation({data, user, ownerId, companyId}){
           // Use the live in-memory data for the current company (may have unsaved edits)
           const d = (c.id===companyId) ? data : await fbLoadCompany(ownerId, c.id);
           const fin = computeEntityFinancials(d);
-          if(fin) out.push({id:c.id, ...fin, isCurrent:c.id===companyId});
+          if(fin) out.push({id:c.id, ...fin, data:d, isCurrent:c.id===companyId});
         }
         if(alive) setSt({loading:false, entities:out, error:''});
       } catch(e){ if(alive) setSt({loading:false, entities:[], error:String(e)}); }
@@ -12963,31 +13232,84 @@ function GroupConsolidation({data, user, ownerId, companyId}){
   const group = groupName
     ? st.entities.filter(e => (e.groupName||'').toLowerCase() === groupName.toLowerCase())
     : st.entities.filter(e => e.isCurrent);
-
-  const sum = k => group.reduce((s,e)=>s+(e[k]||0), 0);
-  const con = {
-    income:sum('income'), expense:sum('expense'), profit:sum('profit'),
-    assets:sum('assets'), liab:sum('liab'), equity:sum('equity'),
-    cash:sum('cash'), debtors:sum('debtors'), creditors:sum('creditors'), vouchers:sum('vouchers'),
-  };
   const holding = group.find(e=>e.isHolding);
 
+  // ── Account-level consolidation worksheet ─────────────────────────────────
+  // Merge every entity's account balances by account id, compute the
+  // intercompany elimination column, and derive TB / P&L / BS from the result.
+  const elims = useMemo(() => computeEliminations(group.map(e=>({id:e.id, name:e.name, gstin:e.gstin, data:e.data||{coa:[],vouchers:[],parties:[]}}))), [group]);
+  const rows = useMemo(() => {
+    const m = {};
+    group.forEach(e => {
+      const eb = e.data ? computeEntityBalances(e.data) : null;
+      if(!eb) return;
+      Object.keys(eb.bal).forEach(id => {
+        if(!m[id]) m[id] = {id, name:eb.meta[id].name, type:eb.meta[id].type, grp:eb.meta[id].group, per:{}, total:0};
+        m[id].per[e.id] = r2(eb.bal[id]);
+        m[id].total = r2(m[id].total + eb.bal[id]);
+      });
+    });
+    return Object.values(m)
+      .map(a => { const elim = elims.adj[a.id]||0; return {...a, elim, adj: r2(a.total + (applyElim ? elim : 0))}; })
+      .filter(a => Math.abs(a.total)>0.005 || Math.abs(a.elim)>0.005)
+      .sort((a,b)=> a.id < b.id ? -1 : 1);
+  }, [group, elims, applyElim]);
+
+  const tSum = (t, sign) => r2(rows.filter(a=>a.type===t).reduce((s,a)=>s+sign*a.adj,0));
+  const conIncome = tSum('Income',-1), conExpense = tSum('Expense',1), conProfit = r2(conIncome-conExpense);
+  const conAssets = tSum('Asset',1), conLiab = tSum('Liability',-1), conEquity = r2(tSum('Equity',-1)+conProfit);
+  const tbDr = r2(rows.reduce((s,a)=>s+(a.adj>0?a.adj:0),0));
+  const tbCr = r2(rows.reduce((s,a)=>s+(a.adj<0?-a.adj:0),0));
+  const sum = k => group.reduce((s,e)=>s+(e[k]||0), 0);
+  const con = { income:conIncome, expense:conExpense, profit:conProfit, assets:conAssets, liab:conLiab, equity:conEquity,
+    cash:sum('cash'), debtors:r2(sum('debtors')+(applyElim?(elims.adj['2400']||0):0)), creditors:r2(sum('creditors')-(applyElim?(elims.adj['1300']||0):0)) };
+  const hasElims = elims.rows.length > 0;
+  const elimTotal = r2(Object.values(elims.adj).reduce((s,v)=>s+Math.abs(v),0)/2);
+
+  // Statement helpers
+  const plRows = (t) => rows.filter(a=>a.type===t && (Math.abs(a.adj)>0.005 || Math.abs(a.elim)>0.005));
+  const bsRows = (t) => plRows(t);
+  const sgn = (t) => (t==='Income'||t==='Liability'||t==='Equity') ? -1 : 1;
+
   const handleExcel = () => {
-    exportXLSX(`Consolidated_${(groupName||'Group').replace(/\W/g,'_')}_${today()}.xlsx`, [{
-      name:'Consolidation',
-      rows:[
-        [`Consolidated Financials  ${groupName||(data.company&&data.company.name)}  as on ${today()}`],[],
+    const entCols = group.map(e=>e.name);
+    const stmtSheet = (types, signMap) => rows.filter(a=>types.includes(a.type)).map(a=>[
+      a.id, a.name, a.type, ...group.map(e=>r2(signMap(a.type)*(a.per[e.id]||0))), r2(signMap(a.type)*a.elim), r2(signMap(a.type)*a.adj)]);
+    exportXLSX(`Consolidated_${(groupName||'Group').replace(/\W/g,'_')}_${today()}.xlsx`, [
+      {name:'Entity Summary', rows:[
+        [`Consolidated Financials  ${groupName||(data.company&&data.company.name)}  as on ${today()}  ${applyElim?'(after eliminations)':'(before eliminations)'}`],[],
         ['Entity','Holding?','Revenue','Expenses','Net Profit','Assets','Liabilities','Equity','Cash'],
         ...group.map(e=>[e.name, e.isHolding?'Yes':'', e.income, e.expense, e.profit, e.assets, e.liab, e.equity, e.cash]),
-        [],['CONSOLIDATED (sum)','', con.income, con.expense, con.profit, con.assets, con.liab, con.equity, con.cash],
-        [],['Note','Simple aggregation — intercompany balances not eliminated.'],
-      ],
-    }]);
+        [],['CONSOLIDATED','', con.income, con.expense, con.profit, con.assets, con.liab, con.equity, con.cash],
+      ]},
+      {name:'Trial Balance', rows:[
+        ['Code','Account','Type', ...entCols, 'Eliminations', 'Consolidated Dr', 'Consolidated Cr'],
+        ...rows.map(a=>[a.id, a.name, a.type, ...group.map(e=>a.per[e.id]||0), a.elim, a.adj>0?a.adj:0, a.adj<0?-a.adj:0]),
+        ['','TOTAL','', ...group.map(()=>''), '', tbDr, tbCr],
+      ]},
+      {name:'PnL', rows:[
+        ['Code','Account','Type', ...entCols, 'Elim.', 'Consolidated'],
+        ...stmtSheet(['Income','Expense'], t=>t==='Income'?-1:1),
+        [],['','Net Profit','','','',''.padEnd(0), conProfit],
+      ]},
+      {name:'Balance Sheet', rows:[
+        ['Code','Account','Type', ...entCols, 'Elim.', 'Consolidated'],
+        ...stmtSheet(['Equity','Liability','Asset'], t=>t==='Asset'?1:-1),
+        ['','Current-year Profit (to Reserves)','Equity', ...group.map(e=>e.profit), '', conProfit],
+        [],['','Total Assets','','','','', conAssets],['','Total Equity + Liabilities','','','','', r2(conEquity+conLiab)],
+      ]},
+      {name:'Eliminations', rows:[
+        ['Entity A','Entity B','A→B Sales','B recorded Purchases','Eliminated','Mismatch','B→A Sales','A recorded Purchases','Eliminated','Mismatch','A Receivable from B','B Payable to A','Eliminated','Mismatch'],
+        ...elims.rows.map(x=>[x.a,x.b,x.salesAB,x.purchBA,x.elimTradeAB,x.tradeMismatchAB,x.salesBA,x.purchAB,x.elimTradeBA,x.tradeMismatchBA,x.arAB,x.apBA,x.elimBalAB,x.balMismatchAB]),
+      ]},
+    ]);
   };
 
   const kpi = (label, val, cls) => (
     <div className={'stat '+(cls||'')}><div className="stat-label">{label}</div><div className="stat-value rupee">₹{fmt(val)}</div></div>
   );
+  // Shared entity-columns table header
+  const entTh = group.map(e=><th key={e.id} className="num" style={{width:110}} title={e.name}>{e.name.length>14?e.name.slice(0,13)+'…':e.name}</th>);
 
   return (<>
     <div className="page-head">
@@ -13028,85 +13350,225 @@ function GroupConsolidation({data, user, ownerId, companyId}){
     )}
 
     {!st.loading && !st.error && group.length>0 && (<>
-      {holding && <div style={{fontSize:12,color:'var(--ink-3)',marginBottom:10}}>Holding: <b style={{color:'var(--ink)'}}>{holding.name}</b></div>}
-
-      {/* Consolidated CFO KPIs */}
-      <div style={{marginBottom:6,display:'flex',alignItems:'center',gap:8}}>
-        <span style={{fontSize:11,textTransform:'uppercase',letterSpacing:'1.5px',fontWeight:700,color:'var(--ink-3)'}}>Consolidated CFO Dashboard</span>
-        <span style={{flex:1,height:1,background:'var(--line)'}}></span>
-      </div>
-      <div className="stat-grid">
-        {kpi('Group Revenue', con.income, 'stat-green')}
-        {kpi('Group Expenses', con.expense, 'stat-danger')}
-        {kpi('Group Net Profit', con.profit, con.profit>=0?'stat-teal':'stat-danger')}
-        {kpi('Group Assets', con.assets, 'stat-info')}
-        {kpi('Group Equity', con.equity, 'stat-purple')}
-        {kpi('Group Cash & Bank', con.cash, 'stat-gold')}
-        {kpi('Group Receivables', con.debtors, 'stat-info')}
-        {kpi('Group Payables', con.creditors, 'stat-pink')}
+      <div style={{display:'flex',alignItems:'center',gap:14,marginBottom:10,flexWrap:'wrap'}}>
+        {holding && <span style={{fontSize:12,color:'var(--ink-3)'}}>Holding: <b style={{color:'var(--ink)'}}>{holding.name}</b></span>}
+        <label style={{display:'flex',alignItems:'center',gap:6,fontSize:12,cursor:'pointer',marginLeft:'auto',
+          background:applyElim?'var(--primary-soft)':'var(--surface-2)',border:'1px solid '+(applyElim?'var(--primary)':'var(--line-2)'),borderRadius:20,padding:'5px 14px'}}>
+          <input type="checkbox" checked={applyElim} onChange={e=>setApplyElim(e.target.checked)} />
+          <b>Apply intercompany eliminations</b>
+          {hasElims ? <span style={{color:'var(--ink-3)'}}>(₹{fmt(elimTotal)} matched)</span> : <span style={{color:'var(--ink-3)'}}>(none detected)</span>}
+        </label>
       </div>
 
-      {/* Per-entity breakdown */}
-      <div className="card" style={{marginTop:8}}>
-        <div className="card-head"><h3 className="card-title">Entity-wise Contribution</h3></div>
-        <div style={{overflowX:'auto'}}>
-          <table>
-            <thead><tr>
-              <th>Entity</th><th className="num">Revenue</th><th className="num">Expenses</th>
-              <th className="num">Net Profit</th><th className="num">Assets</th><th className="num">Equity</th><th className="num">Cash</th>
-            </tr></thead>
-            <tbody>
-              {group.map(e=>(
-                <tr key={e.id}>
-                  <td style={{fontWeight:600}}>{e.name}{e.isHolding && <span className="badge badge-info" style={{marginLeft:6,fontSize:9}}>HOLDING</span>}{e.isCurrent && <span className="badge badge-muted" style={{marginLeft:6,fontSize:9}}>CURRENT</span>}</td>
-                  <td className="num">₹{fmt(e.income)}</td>
-                  <td className="num">₹{fmt(e.expense)}</td>
-                  <td className="num" style={{color:e.profit>=0?'var(--green)':'var(--danger)',fontWeight:600}}>₹{fmt(e.profit)}</td>
-                  <td className="num">₹{fmt(e.assets)}</td>
-                  <td className="num">₹{fmt(e.equity)}</td>
-                  <td className="num">₹{fmt(e.cash)}</td>
-                </tr>
-              ))}
-            </tbody>
-            <tfoot><tr style={{fontWeight:800,borderTop:'2px solid var(--line)',background:'var(--surface-2)'}}>
-              <td>CONSOLIDATED</td>
-              <td className="num">₹{fmt(con.income)}</td>
-              <td className="num">₹{fmt(con.expense)}</td>
-              <td className="num" style={{color:con.profit>=0?'var(--green)':'var(--danger)'}}>₹{fmt(con.profit)}</td>
-              <td className="num">₹{fmt(con.assets)}</td>
-              <td className="num">₹{fmt(con.equity)}</td>
-              <td className="num">₹{fmt(con.cash)}</td>
-            </tr></tfoot>
-          </table>
+      <div className="tabs">
+        {[['overview','Overview'],['tb','Trial Balance'],['pnl','Profit & Loss'],['bs','Balance Sheet'],['elim','Eliminations'+(hasElims?' ('+elims.rows.length+')':'')]].map(([k,l])=>(
+          <div key={k} className={'tab'+(tab===k?' active':'')} onClick={()=>setTab(k)}>{l}</div>
+        ))}
+      </div>
+
+      {tab==='overview' && (<>
+        <div className="stat-grid">
+          {kpi('Group Revenue', con.income, 'stat-green')}
+          {kpi('Group Expenses', con.expense, 'stat-danger')}
+          {kpi('Group Net Profit', con.profit, con.profit>=0?'stat-teal':'stat-danger')}
+          {kpi('Group Assets', con.assets, 'stat-info')}
+          {kpi('Group Equity', con.equity, 'stat-purple')}
+          {kpi('Group Cash & Bank', con.cash, 'stat-gold')}
+          {kpi('Group Receivables', con.debtors, 'stat-info')}
+          {kpi('Group Payables', con.creditors, 'stat-pink')}
         </div>
-      </div>
-
-      {/* Consolidated P&L + BS summary */}
-      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:18,marginTop:18}}>
-        <div className="card">
-          <div className="card-head"><h3 className="card-title">Consolidated Profit &amp; Loss</h3></div>
-          <div className="card-body">
-            <div style={{display:'flex',justifyContent:'space-between',padding:'6px 0',borderBottom:'1px solid var(--line)'}}><span>Total Revenue</span><b className="rupee">₹{fmt(con.income)}</b></div>
-            <div style={{display:'flex',justifyContent:'space-between',padding:'6px 0',borderBottom:'1px solid var(--line)'}}><span>Total Expenses</span><b className="rupee">₹{fmt(con.expense)}</b></div>
-            <div style={{display:'flex',justifyContent:'space-between',padding:'8px 0',fontWeight:800,fontSize:15}}><span>Group Net Profit</span><b className="rupee" style={{color:con.profit>=0?'var(--green)':'var(--danger)'}}>₹{fmt(con.profit)}</b></div>
+        <div className="card" style={{marginTop:8}}>
+          <div className="card-head"><h3 className="card-title">Entity-wise Contribution</h3><span style={{fontSize:11,color:'var(--ink-3)'}}>{applyElim?'Consolidated row is after eliminations':'Before eliminations'}</span></div>
+          <div style={{overflowX:'auto'}}>
+            <table>
+              <thead><tr>
+                <th>Entity</th><th className="num">Revenue</th><th className="num">Expenses</th>
+                <th className="num">Net Profit</th><th className="num">Assets</th><th className="num">Equity</th><th className="num">Cash</th>
+              </tr></thead>
+              <tbody>
+                {group.map(e=>(
+                  <tr key={e.id}>
+                    <td style={{fontWeight:600}}>{e.name}{e.isHolding && <span className="badge badge-info" style={{marginLeft:6,fontSize:9}}>HOLDING</span>}{e.isCurrent && <span className="badge badge-muted" style={{marginLeft:6,fontSize:9}}>CURRENT</span>}</td>
+                    <td className="num">₹{fmt(e.income)}</td>
+                    <td className="num">₹{fmt(e.expense)}</td>
+                    <td className="num" style={{color:e.profit>=0?'var(--green)':'var(--danger)',fontWeight:600}}>₹{fmt(e.profit)}</td>
+                    <td className="num">₹{fmt(e.assets)}</td>
+                    <td className="num">₹{fmt(e.equity)}</td>
+                    <td className="num">₹{fmt(e.cash)}</td>
+                  </tr>
+                ))}
+              </tbody>
+              <tfoot><tr style={{fontWeight:800,borderTop:'2px solid var(--line)',background:'var(--surface-2)'}}>
+                <td>CONSOLIDATED</td>
+                <td className="num">₹{fmt(con.income)}</td>
+                <td className="num">₹{fmt(con.expense)}</td>
+                <td className="num" style={{color:con.profit>=0?'var(--green)':'var(--danger)'}}>₹{fmt(con.profit)}</td>
+                <td className="num">₹{fmt(con.assets)}</td>
+                <td className="num">₹{fmt(con.equity)}</td>
+                <td className="num">₹{fmt(con.cash)}</td>
+              </tr></tfoot>
+            </table>
           </div>
         </div>
+      </>)}
+
+      {tab==='tb' && (
         <div className="card">
-          <div className="card-head"><h3 className="card-title">Consolidated Balance Sheet</h3></div>
-          <div className="card-body">
-            <div style={{display:'flex',justifyContent:'space-between',padding:'6px 0',borderBottom:'1px solid var(--line)'}}><span>Total Assets</span><b className="rupee">₹{fmt(con.assets)}</b></div>
-            <div style={{display:'flex',justifyContent:'space-between',padding:'6px 0',borderBottom:'1px solid var(--line)'}}><span>Total Liabilities</span><b className="rupee">₹{fmt(con.liab)}</b></div>
-            <div style={{display:'flex',justifyContent:'space-between',padding:'6px 0',borderBottom:'1px solid var(--line)'}}><span>Total Equity (incl. profit)</span><b className="rupee">₹{fmt(con.equity)}</b></div>
-            <div style={{display:'flex',justifyContent:'space-between',padding:'8px 0',fontWeight:700,fontSize:12,color: Math.abs(con.assets-(con.equity+con.liab))<1?'var(--green)':'var(--danger)'}}>
-              <span>Assets − (Equity + Liab.)</span><span>₹{fmt(con.assets-(con.equity+con.liab))}</span>
+          <div className="card-head"><h3 className="card-title">Consolidated Trial Balance</h3>
+            <span className={'badge '+(Math.abs(tbDr-tbCr)<1?'badge-success':'badge-danger')}>{Math.abs(tbDr-tbCr)<1?'✓ Tallies':'⚠ Off by ₹'+fmt(tbDr-tbCr)}</span>
+          </div>
+          <div style={{overflowX:'auto'}}>
+            <table style={{fontSize:12}}>
+              <thead><tr>
+                <th style={{width:60}}>Code</th><th>Account</th>{entTh}
+                {hasElims && <th className="num" style={{width:100}}>Eliminations</th>}
+                <th className="num" style={{width:110}}>Debit</th><th className="num" style={{width:110}}>Credit</th>
+              </tr></thead>
+              <tbody>
+                {rows.map(a=>(
+                  <tr key={a.id}>
+                    <td style={{fontFamily:'var(--mono)',fontSize:11}}>{a.id}</td>
+                    <td>{a.name}</td>
+                    {group.map(e=><td key={e.id} className="num" style={{color:(a.per[e.id]||0)<0?'var(--info)':'inherit'}}>{a.per[e.id]?fmt(a.per[e.id]):'—'}</td>)}
+                    {hasElims && <td className="num" style={{color:'var(--warning)'}}>{a.elim?fmt(a.elim):'—'}</td>}
+                    <td className="num bold">{a.adj>0.005?fmt(a.adj):''}</td>
+                    <td className="num bold">{a.adj<-0.005?fmt(-a.adj):''}</td>
+                  </tr>
+                ))}
+              </tbody>
+              <tfoot><tr style={{fontWeight:800,borderTop:'2px solid var(--line)',background:'var(--surface-2)'}}>
+                <td colSpan={2}>TOTAL</td>
+                {group.map(e=><td key={e.id}></td>)}
+                {hasElims && <td></td>}
+                <td className="num">₹{fmt(tbDr)}</td><td className="num">₹{fmt(tbCr)}</td>
+              </tr></tfoot>
+            </table>
+          </div>
+          <div style={{padding:'8px 16px',fontSize:10.5,color:'var(--ink-3)'}}>Entity columns show raw net balances (negative = credit). Eliminations column nets to zero by construction, so the consolidated TB always tallies.</div>
+        </div>
+      )}
+
+      {tab==='pnl' && (
+        <div className="card">
+          <div className="card-head"><h3 className="card-title">Consolidated Profit &amp; Loss</h3><span style={{fontSize:11,color:'var(--ink-3)'}}>{applyElim?'After':'Before'} intercompany eliminations</span></div>
+          <div style={{overflowX:'auto'}}>
+            <table style={{fontSize:12}}>
+              <thead><tr><th style={{width:60}}>Code</th><th>Account</th>{entTh}{hasElims && <th className="num" style={{width:100}}>Elim.</th>}<th className="num" style={{width:120}}>Consolidated</th></tr></thead>
+              <tbody>
+                <tr className="group"><td colSpan={2+group.length+(hasElims?2:1)}>INCOME</td></tr>
+                {plRows('Income').map(a=>(
+                  <tr key={a.id}><td style={{fontFamily:'var(--mono)',fontSize:11}}>{a.id}</td><td>{a.name}</td>
+                    {group.map(e=><td key={e.id} className="num">{a.per[e.id]?fmt(-(a.per[e.id])):'—'}</td>)}
+                    {hasElims && <td className="num" style={{color:'var(--warning)'}}>{a.elim?fmt(-a.elim):'—'}</td>}
+                    <td className="num bold">₹{fmt(-a.adj)}</td></tr>
+                ))}
+                <tr className="subtotal"><td colSpan={2}>Total Income</td>{group.map(e=><td key={e.id} className="num">₹{fmt(e.income)}</td>)}{hasElims && <td></td>}<td className="num">₹{fmt(conIncome)}</td></tr>
+                <tr className="group"><td colSpan={2+group.length+(hasElims?2:1)}>EXPENSES</td></tr>
+                {plRows('Expense').map(a=>(
+                  <tr key={a.id}><td style={{fontFamily:'var(--mono)',fontSize:11}}>{a.id}</td><td>{a.name}</td>
+                    {group.map(e=><td key={e.id} className="num">{a.per[e.id]?fmt(a.per[e.id]):'—'}</td>)}
+                    {hasElims && <td className="num" style={{color:'var(--warning)'}}>{a.elim?fmt(a.elim):'—'}</td>}
+                    <td className="num bold">₹{fmt(a.adj)}</td></tr>
+                ))}
+                <tr className="subtotal"><td colSpan={2}>Total Expenses</td>{group.map(e=><td key={e.id} className="num">₹{fmt(e.expense)}</td>)}{hasElims && <td></td>}<td className="num">₹{fmt(conExpense)}</td></tr>
+              </tbody>
+              <tfoot><tr className="total"><td colSpan={2}>GROUP NET PROFIT / (LOSS)</td>
+                {group.map(e=><td key={e.id} className="num">₹{fmt(e.profit)}</td>)}{hasElims && <td></td>}
+                <td className="num" style={{fontSize:13}}>₹{fmt(conProfit)}</td></tr></tfoot>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {tab==='bs' && (
+        <div className="card">
+          <div className="card-head"><h3 className="card-title">Consolidated Balance Sheet</h3>
+            <span className={'badge '+(Math.abs(conAssets-(conEquity+conLiab))<1?'badge-success':'badge-danger')}>{Math.abs(conAssets-(conEquity+conLiab))<1?'✓ Tallies':'⚠ Off by ₹'+fmt(conAssets-(conEquity+conLiab))}</span>
+          </div>
+          <div style={{overflowX:'auto'}}>
+            <table style={{fontSize:12}}>
+              <thead><tr><th style={{width:60}}>Code</th><th>Account</th>{entTh}{hasElims && <th className="num" style={{width:100}}>Elim.</th>}<th className="num" style={{width:120}}>Consolidated</th></tr></thead>
+              <tbody>
+                <tr className="group"><td colSpan={2+group.length+(hasElims?2:1)}>EQUITY &amp; LIABILITIES</td></tr>
+                {bsRows('Equity').map(a=>(
+                  <tr key={a.id}><td style={{fontFamily:'var(--mono)',fontSize:11}}>{a.id}</td><td>{a.name}</td>
+                    {group.map(e=><td key={e.id} className="num">{a.per[e.id]?fmt(-(a.per[e.id])):'—'}</td>)}
+                    {hasElims && <td className="num">{a.elim?fmt(-a.elim):'—'}</td>}
+                    <td className="num bold">₹{fmt(-a.adj)}</td></tr>
+                ))}
+                <tr><td></td><td style={{fontStyle:'italic'}}>Current-year Profit (to Reserves)</td>
+                  {group.map(e=><td key={e.id} className="num" style={{fontStyle:'italic'}}>₹{fmt(e.profit)}</td>)}
+                  {hasElims && <td></td>}
+                  <td className="num bold" style={{fontStyle:'italic'}}>₹{fmt(conProfit)}</td></tr>
+                {bsRows('Liability').map(a=>(
+                  <tr key={a.id}><td style={{fontFamily:'var(--mono)',fontSize:11}}>{a.id}</td><td>{a.name}</td>
+                    {group.map(e=><td key={e.id} className="num">{a.per[e.id]?fmt(-(a.per[e.id])):'—'}</td>)}
+                    {hasElims && <td className="num" style={{color:'var(--warning)'}}>{a.elim?fmt(-a.elim):'—'}</td>}
+                    <td className="num bold">₹{fmt(-a.adj)}</td></tr>
+                ))}
+                <tr className="subtotal"><td colSpan={2}>Total Equity &amp; Liabilities</td>{group.map(e=><td key={e.id}></td>)}{hasElims && <td></td>}<td className="num">₹{fmt(r2(conEquity+conLiab))}</td></tr>
+                <tr className="group"><td colSpan={2+group.length+(hasElims?2:1)}>ASSETS</td></tr>
+                {bsRows('Asset').map(a=>(
+                  <tr key={a.id}><td style={{fontFamily:'var(--mono)',fontSize:11}}>{a.id}</td><td>{a.name}</td>
+                    {group.map(e=><td key={e.id} className="num">{a.per[e.id]?fmt(a.per[e.id]):'—'}</td>)}
+                    {hasElims && <td className="num" style={{color:'var(--warning)'}}>{a.elim?fmt(a.elim):'—'}</td>}
+                    <td className="num bold">₹{fmt(a.adj)}</td></tr>
+                ))}
+              </tbody>
+              <tfoot><tr className="total"><td colSpan={2}>TOTAL ASSETS</td>{group.map(e=><td key={e.id}></td>)}{hasElims && <td></td>}<td className="num" style={{fontSize:13}}>₹{fmt(conAssets)}</td></tr></tfoot>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {tab==='elim' && (
+        <div className="card">
+          <div className="card-head"><h3 className="card-title">Intercompany Eliminations</h3><span style={{fontSize:11,color:'var(--ink-3)'}}>Auto-detected by matching party GSTIN / name to group entities</span></div>
+          {!hasElims ? (
+            <div className="empty" style={{padding:40}}>
+              <div className="empty-ico">⇄</div>
+              <div>No intercompany relationships detected.</div>
+              <div style={{fontSize:11,marginTop:8,color:'var(--ink-3)',maxWidth:520,margin:'8px auto 0',lineHeight:1.6}}>
+                For auto-detection, add the other group company as a <b>party</b> in each entity's books with its <b>GSTIN</b>
+                (or the exact same name). E.g. in the subsidiary, create a customer "{(holding&&holding.name)||'Holding Co'}" with the holding's GSTIN,
+                and book intercompany sales/purchases against it.
+              </div>
             </div>
+          ) : (
+            <div style={{overflowX:'auto'}}>
+              <table style={{fontSize:12}}>
+                <thead><tr>
+                  <th>Pair</th><th className="num">Sales A→B</th><th className="num">B's Purchases</th><th className="num">Trade Elim.</th>
+                  <th className="num">Sales B→A</th><th className="num">A's Purchases</th><th className="num">Trade Elim.</th>
+                  <th className="num">A's Recv. ↔ B's Payable</th><th className="num">Balance Elim.</th><th>Status</th>
+                </tr></thead>
+                <tbody>
+                  {elims.rows.map((x,i)=>{
+                    const mm = x.tradeMismatchAB>1 || x.tradeMismatchBA>1 || x.balMismatchAB>1 || x.balMismatchBA>1;
+                    return (
+                      <tr key={i} style={mm?{background:'#fff8e6'}:{}}>
+                        <td style={{fontWeight:600}}>{x.a} ⇄ {x.b}</td>
+                        <td className="num">₹{fmt(x.salesAB)}</td><td className="num">₹{fmt(x.purchBA)}</td>
+                        <td className="num bold" style={{color:'var(--warning)'}}>₹{fmt(x.elimTradeAB)}</td>
+                        <td className="num">₹{fmt(x.salesBA)}</td><td className="num">₹{fmt(x.purchAB)}</td>
+                        <td className="num bold" style={{color:'var(--warning)'}}>₹{fmt(x.elimTradeBA)}</td>
+                        <td className="num">₹{fmt(x.arAB)} ↔ ₹{fmt(x.apBA)}</td>
+                        <td className="num bold" style={{color:'var(--warning)'}}>₹{fmt(x.elimBalAB)}</td>
+                        <td>{mm ? <span className="badge badge-gold" title="The two sides don't record the same amount — check for missing/mispriced intercompany entries">⚠ Mismatch</span> : <span className="badge badge-success">Matched</span>}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+          <div style={{padding:'10px 16px',fontSize:11,color:'var(--ink-3)',lineHeight:1.6,borderTop:'1px solid var(--line)'}}>
+            Only the <b>matched</b> (lower) amount of each pair is eliminated — mismatches are flagged, never silently removed.
+            Eliminations adjust Sales (3100) ↔ Purchases (4100) and Receivables (2400) ↔ Payables (1300) in the consolidated columns; each adjustment nets to zero so the TB stays tallied.
+            Unrealised profit in closing stock and minority interest are not computed — pass those as manual JVs for statutory filing (AS-21 / Ind-AS 110).
           </div>
         </div>
-      </div>
-
-      <div style={{marginTop:14,fontSize:11.5,color:'var(--ink-3)',lineHeight:1.6,background:'var(--surface-2)',border:'1px solid var(--line)',borderRadius:8,padding:'10px 12px'}}>
-        <b>Note:</b> This is a straight aggregation of each entity's books. As per AS-21 / Ind-AS 110, a statutory consolidation also <b>eliminates intercompany</b> sales, balances and unrealised profit, and separates minority interest. Post those elimination JVs in the holding company's books before relying on these figures for filing.
-      </div>
+      )}
     </>)}
   </>);
 }
@@ -13891,6 +14353,32 @@ function DataManagement({data, setData, showToast}){
     showToast('✓ Sample data loaded  '+sample.vouchers.length+' vouchers · Books tally at ₹'+fmt(totalDr));
   };
 
+  // Subsidiary sample — the mirror side of the holding sample's intercompany entries
+  const loadSubSample = () => {
+    const sample = buildSampleSubsidiaryData();
+    const bal = {};
+    sample.coa.forEach(a => { bal[a.id] = a.opening || 0; });
+    sample.vouchers.forEach(v => { if(v.status!=='Cancelled') (v.lines||[]).forEach(l => {
+      bal[l.accountId] = (bal[l.accountId]||0) + (l.debit||0) - (l.credit||0);
+    });});
+    const totalDr = Object.values(bal).reduce((s,b)=>s+(b>0?b:0),0);
+    const totalCr = Object.values(bal).reduce((s,b)=>s+(b<0?-b:0),0);
+    if(Math.abs(totalDr-totalCr) > 0.01){ showToast('Subsidiary sample tally error: Dr ₹'+fmt(totalDr)+' vs Cr ₹'+fmt(totalCr), 'error'); return; }
+    if(!confirm(
+      'Load SUBSIDIARY sample data ("Demo Trading Co Pvt Ltd")?\n\n'+
+      'This REPLACES this company\'s data with the mirror side of the holding\n'+
+      'sample\'s intercompany entries:\n'+
+      '• Purchases ₹2,00,000 from Demo Manufacturing Co (part-paid, ₹1,18,000 open)\n'+
+      '• Services billed ₹50,000 to the holding (unpaid)\n'+
+      '• Plus its own external sale & expenses\n\n'+
+      'Load it in a company created as "Subsidiary of Demo Manufacturing Co",\n'+
+      'then open Group Consolidation → Eliminations to see the auto-matching.\n\n'+
+      '✓ Books tally: Dr = Cr = ₹'+fmt(totalDr)
+    )) return;
+    setData(sample);
+    showToast('✓ Subsidiary sample loaded — open Group Consolidation to see eliminations');
+  };
+
   return (
     <>
       <div className="page-head">
@@ -13911,9 +14399,15 @@ function DataManagement({data, setData, showToast}){
               Perfect for exploring every report. <b>Replaces current data.</b>
             </div>
           </div>
-          <button className="btn btn-primary" onClick={loadSample} style={{padding:'12px 22px', fontWeight:700, whiteSpace:'nowrap'}}>
-            🎁 Load Sample Data
-          </button>
+          <div style={{display:'flex',flexDirection:'column',gap:8}}>
+            <button className="btn btn-primary" onClick={loadSample} style={{padding:'12px 22px', fontWeight:700, whiteSpace:'nowrap'}}>
+              🎁 Load Sample Data
+            </button>
+            <button className="btn" onClick={loadSubSample} style={{whiteSpace:'nowrap',fontSize:11.5}}
+              title="Mirror books for the intercompany demo — load this in a company created as 'Subsidiary of Demo Manufacturing Co'">
+              🏢 Load Subsidiary Sample
+            </button>
+          </div>
         </div>
       </div>
 
@@ -15630,7 +16124,9 @@ function HelpGuide({setPage}){
           '<b>DSO vs DPO trend</b>  a month-by-month chart of collection days (DSO) vs payment days (DPO) with the net cash gap, so you can see your working-capital cycle improving or slipping.',
           '<b>MIS Pack (Excel)</b>  one click exports a multi-sheet workbook (KPIs, monthly trend, top parties, expense breakdown) ready for a board or investor update.',
           '<b>PDF Bundle</b>  one click opens a print-ready bundle (cover, financial summary, Profit &amp; Loss, Balance Sheet, cash position)  save as a single PDF for your board pack or bank.',
-          '<b>Group Consolidation</b> (holding + subsidiaries)  tag each company with the <b>same Group Name</b> (Company Settings → Company Group) and mark one as Holding. The Group Consolidation page then loads every entity from the cloud and shows a combined CFO dashboard, consolidated P&amp;L and Balance Sheet, and each entity\'s contribution. Needs cloud sign-in. Note: it aggregates the books — post intercompany-elimination JVs before filing.',
+          '<b>Group Consolidation</b> (holding + subsidiaries)  your <b>first company is the Holding</b>; when adding more companies just pick <b>“Subsidiary of …”</b> — the group links automatically. The Consolidation page shows a combined CFO dashboard plus <b>full consolidated Trial Balance, P&amp;L and Balance Sheet</b> — account-by-account with a column per entity, an Eliminations column and the consolidated figure. Needs cloud sign-in.',
+          '<b>Intercompany eliminations</b>  add the other group company as a party <b>with its GSTIN</b> in each entity\'s books; the Eliminations tab then auto-matches intercompany sales↔purchases and receivables↔payables, eliminates the <b>matched</b> amount (mismatches are flagged, never silently removed) and the toggle applies it across all consolidated statements. Unrealised stock profit / minority interest still need manual JVs (AS-21).',
+          '<b>Smart entry suggestion</b>  pick a party on a new voucher and a 💡 chip offers the last similar entry — one click copies the items, accounts, narration and TDS setup with today\'s date and a fresh number.',
         ]},
         {type:'heading', text:'Analysis Reports (Account Manager)'},
         {type:'steps', items:[
