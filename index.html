@@ -486,11 +486,91 @@ const calcPTAnnual = (employee, fyStart) => {
 const STORAGE_KEY = 'miyeebooks_v1';
 const LEGACY_KEY  = 'myeebooks_v1';    // pre-rebrand key  auto-migrate on first load
 
-const loadData = () => {
+// ============================================================================
+// LOCAL STORAGE ENGINE  IndexedDB primary, localStorage fallback
+// localStorage caps at ~5 MB — with attachments and years of vouchers that
+// overflows silently. IndexedDB allows hundreds of MB. Because IndexedDB is
+// async-only while the app expects a synchronous loadData() at first render,
+// idbPreload() runs BEFORE ReactDOM renders and stashes the dataset in
+// __IDB_PRELOADED; loadData() then returns it synchronously. On the very first
+// run after this upgrade, any existing localStorage dataset is migrated into
+// IndexedDB once and the old blob removed. If IndexedDB is unavailable
+// (blocked/private mode), everything falls back to the old localStorage path.
+// ============================================================================
+let __IDB_OK = false;              // set true once the DB opens successfully
+let __IDB_PRELOADED = undefined;   // undefined = preload didn't run → sync fallback
+let __IDB_DB = null;
+
+function idbOpen(){
+  return new Promise((resolve, reject) => {
+    if(__IDB_DB) return resolve(__IDB_DB);
+    if(!window.indexedDB) return reject(new Error('IndexedDB unavailable'));
+    const req = indexedDB.open('miyeebooks', 1);
+    req.onupgradeneeded = () => { req.result.createObjectStore('kv'); };
+    req.onsuccess = () => { __IDB_DB = req.result; __IDB_OK = true; resolve(__IDB_DB); };
+    req.onerror = () => reject(req.error);
+    req.onblocked = () => reject(new Error('IndexedDB blocked'));
+  });
+}
+function idbGet(key){
+  return idbOpen().then(db => new Promise((resolve, reject) => {
+    const rq = db.transaction('kv','readonly').objectStore('kv').get(key);
+    rq.onsuccess = () => resolve(rq.result != null ? rq.result : null);
+    rq.onerror = () => reject(rq.error);
+  }));
+}
+function idbSet(key, value){
+  return idbOpen().then(db => new Promise((resolve, reject) => {
+    const tx = db.transaction('kv','readwrite');
+    tx.objectStore('kv').put(value, key);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  }));
+}
+function idbDel(key){
+  return idbOpen().then(db => new Promise((resolve, reject) => {
+    const tx = db.transaction('kv','readwrite');
+    tx.objectStore('kv').delete(key);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  }));
+}
+
+// Runs once before first render. Loads from IndexedDB; if empty, performs the
+// one-time localStorage → IndexedDB migration (only removing the localStorage
+// blob AFTER the IndexedDB write succeeded, so a failed migration loses nothing).
+function idbPreload(){
+  return idbGet(STORAGE_KEY).then(raw => {
+    if(raw != null){ __IDB_PRELOADED = JSON.parse(raw); return; }
+    let lsRaw = null;
+    try { lsRaw = localStorage.getItem(STORAGE_KEY) || localStorage.getItem(LEGACY_KEY); } catch(e){}
+    if(lsRaw != null){
+      const parsed = JSON.parse(lsRaw);
+      return idbSet(STORAGE_KEY, lsRaw).then(() => {
+        __IDB_PRELOADED = parsed;
+        try {
+          localStorage.removeItem(STORAGE_KEY);
+          localStorage.removeItem(LEGACY_KEY);
+          localStorage.setItem(STORAGE_KEY + '_storage', 'idb');   // diagnostic marker
+        } catch(e){}
+        console.info('MiyeeBooks: local data migrated from localStorage to IndexedDB ('+Math.round(lsRaw.length/1024)+' KB)');
+      });
+    }
+    __IDB_PRELOADED = null;   // preload ran; no local data exists
+  }).catch(e => {
+    console.warn('idbPreload failed — staying on localStorage:', e);
+    __IDB_OK = false;
+    // leave __IDB_PRELOADED = undefined → loadData() uses the sync fallback
+  });
+}
+
+function loadData(){
+  // Preferred path: dataset preloaded from IndexedDB before first render
+  if(__IDB_PRELOADED !== undefined) return __IDB_PRELOADED;
+  // Fallback (IndexedDB unavailable): original synchronous localStorage path
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if(raw) return JSON.parse(raw);
-    // Migrate data saved under the old brand key
     const legacyRaw = localStorage.getItem(LEGACY_KEY);
     if(legacyRaw) {
       localStorage.setItem(STORAGE_KEY, legacyRaw);
@@ -499,18 +579,22 @@ const loadData = () => {
     }
   } catch(e){}
   return null;
-};
-const saveData = (data) => {
-  try {
-    // Cap the unbounded audit log so localStorage (≈5 MB) doesn't silently overflow
-    const toSave = (data.auditLog && data.auditLog.length > 1000)
-      ? { ...data, auditLog: data.auditLog.slice(-1000) } : data;
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(toSave));
-  } catch(e){
-    // localStorage full — warn once so the user knows to enable cloud sync / export
-    console.warn('saveData: localStorage write failed (quota?)', e);
+}
+function saveData(data){
+  // Cap the unbounded audit log before persisting
+  const toSave = (data.auditLog && data.auditLog.length > 1000)
+    ? { ...data, auditLog: data.auditLog.slice(-1000) } : data;
+  const json = JSON.stringify(toSave);
+  if(__IDB_OK){
+    idbSet(STORAGE_KEY, json).catch(e => {
+      console.warn('saveData: IndexedDB write failed — falling back to localStorage', e);
+      try { localStorage.setItem(STORAGE_KEY, json); } catch(e2){ console.warn('saveData: localStorage fallback also failed (quota?)', e2); }
+    });
+  } else {
+    try { localStorage.setItem(STORAGE_KEY, json); }
+    catch(e){ console.warn('saveData: localStorage write failed (quota?) — sign in for cloud sync or export a backup', e); }
   }
-};
+}
 
 // ============================================================================
 // FIREBASE CONFIGURATION
@@ -1202,7 +1286,9 @@ function generateInvoicePDF(voucher, appData){
   // The QR encodes the standard upi://pay deep link with the exact invoice
   // amount — scannable by GPay/PhonePe/Paytm/BHIM. Rendered by the qrcodejs
   // CDN inside the print window; if offline, the UPI ID still prints as text.
-  const upiOk = !!(co.upiId && isSales && invoiceTotal > 0);
+  // Only render the QR for a plausibly valid VPA — apps reject unregistered /
+  // malformed payee IDs with a "not registered" error, so bad input = no QR.
+  const upiOk = !!(co.upiId && /^[\w.\-]{2,}@[a-zA-Z]{2,}$/.test(co.upiId) && isSales && invoiceTotal > 0);
   const upiLink = upiOk ? 'upi://pay?pa=' + encodeURIComponent(co.upiId) +
     '&pn=' + encodeURIComponent((co.name||'').slice(0,40)) +
     '&am=' + Math.abs(invoiceTotal).toFixed(2) + '&cu=INR' +
@@ -2578,7 +2664,9 @@ const buildSampleData = () => {
   mkDBN('2026-02-11', P.steelco, '4100', 16000, 18, {cc:CC.a});                // Debit note (purchase return)
 
   return {
-    company: {...DEFAULT_COMPANY, name:'Demo Manufacturing Co Pvt Ltd', upiId:'demomfg@okhdfcbank',
+    // NOTE: upiId left blank intentionally — a fake demo VPA makes UPI apps show
+    // "payee not registered" when scanned. Users must enter their own active ID.
+    company: {...DEFAULT_COMPANY, name:'Demo Manufacturing Co Pvt Ltd', upiId:'',
       modules:{gst:true, tds:true, payroll:true, factory:true, trader:true, service:false}},
     coa, parties, vouchers,
     forexRates: FOREX_RATES, gstr2bData: [],
@@ -5933,6 +6021,7 @@ function CompanySettings({data, setData, showToast, readOnly=false}){
       parentCompanyId:data.company.parentCompanyId, isHolding:data.company.isHolding },
       auditLog:[auditEntry('RESET','All data reset to a clean company')] });
     try { localStorage.removeItem(STORAGE_KEY); } catch(e){}
+    try { if(__IDB_OK) idbDel(STORAGE_KEY); } catch(e){}
     setData(fresh);
     showToast('All data has been reset');
   };
@@ -6206,8 +6295,13 @@ function CompanySettings({data, setData, showToast, readOnly=false}){
             <div className="field"><label>FY End</label><input type="date" value={f.fyEnd} onChange={e => setF({...f, fyEnd:e.target.value})} /></div>
             <div className="field" style={{gridColumn:'span 2'}}><label>Bank Details (for invoices)</label><input value={f.bankDetails||''} onChange={e => setF({...f, bankDetails:e.target.value})} placeholder="A/c No: XXXX | Bank: Kotak | IFSC: KKBK..." /></div>
             <div className="field"><label>UPI ID (prints a Pay-Now QR on invoices)</label>
-              <input value={f.upiId||''} onChange={e => setF({...f, upiId:e.target.value.trim()})} placeholder="yourname@okhdfcbank" style={{fontFamily:'var(--mono)'}} />
-              <div className="help">Customers scan the QR on the invoice and pay the exact amount via any UPI app. Leave blank to hide.</div>
+              <input value={f.upiId||''} onChange={e => setF({...f, upiId:e.target.value.trim().toLowerCase()})} placeholder="yourname@okhdfcbank"
+                style={{fontFamily:'var(--mono)', ...(f.upiId && !/^[\w.\-]{2,}@[a-zA-Z]{2,}$/.test(f.upiId) ? {borderColor:'var(--danger)'} : {})}} />
+              <div className="help" style={f.upiId && !/^[\w.\-]{2,}@[a-zA-Z]{2,}$/.test(f.upiId) ? {color:'var(--danger)',fontWeight:600} : {}}>
+                {f.upiId && !/^[\w.\-]{2,}@[a-zA-Z]{2,}$/.test(f.upiId)
+                  ? '✗ Not a valid UPI ID format (name@bank)'
+                  : '⚠ Must be YOUR real, ACTIVE UPI ID — apps verify the payee and reject unregistered IDs. Test it: scan a printed invoice and send yourself ₹1. Leave blank to hide the QR.'}
+              </div>
             </div>
           </div>
           <div style={{marginTop:18, display:'flex', gap:8, justifyContent:'space-between'}}>
@@ -8949,8 +9043,8 @@ function HealthCheck({data, setPage}){
     { key:'gstin', label:'All GSTINs pass the checksum', ok: checks.badGstin.length===0, warn:true,
       detail: checks.badGstin.length===0 ? 'Every stored GSTIN is structurally valid' : `${checks.badGstin.length} invalid GSTIN(s): ${checks.badGstin.slice(0,6).join(', ')} — fix on the party / company master`,
       fix:'parties' },
-    { key:'size', label:'Data size within safe limits', ok: checks.sizeKB < 3500, warn:true,
-      detail: `${checks.sizeKB.toFixed(0)} KB · ${checks.voucherCount} active vouchers · ${checks.auditCount} audit entries` + (checks.sizeKB>=3500?' — approaching local/cloud limits; export a backup or close the FY':'') },
+    { key:'size', label:'Data size within practical limits', ok: checks.sizeKB < 10000, warn:true,
+      detail: `${checks.sizeKB.toFixed(0)} KB · ${checks.voucherCount} active vouchers · ${checks.auditCount} audit entries · stored in ${__IDB_OK?'IndexedDB (large capacity)':'localStorage (~5 MB cap!)'}` + (checks.sizeKB>=10000?' — getting heavy for cloud sync/memory; archive the FY or trim attachments':'') },
   ];
   const fails = items.filter(i=>!i.ok && !i.warn).length;
   const warns = items.filter(i=>!i.ok && i.warn).length;
@@ -15510,7 +15604,7 @@ function HelpGuide({setPage}){
         {type:'heading', text:'Printing & Sharing Invoices'},
         {type:'text', text:'Click <b>⎙ PDF</b> on any Sales/Purchase/CN/DN row. The invoice opens in a new window with <b>💬 WhatsApp</b> and <b>📧 Email</b> buttons (pre-filled message  attach the saved PDF) plus Print/Save-as-PDF. Use <b>⊕ e-Inv</b> to download the IRP e-invoice JSON.'},
         {type:'heading', text:'UPI Pay-Now QR on Invoices'},
-        {type:'text', text:'Set your <b>UPI ID</b> in Company Settings (next to Bank Details). Every sales invoice then prints a <b>📱 Scan &amp; Pay QR</b> with the exact invoice amount and number pre-filled — customers scan with GPay/PhonePe/Paytm/BHIM and pay instantly. (QR renders when online; the UPI ID always prints as text.)'},
+        {type:'text', text:'Set your <b>UPI ID</b> in Company Settings (next to Bank Details). Every sales invoice then prints a <b>📱 Scan &amp; Pay QR</b> with the exact invoice amount and number pre-filled — customers scan with GPay/PhonePe/Paytm/BHIM and pay instantly. <b>Important:</b> it must be your <b>real, active</b> UPI ID — UPI apps verify the payee, so a made-up/demo ID shows "payee not registered". After saving, print one invoice and test-pay yourself ₹1. (QR renders when online; the UPI ID always prints as text.)'},
         {type:'heading', text:'Works on Mobile'},
         {type:'text', text:'On phones and small screens the sidebar becomes a <b>☰ menu</b>, dashboards stack into two columns, and tables scroll sideways — check cash, chase payments or raise an invoice from anywhere.'},
         {type:'heading', text:'Invoice Templates (10 designs)'},
@@ -15571,6 +15665,8 @@ function HelpGuide({setPage}){
           '<b>Fixed Asset Register</b>  record assets and compute depreciation under both Companies Act (WDV/SLM, day-prorated) and Income-Tax (block WDV, 180-day half rule). One click posts the depreciation JV.',
           '<b>Prepaid Amortization</b>  spread a prepaid expense (insurance/AMC/rent) over N months; "Post N due" auto-posts each month\'s Dr-expense / Cr-prepaid JV.',
         ]},
+        {type:'heading', text:'Local Storage Upgraded (IndexedDB)'},
+        {type:'text', text:'Local-mode data now lives in <b>IndexedDB</b> (hundreds of MB) instead of localStorage (~5 MB cap) — years of vouchers and attachments fit safely. Your existing data <b>migrates automatically</b> the first time you open the app after this upgrade; nothing to do. If the browser blocks IndexedDB (some private modes), the app quietly falls back to localStorage. Cloud sync is unchanged.'},
         {type:'heading', text:'Data Health & Closing (Auditor)'},
         {type:'steps', items:[
           '<b>Data Health Check</b>  live checks: Trial Balance tallies, no unbalanced/orphan/empty vouchers, no duplicate numbers, GST posted to GST ledgers, negative cash, data size. Run it before filing or year-end.',
@@ -17806,7 +17902,13 @@ function InventoryMovements({data}){
 // ============================================================================
 // MOUNT
 // ============================================================================
-ReactDOM.createRoot(document.getElementById('root')).render(<AuthGate />);
+// Preload local data from IndexedDB (and run the one-time localStorage
+// migration) BEFORE first render, so loadData() stays synchronous. .finally()
+// guarantees the app renders even if IndexedDB is blocked — loadData() then
+// falls back to the original localStorage path.
+idbPreload().finally(() => {
+  ReactDOM.createRoot(document.getElementById('root')).render(<AuthGate />);
+});
 </script>
 
 <!-- Bootstrap: compile the app JSX (esbuild-wasm; Babel-7 fallback) then run it -->
