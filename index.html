@@ -636,10 +636,17 @@ const fbCompanyRef = (uid, companyId) =>
 const fbListCompanies = async (uid) => {
   if(!fbDb) return [];
   try {
-    const snap = await fbDb.collection('users').doc(uid).collection('companies')
-      .orderBy('updatedAt','desc').get();
-    return snap.docs.map(d => ({ id: d.id, name: d.data().name||'Unnamed', gstin: d.data().gstin||'',
-      groupName: d.data().groupName||'', isHolding: !!d.data().isHolding, parentCompanyId: d.data().parentCompanyId||'' }));
+    // Do NOT .orderBy('updatedAt') here — Firestore DROPS any document missing
+    // that field, which made companies created by older builds (e.g. a holding
+    // company) silently disappear from the switch list AND from consolidation.
+    // Fetch all, sort client-side (missing updatedAt → sorts last).
+    const snap = await fbDb.collection('users').doc(uid).collection('companies').get();
+    const arr = snap.docs.map(d => { const x = d.data();
+      return { id: d.id, name: x.name||'Unnamed', gstin: x.gstin||'',
+        groupName: x.groupName||'', isHolding: !!x.isHolding, parentCompanyId: x.parentCompanyId||'',
+        _upd: (x.updatedAt && x.updatedAt.toMillis) ? x.updatedAt.toMillis() : (x.createdAt && x.createdAt.toMillis ? x.createdAt.toMillis() : 0) }; });
+    arr.sort((a,b) => b._upd - a._upd);
+    return arr;
   } catch(e){ console.warn('fbListCompanies:', e); return []; }
 };
 
@@ -13219,7 +13226,12 @@ function GroupConsolidation({data, user, ownerId, companyId}){
           // Use the live in-memory data for the current company (may have unsaved edits)
           const d = (c.id===companyId) ? data : await fbLoadCompany(ownerId, c.id);
           const fin = computeEntityFinancials(d);
-          if(fin) out.push({id:c.id, ...fin, data:d, isCurrent:c.id===companyId});
+          // Carry the doc-meta relationship fields (parentCompanyId lives only on
+          // the Firestore doc, not the payload) so grouping can use parent/child links.
+          if(fin) out.push({id:c.id, ...fin, data:d, isCurrent:c.id===companyId,
+            parentCompanyId: c.parentCompanyId || '',
+            isHolding: fin.isHolding || !!c.isHolding,
+            groupName: (fin.groupName || c.groupName || '') });
         }
         if(alive) setSt({loading:false, entities:out, error:''});
       } catch(e){ if(alive) setSt({loading:false, entities:[], error:String(e)}); }
@@ -13227,11 +13239,24 @@ function GroupConsolidation({data, user, ownerId, companyId}){
     return () => { alive = false; };
   }, [ownerId, companyId, groupName]);
 
-  // Entities that belong to this group (same non-empty group name). If no group
-  // name is set anywhere, fall back to just the current company.
-  const group = groupName
-    ? st.entities.filter(e => (e.groupName||'').toLowerCase() === groupName.toLowerCase())
-    : st.entities.filter(e => e.isCurrent);
+  // Robust group membership: an entity belongs to this group if it shares the
+  // (non-empty) group name OR is linked by a holding↔subsidiary relationship
+  // (parent/child/sibling). This survives a group-name mismatch, which is why a
+  // holding could previously appear alone with no subsidiary column.
+  const cur = st.entities.find(e => e.isCurrent) || st.entities[0];
+  const gkey = e => ((e && e.groupName)||'').trim().toLowerCase();
+  const inGroup = (e) => {
+    if(!cur) return false;
+    if(e.id === cur.id) return true;
+    if(gkey(e) && gkey(e) === gkey(cur)) return true;                       // same group name
+    if(e.parentCompanyId && e.parentCompanyId === cur.id) return true;      // e is a subsidiary of current
+    if(cur.parentCompanyId && cur.parentCompanyId === e.id) return true;    // current is a subsidiary of e
+    if(e.parentCompanyId && cur.parentCompanyId && e.parentCompanyId === cur.parentCompanyId) return true; // siblings
+    return false;
+  };
+  const group = st.entities.filter(inGroup)
+    // Holding first, then subsidiaries alphabetically → columns read Holding | Subsidiary | … | Consolidated
+    .sort((a,b) => (b.isHolding?1:0)-(a.isHolding?1:0) || a.name.localeCompare(b.name));
   const holding = group.find(e=>e.isHolding);
 
   // ── Account-level consolidation worksheet ─────────────────────────────────
@@ -13315,7 +13340,7 @@ function GroupConsolidation({data, user, ownerId, companyId}){
     <div className="page-head">
       <div>
         <h1 className="page-title">Group Consolidation</h1>
-        <div className="page-sub">{groupName ? <>Group: <b>{groupName}</b> · {group.length} entit{group.length===1?'y':'ies'}</> : 'Combined financials across your holding & subsidiaries'}</div>
+        <div className="page-sub">{group.length>0 ? <>Group: <b>{groupName || (holding&&holding.name) || 'Ungrouped'}</b> · {group.length} entit{group.length===1?'y':'ies'} · {group.map(e=>e.name).join(' + ')}</> : 'Combined financials across your holding & subsidiaries'}</div>
       </div>
       {group.length>0 && <div className="page-actions">
         <button className="btn btn-sm" onClick={handleExcel}>⬇ Excel</button>
@@ -13340,11 +13365,18 @@ function GroupConsolidation({data, user, ownerId, companyId}){
       <div className="card" style={{borderLeft:'4px solid var(--danger)'}}><div className="card-body" style={{fontSize:13}}>Couldn't load group companies: {st.error}</div></div>
     )}
 
-    {!st.loading && !st.error && !groupName && (
+    {!st.loading && !st.error && group.length<=1 && st.entities.length>1 && (
       <div className="card" style={{borderLeft:'4px solid var(--accent)',marginBottom:16}}>
         <div className="card-body" style={{fontSize:13,lineHeight:1.7}}>
-          <b>No Group Name set for this company.</b> Open <b>Company Settings → Company Group</b> and give this company
-          (and each subsidiary) the same Group Name. Showing this company only for now.
+          <b>Only this company is in the group.</b> To link others, create each subsidiary via <b>⇌ Switch → + Add New Company → “Subsidiary of …”</b>,
+          or give them the <b>same Group Name</b> (Company Settings → Company Group). Then they appear here as separate columns.
+        </div>
+      </div>
+    )}
+    {!st.loading && !st.error && group.length<=1 && st.entities.length<=1 && (
+      <div className="card" style={{borderLeft:'4px solid var(--accent)',marginBottom:16}}>
+        <div className="card-body" style={{fontSize:13,lineHeight:1.7}}>
+          <b>You have only one company.</b> Add a subsidiary via <b>⇌ Switch → + Add New Company → “Subsidiary of {(data.company&&data.company.name)||'this company'}”</b> to see consolidated figures across both.
         </div>
       </div>
     )}
