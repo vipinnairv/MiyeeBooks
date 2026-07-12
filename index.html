@@ -3971,6 +3971,7 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
       {id:'pnl_trend', label:'P&L Monthly Trend', ico:'📈'},
       {id:'bs', label:'Balance Sheet', ico:'⊠'},
       {id:'cashflow', label:'Cash Flow (AS-3)', ico:'⊜'},
+      {id:'fund_flow', label:'Fund Flow Statement', ico:'⇅'},
       {id:'cash_forecast', label:'13-Week Cash Forecast', ico:'⛅'},
       {id:'budget', label:'Budget vs Actual', ico:'◳'},
       {id:'profitability', label:'Profitability Analysis', ico:'◴'},
@@ -3994,9 +3995,11 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
         {id:'gstr1', label:'GSTR-1', ico:'◐'},
         {id:'gstr3b', label:'GSTR-3B', ico:'◑'},
         {id:'gstr2b', label:'GSTR-2B Recon.', ico:'◓'},
+        {id:'gst_recon', label:'GST 3-Way Recon', ico:'⚖'},
         {id:'gstr9', label:'GSTR-9 Annual', ico:'◍'},
         {id:'sp_register', label:'Sales / Purchase Register', ico:'📑'},
         {id:'hsn_finder', label:'HSN / SAC Rate Finder', ico:'🔍'},
+        {id:'tax_rates', label:'Tax Rate Reference', ico:'📖'},
       ] : []),
       {id:'compliance', label:'Compliance Calendar', ico:'📅'},
       {id:'period_close', label:'Period Close', ico:'🔄'},
@@ -4139,10 +4142,13 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
           {page==='pnl' && <ProfitLoss data={data} balances={ledgerBalances} />}
           {page==='bs' && <BalanceSheet data={data} balances={ledgerBalances} />}
           {page==='cashflow' && <CashFlow data={data} balances={ledgerBalances} />}
+          {page==='fund_flow' && <FundFlow data={data} />}
           {page==='cash_forecast' && <CashForecast data={data} balances={ledgerBalances} />}
           {page==='gstr1' && <GSTR1 data={data} />}
           {page==='gstr3b' && <GSTR3B data={data} balances={ledgerBalances} />}
           {page==='gstr2b' && <GSTR2B data={data} setData={setData} showToast={showToast} />}
+          {page==='gst_recon' && <GSTRecon data={data} setData={canWrite?setData:()=>{}} showToast={showToast} readOnly={isViewer} />}
+          {page==='tax_rates' && <TaxRates data={data} />}
           {page==='budget' && <BudgetVsActual data={data} setData={canWrite?setData:()=>{}} showToast={showToast} readOnly={isViewer} />}
           {page==='profitability' && <ProfitabilityReport data={data} />}
           {page==='sp_register' && <SalesPurchaseRegister data={data} />}
@@ -5087,23 +5093,46 @@ function Dashboard({data, balances, setPage, setData=()=>{}, showToast=()=>{}}){
     return Object.values(latestByChain).filter(v => !v.date.startsWith(thisMonth));
   }, [data.vouchers, thisMonth]);
 
-  const postRecurring = (tmpl) => {
-    if(!isPremiumActive(data.company) && (data.vouchers||[]).filter(v=>v.status!=='Cancelled').length >= FREE_VOUCHER_LIMIT){
+  // Every month from AFTER the template's last posting up to this month (catch-up).
+  const missedMonths = (tmpl) => {
+    const out = [];
+    let [y, m] = tmpl.date.slice(0,7).split('-').map(Number);
+    for(let i=0;i<60;i++){
+      m++; if(m>12){ m=1; y++; }
+      const key = `${y}-${String(m).padStart(2,'0')}`;
+      out.push(key);
+      if(key === thisMonth) break;
+      if(key > thisMonth) { out.pop(); break; }
+    }
+    return out;
+  };
+
+  // Post a copy for each given month (default = every missed month → catch-up).
+  const postRecurring = (tmpl, months) => {
+    const targets = months || missedMonths(tmpl);
+    if(!targets.length) return;
+    const existing = (data.vouchers||[]).filter(v=>v.status!=='Cancelled').length;
+    if(!isPremiumActive(data.company) && existing + targets.length > FREE_VOUCHER_LIMIT){
       showToast(`Free limit (${FREE_VOUCHER_LIMIT} entries) reached  upgrade to Premium`,'error'); return;
     }
-    const newDate = thisMonth + '-' + tmpl.date.slice(8,10);  // same day-of-month
-    if(isDateLocked(data.company, newDate)){ showToast('Period is locked','error'); return; }
+    const day = tmpl.date.slice(8,10);
+    const usable = targets.filter(mo => !isDateLocked(data.company, mo + '-' + day));
+    if(!usable.length){ showToast('All target periods are locked','error'); return; }
     setData(prev => {
-      const typeCount = prev.vouchers.filter(x => x.type === tmpl.type).length;
-      const num = tmpl.type + '/' + String(typeCount+1).padStart(4,'0');
-      const copy = {...tmpl, id:uid(), number:num, date:newDate,
-        lines:(tmpl.lines||[]).map(l=>({...l, id:uid()})),
-        recurringSourceId: tmpl.recurringSourceId || tmpl.id,
-        createdAt: new Date().toISOString()};
-      return {...prev, vouchers:[...prev.vouchers, copy],
-        auditLog:[...(prev.auditLog||[]), auditEntry('RECURRING', `${num} (${tmpl.type}) ₹${fmt(tmpl.amount||0)} auto-posted for ${thisMonth}`)]};
+      let count = prev.vouchers.filter(x => x.type === tmpl.type).length;
+      const adds = usable.map(mo => {
+        count++;
+        return {...tmpl, id:uid(), number: tmpl.type + '/' + String(count).padStart(4,'0'),
+          date: mo + '-' + day,
+          lines:(tmpl.lines||[]).map(l=>({...l, id:uid()})),
+          items:(tmpl.items||[]).map(it=>({...it, id:uid()})),
+          recurringSourceId: tmpl.recurringSourceId || tmpl.id,
+          createdAt: new Date().toISOString()};
+      });
+      return {...prev, vouchers:[...prev.vouchers, ...adds],
+        auditLog:[...(prev.auditLog||[]), auditEntry('RECURRING', `${adds.length}× ${tmpl.type} auto-posted (${usable[0]}${usable.length>1?'…'+usable[usable.length-1]:''})`)]};
     });
-    showToast(`🔁 Posted recurring ${tmpl.type} for ${thisMonth}`);
+    showToast(`🔁 Posted ${usable.length} recurring ${tmpl.type}${usable.length>1?'s (catch-up)':''}`);
   };
 
   const stats = useMemo(() => {
@@ -5180,14 +5209,22 @@ function Dashboard({data, balances, setPage, setData=()=>{}, showToast=()=>{}}){
                 ✓ Post All ({recurringDue.length})
               </button>
             </div>
-            {recurringDue.map(t => (
-              <div key={t.id} style={{display:'flex',alignItems:'center',gap:12,padding:'7px 0',borderTop:'1px solid var(--line-2)',fontSize:12}}>
-                <span className="badge badge-info" style={{fontSize:10}}>{t.type}</span>
-                <span style={{flex:1}}>{t.narration || t.partyName || t.number} <span style={{color:'var(--ink-3)'}}>· last posted {t.date}</span></span>
-                <span style={{fontFamily:'var(--mono)',fontWeight:600}}>₹{fmt(t.amount||0)}</span>
-                <button className="btn btn-sm" style={{fontSize:11}} onClick={()=>postRecurring(t)}>Post</button>
-              </div>
-            ))}
+            {recurringDue.map(t => {
+              const miss = missedMonths(t);
+              return (
+                <div key={t.id} style={{display:'flex',alignItems:'center',gap:12,padding:'7px 0',borderTop:'1px solid var(--line-2)',fontSize:12}}>
+                  <span className="badge badge-info" style={{fontSize:10}}>{t.type}</span>
+                  <span style={{flex:1}}>{t.narration || t.partyName || t.number}
+                    <span style={{color:'var(--ink-3)'}}> · last posted {fmtDate(t.date)}</span>
+                    {miss.length>1 && <span style={{color:'var(--danger)',fontWeight:700}}> · {miss.length} months due</span>}
+                  </span>
+                  <span style={{fontFamily:'var(--mono)',fontWeight:600}}>₹{fmt(t.amount||0)}</span>
+                  <button className="btn btn-sm" style={{fontSize:11}} onClick={()=>postRecurring(t)}>
+                    {miss.length>1 ? `Post all ${miss.length}` : 'Post'}
+                  </button>
+                </div>
+              );
+            })}
           </div>
         </div>
       )}
@@ -5273,6 +5310,57 @@ function Dashboard({data, balances, setPage, setData=()=>{}, showToast=()=>{}}){
           <div className="stat-delta">Entries posted</div>
         </div>
       </div>
+
+      {/* Monthly Revenue / Expense / Profit trend */}
+      {(() => {
+        const fy = data.company.fyStart || (today().slice(0,4)+'-04-01');
+        const y0 = parseInt(fy.slice(0,4));
+        const months = [];
+        for(let i=0;i<12;i++){ const m=4+i; const yy=y0+(m>12?1:0); const mm=((m-1)%12)+1; months.push(`${yy}-${String(mm).padStart(2,'0')}`); }
+        const agg = {}; months.forEach(k=>agg[k]={rev:0,exp:0});
+        (data.vouchers||[]).forEach(v=>{
+          if(v.status==='Cancelled') return; const k=v.date.slice(0,7); if(!(k in agg)) return;
+          if(v.type==='SAL') agg[k].rev += v.total||v.amount||0;
+          if(v.type==='CRN') agg[k].rev -= v.total||v.amount||0;
+          if(v.type==='PUR') agg[k].exp += v.total||v.amount||0;
+          if(v.type==='DBN') agg[k].exp -= v.total||v.amount||0;
+        });
+        const data12 = months.map(k=>({k, mon:parseInt(k.slice(5)), ...agg[k], profit:agg[k].rev-agg[k].exp}));
+        const hasData = data12.some(d=>d.rev||d.exp);
+        if(!hasData) return null;
+        const MN=['','Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+        const W=760,H=210,padL=44,padR=10,padT=12,padB=24;
+        const maxV=Math.max(1,...data12.map(d=>Math.max(d.rev,d.exp)));
+        const bw=(W-padL-padR)/data12.length;
+        const y=v=>padT+(1-v/maxV)*(H-padT-padB);
+        const grid=[0,.25,.5,.75,1].map(f=>({v:Math.round(maxV*(1-f)),yy:padT+f*(H-padT-padB)}));
+        return (
+          <div className="card" style={{marginBottom:18}}>
+            <div className="card-head"><h3 className="card-title">Revenue vs Expense — Monthly (FY {y0}–{String(y0+1).slice(2)})</h3>
+              <span style={{fontSize:11}}>
+                <span style={{color:'var(--green)'}}>■</span> Revenue &nbsp;
+                <span style={{color:'var(--danger)'}}>■</span> Expense &nbsp;
+                <span style={{color:'var(--primary)'}}>▬</span> Profit
+              </span>
+            </div>
+            <div className="card-body" style={{padding:'12px 16px',overflowX:'auto'}}>
+              <svg viewBox={`0 0 ${W} ${H}`} style={{width:'100%',minWidth:560,height:'auto'}}>
+                {grid.map((g,i)=>(<g key={i}>
+                  <line x1={padL} y1={g.yy} x2={W-padR} y2={g.yy} stroke="var(--line)" strokeWidth="1" />
+                  <text x={padL-6} y={g.yy+3} textAnchor="end" fontSize="9" fill="var(--ink-3)">{g.v>=100000?(g.v/100000).toFixed(1)+'L':g.v>=1000?(g.v/1000).toFixed(0)+'k':g.v}</text>
+                </g>))}
+                {data12.map((d,i)=>{ const x=padL+i*bw; return (<g key={i}>
+                  <rect x={x+bw*0.18} y={y(d.rev)} width={bw*0.28} height={Math.max(0,y(0)-y(d.rev))} fill="var(--green)" opacity="0.85" rx="1" />
+                  <rect x={x+bw*0.52} y={y(d.exp)} width={bw*0.28} height={Math.max(0,y(0)-y(d.exp))} fill="var(--danger)" opacity="0.8" rx="1" />
+                  <text x={x+bw*0.5} y={H-8} textAnchor="middle" fontSize="9" fill="var(--ink-3)">{MN[d.mon]}</text>
+                </g>); })}
+                <polyline points={data12.map((d,i)=>`${padL+i*bw+bw*0.5},${y(d.profit).toFixed(1)}`).join(' ')} fill="none" stroke="var(--primary)" strokeWidth="2" />
+                {data12.map((d,i)=><circle key={'p'+i} cx={padL+i*bw+bw*0.5} cy={y(d.profit)} r="2.3" fill="var(--primary)" />)}
+              </svg>
+            </div>
+          </div>
+        );
+      })()}
 
       <div style={{display:'grid', gridTemplateColumns:'2fr 1fr', gap:18}}>
         <div className="card">
@@ -6095,12 +6183,12 @@ function Parties({data, setData, showToast, readOnly=false}){
         </table>
       </div>
 
-      {showModal && <PartyModal party={editing} onSave={handleSave} onClose={() => { setShowModal(false); setEditing(null); }} />}
+      {showModal && <PartyModal party={editing} existingParties={data.parties} onSave={handleSave} onClose={() => { setShowModal(false); setEditing(null); }} />}
     </>
   );
 }
 
-function PartyModal({party, onSave, onClose}){
+function PartyModal({party, existingParties=[], onSave, onClose}){
   const [f, setF] = useState(party || {
     name:'', type:'Customer', gstin:'', pan:'', tan:'',
     state:'Gujarat', stateCode:'24', address:'', city:'', pincode:'',
@@ -6172,6 +6260,12 @@ function PartyModal({party, onSave, onClose}){
                   return '✗ Invalid GSTIN format';
                 })()}
               </div>
+              {(() => {
+                const g = (f.gstin||'').trim().toUpperCase();
+                if(g.length !== 15) return null;
+                const dup = (existingParties||[]).find(p => p.id !== (party&&party.id) && (p.gstin||'').trim().toUpperCase() === g);
+                return dup ? <div className="help" style={{color:'var(--danger)',fontWeight:700}}>⚠ Duplicate — this GSTIN is already used by “{dup.name}”</div> : null;
+              })()}
             </div>
             <div className="field"><label>PAN</label>
               <input value={f.pan||''} onChange={e => setF({...f, pan:e.target.value.toUpperCase()})} placeholder="ABCDE1234F" maxLength="10" style={{fontFamily:'var(--mono)'}} />
@@ -7238,6 +7332,18 @@ function VoucherModal({vtype, voucher, prefill, data, onSave, onClose, showToast
       .sort((a,b) => (b.date||'').localeCompare(a.date||''));
     return past[0] || null;
   }, [voucher, vtype, f.partyId, data.vouchers]);
+
+  // ── Double-payment guard ──────────────────────────────────────────────────
+  // Warn if a near-identical PAY/REC already exists (same party, same amount,
+  // within ±4 days) — the classic "paid the same bill twice" mistake.
+  const dupPayment = useMemo(() => {
+    if(voucher || !['PAY','REC'].includes(vtype) || !f.partyId) return null;
+    const amt = f.amount || 0; if(amt <= 0 || !f.date) return null;
+    const d0 = new Date(f.date);
+    return (data.vouchers||[]).find(v => v.type===vtype && v.status!=='Cancelled' && v.partyId===f.partyId
+      && Math.abs((v.amount||0) - amt) < 0.5
+      && Math.abs((new Date(v.date) - d0) / 86400000) <= 4) || null;
+  }, [voucher, vtype, f.partyId, f.amount, f.date, data.vouchers]);
   const applyTemplate = () => {
     if(!lastSimilar) return;
     const L = lastSimilar;
@@ -7460,6 +7566,13 @@ function VoucherModal({vtype, voucher, prefill, data, onSave, onClose, showToast
               {creditCheck.limit > 0 && <> · Credit limit: <b>₹{fmt(creditCheck.limit)}</b></>}
               {creditCheck.overLimit && <span style={{color:'var(--danger)',fontWeight:700}}> — exceeds the limit by ₹{fmt(creditCheck.projected - creditCheck.limit)}</span>}
               {creditCheck.hasOverdue && <><br/>Oldest bill is <b>{creditCheck.oldestOverdue} days</b> past the {creditCheck.creditDays}-day credit period — consider collecting before extending more credit (see Collections page).</>}
+            </div>
+          )}
+          {dupPayment && (
+            <div style={{background:'var(--danger-soft)',border:'1px solid var(--danger)',borderRadius:8,padding:'10px 14px',marginBottom:14,fontSize:12.5,lineHeight:1.6}}>
+              <b style={{color:'var(--danger)'}}>⚠ Possible double payment</b><br/>
+              A {VOUCHER_TYPES.find(x=>x.code===vtype)?.name || vtype} of <b>₹{fmt(dupPayment.amount||0)}</b> to this party already exists
+              ({dupPayment.number} on {fmtDate(dupPayment.date)}). Check you're not paying the same bill twice.
             </div>
           )}
           {lastSimilar && !tplUsed && (
@@ -9445,6 +9558,39 @@ function YearEndClose({data, setData, showToast}){
   const profit  = income - expense;
   const fyVouchers = data.vouchers.filter(v=>v.status!=='Cancelled'&&v.date>=fyStart&&v.date<=fyEnd).length;
 
+  // ── Pre-close validation ──────────────────────────────────────────────────
+  // HARD checks block the close (they'd corrupt carried-forward balances);
+  // SOFT checks warn but allow it.
+  const checks = useMemo(() => {
+    const active = (data.vouchers||[]).filter(v=>v.status!=='Cancelled');
+    // Trial balance tally (all-time, since balances carry forward continuously)
+    const bal = {}; data.coa.forEach(a=>bal[a.id]=a.opening||0);
+    active.forEach(v=>(v.lines||[]).forEach(l=>{ bal[l.accountId]=(bal[l.accountId]||0)+(l.debit||0)-(l.credit||0); }));
+    const tbDr = Object.values(bal).reduce((s,b)=>s+(b>0?b:0),0);
+    const tbCr = Object.values(bal).reduce((s,b)=>s+(b<0?-b:0),0);
+    const tbDiff = Math.round((tbDr-tbCr)*100)/100;
+    const unbalanced = active.filter(v=>{const dr=(v.lines||[]).reduce((s,l)=>s+(l.debit||0),0),cr=(v.lines||[]).reduce((s,l)=>s+(l.credit||0),0);return Math.abs(dr-cr)>0.01;});
+    const coaIds = new Set(data.coa.map(a=>a.id));
+    const orphan = active.filter(v=>(v.lines||[]).some(l=>l.accountId&&!coaIds.has(l.accountId)));
+    // Vouchers dated AFTER fyEnd already exist (next-year data before close is fine but flag)
+    const futureVouchers = active.filter(v=>v.date>fyEnd).length;
+    // Unposted recurring for the FY
+    const recTemplates = active.filter(v=>v.recurringMonthly);
+    return {
+      tbDiff, tbDr, tbCr,
+      hard: [
+        {ok: Math.abs(tbDiff)<1,        label:'Trial Balance tallies (Dr = Cr)', detail: Math.abs(tbDiff)<1?`Dr = Cr = ₹${fmt(tbDr)}`:`Out of balance by ₹${fmt(tbDiff)} — fix before closing`},
+        {ok: unbalanced.length===0,     label:'Every voucher is balanced',        detail: unbalanced.length===0?'All entries Dr = Cr':`${unbalanced.length} unbalanced: ${unbalanced.slice(0,4).map(v=>v.number).join(', ')}`},
+        {ok: orphan.length===0,         label:'No orphaned account references',   detail: orphan.length===0?'All lines reference valid ledgers':`${orphan.length} voucher(s) point to a deleted account`},
+      ],
+      soft: [
+        {ok: futureVouchers===0,        label:`No entries dated after ${fmtDate(fyEnd)}`, detail: futureVouchers===0?'Clean FY boundary':`${futureVouchers} entries fall in the next year (they stay editable)`},
+        {ok: recTemplates.length===0 || true, label:'Recurring entries posted', detail: recTemplates.length? `${recTemplates.length} recurring template(s) — check the Dashboard for any months due`:'None'},
+      ],
+    };
+  }, [data, fyEnd]);
+  const hardFail = checks.hard.filter(c=>!c.ok).length;
+
   const downloadBackup = () => {
     const blob = new Blob([JSON.stringify(data,null,2)],{type:'application/json'});
     const url  = URL.createObjectURL(blob);
@@ -9454,18 +9600,24 @@ function YearEndClose({data, setData, showToast}){
   };
 
   const closeFY = () => {
-    if(!confirm(`Close FY ${fyYear}-${String(fyYear+1).slice(2)}?\n\n• Books will be LOCKED up to ${fyEnd}  no entries can be added, edited or cancelled before this date\n• Company FY rolls to ${fyYear+1}-04-01 → ${fyYear+2}-03-31\n• A backup will download automatically\n\nProceed?`)) return;
+    if(hardFail > 0){ showToast('Fix the blocking checks before closing the year','error'); return; }
+    if(!confirm(`Close FY ${fyYear}-${String(fyYear+1).slice(2)}?\n\n• Books will be LOCKED up to ${fyEnd}  no entries can be added, edited or cancelled before this date\n• Company FY rolls to ${fyYear+1}-04-01 → ${fyYear+2}-03-31\n• Closing balances carry forward automatically (continuous ledger)\n• This year's P&L is snapshotted for prior-year comparatives\n• A backup will download automatically\n\nProceed?`)) return;
     downloadBackup();
+    // Snapshot the closed year's headline P&L + closing balances for comparatives.
+    const closingBal = {}; data.coa.forEach(a=>{ closingBal[a.id] = (pb.opening[a.id]||0) + (pb.period[a.id]||0); });
+    const snapshot = { year: `${fyYear}-${String(fyYear+1).slice(2)}`, fyStart, fyEnd, income:r0(income), expense:r0(expense), profit:r0(profit), closingBalances: closingBal, closedOn: today() };
     setData(prev => ({...prev,
       company: {...prev.company,
         fyStart: `${fyYear+1}-04-01`,
         fyEnd:   `${fyYear+2}-03-31`,
         booksLockedUpto: fyEnd,
+        priorYears: [...((prev.company.priorYears)||[]).filter(p=>p.year!==snapshot.year), snapshot],
       },
       auditLog: [...(prev.auditLog||[]), auditEntry('YEAR_END', `FY ${fyYear}-${String(fyYear+1).slice(2)} closed · books locked up to ${fyEnd} · profit ₹${fmt(profit)}`)],
     }));
-    showToast(`✓ FY ${fyYear}-${String(fyYear+1).slice(2)} closed  books locked, FY rolled forward`);
+    showToast(`✓ FY ${fyYear}-${String(fyYear+1).slice(2)} closed  balances rolled forward`);
   };
+  const r0 = n => Math.round((n||0)*100)/100;
 
   const unlockBooks = () => {
     if(!confirm('Unlock the books? Prior-period vouchers will become editable again.\nThis is recorded in the audit trail.')) return;
@@ -9498,29 +9650,72 @@ function YearEndClose({data, setData, showToast}){
       <div className="stat stat-info"><div className="stat-label">Vouchers in FY</div><div className="stat-value">{fyVouchers}</div></div>
     </div>
 
-    <div className="card">
-      <div className="card-body" style={{padding:'20px 24px'}}>
-        <div style={{fontWeight:700,fontSize:14,marginBottom:12}}>📋 Closing Checklist</div>
-        <ol style={{fontSize:12,color:'var(--ink-2)',paddingLeft:20,lineHeight:2}}>
-          <li>All bank accounts reconciled (Bank Reconciliation page)</li>
-          <li>Outstanding receivables / payables reviewed (Bill-wise Outstanding)</li>
-          <li>Depreciation entry posted for the full year</li>
-          <li>GST returns (GSTR-1, 3B) filed for all periods</li>
-          <li>TDS deducted, deposited and reported</li>
-          <li>Balance Sheet tallied (difference = ₹0)</li>
-        </ol>
-        <div style={{display:'flex',gap:10,marginTop:18,flexWrap:'wrap'}}>
-          <button className="btn" onClick={downloadBackup}>📦 Download Backup First</button>
-          <button className="btn btn-primary" onClick={closeFY} style={{fontWeight:700}}>
-            🔒 Close FY {fyYear}–{String(fyYear+1).slice(2)} & Roll Forward
-          </button>
-        </div>
-        <div style={{marginTop:12,fontSize:11,color:'var(--ink-3)'}}>
-          Closing locks all entries up to {fyEnd} and changes the company FY to {fyYear+1}-04-01 → {fyYear+2}-03-31.
-          All history is retained  reports for the old year keep working. You can unlock later if needed (audit-logged).
+    <div className="card" style={{marginBottom:16}}>
+      <div className="card-head">
+        <h3 className="card-title">Step 1 · Pre-Close Validation</h3>
+        <span className={'badge '+(hardFail===0?'badge-success':'badge-danger')}>{hardFail===0?'✓ Ready to close':`${hardFail} blocking issue${hardFail>1?'s':''}`}</span>
+      </div>
+      <div className="card-body">
+        <div style={{fontSize:11,textTransform:'uppercase',letterSpacing:'.8px',color:'var(--ink-3)',fontWeight:700,marginBottom:6}}>Must pass (blocks close)</div>
+        {checks.hard.map((c,i)=>(
+          <div key={i} style={{display:'flex',gap:10,padding:'7px 0',borderBottom:'1px solid var(--line)',fontSize:12.5}}>
+            <span style={{fontSize:16,lineHeight:1}}>{c.ok?'✅':'❌'}</span>
+            <div><b>{c.label}</b><div style={{color:c.ok?'var(--ink-3)':'var(--danger)',fontSize:11.5,marginTop:1}}>{c.detail}</div></div>
+          </div>
+        ))}
+        <div style={{fontSize:11,textTransform:'uppercase',letterSpacing:'.8px',color:'var(--ink-3)',fontWeight:700,margin:'12px 0 6px'}}>Should review (warnings)</div>
+        {checks.soft.map((c,i)=>(
+          <div key={i} style={{display:'flex',gap:10,padding:'6px 0',fontSize:12.5}}>
+            <span style={{fontSize:15,lineHeight:1}}>{c.ok?'✅':'⚠️'}</span>
+            <div><b>{c.label}</b><div style={{color:'var(--ink-3)',fontSize:11.5,marginTop:1}}>{c.detail}</div></div>
+          </div>
+        ))}
+        <div style={{marginTop:12,fontSize:11.5,color:'var(--ink-2)',lineHeight:1.6}}>
+          Manual checklist before you commit: bank accounts reconciled · depreciation posted · GSTR-1/3B filed for all periods · TDS deposited &amp; reported · receivables/payables reviewed.
         </div>
       </div>
     </div>
+
+    <div className="card">
+      <div className="card-head"><h3 className="card-title">Step 2 · Close &amp; Roll Forward</h3></div>
+      <div className="card-body" style={{padding:'18px 24px'}}>
+        <div style={{fontSize:12.5,color:'var(--ink-2)',lineHeight:1.7,marginBottom:14}}>
+          Closing <b>locks all entries up to {fmtDate(fyEnd)}</b>, rolls the company year to <b>{fyYear+1}-04-01 → {fyYear+2}-03-31</b>,
+          and snapshots this year's P&amp;L for prior-year comparatives. Balances carry forward automatically (one continuous ledger),
+          so all old reports keep working and you can unlock later if needed (audit-logged).
+        </div>
+        <div style={{display:'flex',gap:10,flexWrap:'wrap',alignItems:'center'}}>
+          <button className="btn" onClick={downloadBackup}>📦 Download Backup First</button>
+          <button className="btn btn-primary" onClick={closeFY} disabled={hardFail>0}
+            style={{fontWeight:700, ...(hardFail>0?{opacity:.5,cursor:'not-allowed'}:{})}}>
+            🔒 Close FY {fyYear}–{String(fyYear+1).slice(2)} &amp; Roll Forward
+          </button>
+          {hardFail>0 && <span style={{fontSize:12,color:'var(--danger)',fontWeight:600}}>Resolve the {hardFail} blocking check{hardFail>1?'s':''} above to enable this.</span>}
+        </div>
+      </div>
+    </div>
+
+    {(data.company.priorYears||[]).length>0 && (
+      <div className="card" style={{marginTop:16}}>
+        <div className="card-head"><h3 className="card-title">Closed Years (comparatives)</h3></div>
+        <div style={{overflowX:'auto'}}>
+          <table>
+            <thead><tr><th>Financial Year</th><th className="num">Income</th><th className="num">Expenses</th><th className="num">Profit / (Loss)</th><th>Closed On</th></tr></thead>
+            <tbody>
+              {(data.company.priorYears||[]).slice().reverse().map((p,i)=>(
+                <tr key={i}>
+                  <td style={{fontWeight:600}}>FY {p.year}</td>
+                  <td className="num">₹{fmt(p.income)}</td>
+                  <td className="num">₹{fmt(p.expense)}</td>
+                  <td className="num" style={{color:p.profit>=0?'var(--green)':'var(--danger)',fontWeight:600}}>₹{fmt(p.profit)}</td>
+                  <td>{fmtDate(p.closedOn)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    )}
   </>);
 }
 
@@ -10689,6 +10884,151 @@ function BalanceSheet({data, balances}){
 // ============================================================================
 // CASH FLOW (AS-3 Indirect Method)
 // ============================================================================
+// ============================================================================
+// FUND FLOW & WORKING-CAPITAL CHANGE STATEMENT
+// The sources-and-applications view banks & CAs ask for. Compares balances at
+// the start vs the chosen date; movement in non-current items = the fund flow,
+// which reconciles to the change in working capital.
+// ============================================================================
+function FundFlow({data}){
+  const r2 = n => Math.round((n||0)*100)/100;
+  const fyStart = data.company.fyStart || (today().slice(0,4)+'-04-01');
+  const [asOn, setAsOn] = useState(today());
+
+  const pb = useMemo(() => computePeriodBals(data, fyStart, asOn), [data, fyStart, asOn]);
+  const open = pb.opening, close = pb.asOn;   // balances before FY start vs at asOn
+
+  const idsWhere = (fn) => data.coa.filter(fn).map(a=>a.id);
+  const sumBal = (ids, bals, sign=1) => r2(ids.reduce((s,id)=>s + sign*(bals[id]||0), 0));
+
+  // Account groups
+  const caIds = idsWhere(a => a.type==='Asset' && a.group==='Current Assets');
+  const clIds = idsWhere(a => a.type==='Liability' && a.group==='Current Liabilities');
+  const fixedIds = idsWhere(a => a.group==='Fixed Assets' && !a.contra);          // gross cost
+  const invIds = idsWhere(a => a.group==='Non-Current Investments');
+  const ltLiabIds = idsWhere(a => a.type==='Liability' && a.group==='Non-Current Liabilities');
+  const equityIds = idsWhere(a => a.type==='Equity');
+  const incomeIds = idsWhere(a => a.type==='Income');
+  const expenseIds = idsWhere(a => a.type==='Expense');
+
+  // Period P&L (movement = close − open on income/expense = this-period activity)
+  const periodMove = (ids, sign) => r2(ids.reduce((s,id)=> s + sign*((close[id]||0)-(open[id]||0)), 0));
+  const income   = periodMove(incomeIds, -1);   // income credit-natured
+  const expense  = periodMove(expenseIds, 1);
+  const netProfit = r2(income - expense);
+  const deprec = r2((close['4400']||0) - (open['4400']||0));   // add back non-cash
+  const fundsFromOps = r2(netProfit + deprec);
+
+  // Non-current movements (change = close − open)
+  const chg = (ids, sign=1) => r2(ids.reduce((s,id)=> s + sign*((close[id]||0)-(open[id]||0)), 0));
+  const capitalChg  = chg(equityIds.filter(id=>id!=='1110'), -1);  // equity credit-natured; +ve = raised (exclude reserves 1110 — that's profit)
+  const ltLoanChg   = chg(ltLiabIds, -1);                          // +ve = loan raised
+  const fixedChg    = chg(fixedIds);                               // +ve = purchased
+  const invChg      = chg(invIds);                                 // +ve = invested
+
+  const sources = [], apps = [];
+  if(fundsFromOps > 0) sources.push(['Funds from Operations (profit + depreciation)', fundsFromOps]);
+  else if(fundsFromOps < 0) apps.push(['Funds lost in Operations', -fundsFromOps]);
+  if(capitalChg > 0.5) sources.push(['Issue of Share Capital', capitalChg]);
+  else if(capitalChg < -0.5) apps.push(['Buy-back / reduction of Capital', -capitalChg]);
+  if(ltLoanChg > 0.5) sources.push(['Long-term Loans raised', ltLoanChg]);
+  else if(ltLoanChg < -0.5) apps.push(['Repayment of Long-term Loans', -ltLoanChg]);
+  if(fixedChg > 0.5) apps.push(['Purchase of Fixed Assets', fixedChg]);
+  else if(fixedChg < -0.5) sources.push(['Sale of Fixed Assets', -fixedChg]);
+  if(invChg > 0.5) apps.push(['Purchase of Investments', invChg]);
+  else if(invChg < -0.5) sources.push(['Sale of Investments', -invChg]);
+
+  const totSources = r2(sources.reduce((s,r)=>s+r[1],0));
+  const totApps = r2(apps.reduce((s,r)=>s+r[1],0));
+  const netFund = r2(totSources - totApps);   // = increase in working capital
+
+  // Working-capital schedule
+  const caOpen = sumBal(caIds, open), caClose = sumBal(caIds, close);
+  const clOpen = sumBal(clIds, open, -1), clClose = sumBal(clIds, close, -1);
+  const wcOpen = r2(caOpen - clOpen), wcClose = r2(caClose - clClose);
+  const wcChange = r2(wcClose - wcOpen);
+  const reconciles = Math.abs(wcChange - netFund) < 1;
+
+  const handleExcel = () => exportXLSX(`Fund_Flow_${asOn}.xlsx`, [{
+    name:'Fund Flow', rows:[
+      [`Fund Flow Statement  ${data.company.name}  ${fmtDate(fyStart)} to ${fmtDate(asOn)}`],[],
+      ['SOURCES OF FUNDS',''], ...sources.map(r=>[r[0],r[1]]), ['Total Sources', totSources],[],
+      ['APPLICATIONS OF FUNDS',''], ...apps.map(r=>[r[0],r[1]]), ['Total Applications', totApps],[],
+      ['Net Increase/(Decrease) in Working Capital', netFund],[],
+      ['WORKING CAPITAL','Opening','Closing','Change'],
+      ['Current Assets', caOpen, caClose, r2(caClose-caOpen)],
+      ['Current Liabilities', clOpen, clClose, r2(clClose-clOpen)],
+      ['Net Working Capital', wcOpen, wcClose, wcChange],
+    ],
+  }]);
+
+  const Line = ({label, val, bold}) => (
+    <div style={{display:'flex',justifyContent:'space-between',padding:'6px 0',borderBottom:'1px solid var(--line)',fontWeight:bold?700:400}}>
+      <span>{label}</span><span className="rupee">₹{fmt(val)}</span>
+    </div>
+  );
+
+  return (<>
+    <div className="page-head">
+      <div>
+        <h1 className="page-title">Fund Flow Statement</h1>
+        <div className="page-sub">Sources &amp; applications of funds · {fmtDate(fyStart)} → {fmtDate(asOn)}</div>
+      </div>
+      <div className="page-actions">
+        <input type="date" value={asOn} onChange={e=>setAsOn(e.target.value)} className="btn" style={{padding:'6px 10px'}} />
+        <button className="btn btn-sm" onClick={handleExcel}>⬇ Excel</button>
+        <button className="btn btn-sm btn-primary" onClick={()=>window.print()}>⎙ Print</button>
+      </div>
+    </div>
+
+    <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:18}}>
+      <div className="card">
+        <div className="card-head"><h3 className="card-title">Sources of Funds</h3></div>
+        <div className="card-body">
+          {sources.length===0 ? <div className="empty" style={{padding:20}}>No sources in this period</div> :
+            sources.map((r,i)=><Line key={i} label={r[0]} val={r[1]} />)}
+          <Line label="Total Sources" val={totSources} bold />
+        </div>
+      </div>
+      <div className="card">
+        <div className="card-head"><h3 className="card-title">Applications of Funds</h3></div>
+        <div className="card-body">
+          {apps.length===0 ? <div className="empty" style={{padding:20}}>No applications in this period</div> :
+            apps.map((r,i)=><Line key={i} label={r[0]} val={r[1]} />)}
+          <Line label="Total Applications" val={totApps} bold />
+        </div>
+      </div>
+    </div>
+
+    <div className="card" style={{marginTop:18}}>
+      <div className="card-head"><h3 className="card-title">Schedule of Changes in Working Capital</h3>
+        <span className={'badge '+(reconciles?'badge-success':'badge-danger')}>{reconciles?'✓ Reconciles with fund flow':'⚠ Off by ₹'+fmt(wcChange-netFund)}</span>
+      </div>
+      <div style={{overflowX:'auto'}}>
+        <table>
+          <thead><tr><th>Particulars</th><th className="num">Opening (₹)</th><th className="num">Closing (₹)</th><th className="num">Change (₹)</th></tr></thead>
+          <tbody>
+            <tr><td>Current Assets</td><td className="num">{fmt(caOpen)}</td><td className="num">{fmt(caClose)}</td><td className="num">{fmt(r2(caClose-caOpen))}</td></tr>
+            <tr><td>Current Liabilities</td><td className="num">{fmt(clOpen)}</td><td className="num">{fmt(clClose)}</td><td className="num">{fmt(r2(clClose-clOpen))}</td></tr>
+          </tbody>
+          <tfoot>
+            <tr style={{fontWeight:800,borderTop:'2px solid var(--line)',background:'var(--surface-2)'}}>
+              <td>Net Working Capital</td><td className="num">₹{fmt(wcOpen)}</td><td className="num">₹{fmt(wcClose)}</td>
+              <td className="num" style={{color:wcChange>=0?'var(--green)':'var(--danger)'}}>₹{fmt(wcChange)}</td>
+            </tr>
+            <tr><td colSpan="3" style={{textAlign:'right',fontWeight:700}}>Net Increase/(Decrease) in WC per Fund Flow</td>
+              <td className="num" style={{fontWeight:700}}>₹{fmt(netFund)}</td></tr>
+          </tfoot>
+        </table>
+      </div>
+      <div style={{padding:'8px 16px',fontSize:11,color:'var(--ink-3)',lineHeight:1.6}}>
+        Increase in current assets or decrease in current liabilities <b>increases</b> working capital; the fund flow above must reconcile to that change.
+        Depreciation is added back (non-cash); the current-year profit sits inside operations, not in the capital line.
+      </div>
+    </div>
+  </>);
+}
+
 function CashFlow({data, balances}){
   const fyStart = data.company.fyStart || '';
   const [from, setFrom] = useState(fyStart);
@@ -11588,6 +11928,211 @@ function HSNFinder({data}){
 // ============================================================================
 // GSTR-1  Full Implementation
 // ============================================================================
+// ============================================================================
+// GST THREE-WAY RECONCILIATION  Books (ledger) vs GSTR-1 (invoices) vs GSTR-3B
+// Catches invoices whose tax never hit the GST ledgers, manual JV drift, and
+// under/over-reporting vs what was actually filed — before you file.
+// ============================================================================
+// ============================================================================
+// TAX RATE REFERENCE  quick-reference card for the current FY (GST / IT / TDS)
+// A convenience reference — always verify against the latest Finance Act /
+// CBIC notification for your period.
+// ============================================================================
+function TaxRates({data}){
+  const fyY = parseInt((data.company.fyStart||'2025-04-01').slice(0,4));
+  const fyLabel = `${fyY}-${String(fyY+1).slice(2)}`;
+  const Section = ({title, headers, rows, note}) => (
+    <div className="card" style={{marginBottom:16}}>
+      <div className="card-head"><h3 className="card-title">{title}</h3></div>
+      <div style={{overflowX:'auto'}}>
+        <table>
+          <thead><tr>{headers.map((h,i)=><th key={i} className={i>0?'num':''}>{h}</th>)}</tr></thead>
+          <tbody>{rows.map((r,i)=>(
+            <tr key={i}>{r.map((c,j)=><td key={j} className={j>0?'num':''} style={j===0?{fontWeight:500}:{}}>{c}</td>)}</tr>
+          ))}</tbody>
+        </table>
+      </div>
+      {note && <div style={{padding:'8px 16px',fontSize:11,color:'var(--ink-3)',lineHeight:1.6}}>{note}</div>}
+    </div>
+  );
+  return (<>
+    <div className="page-head">
+      <div>
+        <h1 className="page-title">Tax Rate Reference</h1>
+        <div className="page-sub">Common rates for FY {fyLabel} · verify against the latest notification for your period</div>
+      </div>
+      <div className="page-actions"><button className="btn btn-sm btn-primary" onClick={()=>window.print()}>⎙ Print</button></div>
+    </div>
+
+    <div className="card" style={{marginBottom:16,borderLeft:'4px solid var(--accent)'}}>
+      <div className="card-body" style={{fontSize:12.5,color:'var(--ink-2)',lineHeight:1.6}}>
+        ⚠ These are the <b>commonly-applicable</b> rates for ready reference. GST slabs, TDS rates, surcharge thresholds and
+        income-tax options change with each Budget/notification — <b>confirm the current rate for your exact case</b> before filing.
+      </div>
+    </div>
+
+    <Section title="GST Rate Slabs" headers={['Slab','Typical supplies']} rows={[
+      ['0% / Exempt','Fresh produce, milk, education, healthcare, most unbranded food'],
+      ['5%','Essential goods, transport, small restaurants, job work (some)'],
+      ['12%','Processed food, business-class travel, some machinery/parts'],
+      ['18%','Most goods & services — the standard rate (electronics, services)'],
+      ['28%','Luxury / sin goods — cars, ACs, aerated drinks, tobacco (+ cess)'],
+    ]} note="Composition scheme: 1% (traders/mfrs), 5% (restaurants), 6% (services ≤ ₹50L turnover)." />
+
+    <Section title="Company / Business Income-Tax Options" headers={['Regime','Rate','Applies to']} rows={[
+      ['Domestic co. (turnover ≤ ₹400 cr)','25%','MSME companies on normal provisions'],
+      ['Sec 115BAA','22%','Domestic co. opting out of most exemptions'],
+      ['Sec 115BAB','15%','New manufacturing companies (conditions apply)'],
+      ['Other domestic company','30%','Turnover > ₹400 cr on normal provisions'],
+      ['Partnership firm / LLP','30%','Flat'],
+    ]} note="Add surcharge (7% / 12% for companies by income band; 10–37% for individuals/firms by slab) + Health & Education Cess 4% on (tax + surcharge). 115BAA/BAB carry a flat 10% surcharge." />
+
+    <Section title="Common TDS Sections" headers={['Section','Nature','Rate','Threshold (₹/yr)']} rows={[
+      ['194C','Contractor / sub-contractor','1% (indiv/HUF) · 2% (others)','30,000 single / 1,00,000 aggregate'],
+      ['194J','Professional / technical fees','10% (2% for technical)','30,000'],
+      ['194I','Rent — plant & machinery','2%','2,40,000'],
+      ['194I','Rent — land / building','10%','2,40,000'],
+      ['194H','Commission / brokerage','2% (from Oct-24)','20,000'],
+      ['194A','Interest (other than securities)','10%','40,000 (50,000 seniors) — banks'],
+      ['194Q','Purchase of goods > ₹50L','0.1%','on value above 50,00,000'],
+      ['192','Salary','As per slab','Basic exemption'],
+    ]} note="Deduct at 20% (or 2× the rate) if the deductee has no PAN. Higher rate applies under 206AB for non-filers. Deposit by the 7th of the next month." />
+  </>);
+}
+
+function GSTRecon({data, setData, showToast, readOnly=false}){
+  const [month, setMonth] = useState(today().slice(0,7));
+  const r2 = n => Math.round((n||0)*100)/100;
+  const from = month + '-01';
+  const to = month + '-' + String(new Date(parseInt(month.slice(0,4)), parseInt(month.slice(5,7)), 0).getDate()).padStart(2,'0');
+
+  const pb = useMemo(() => computePeriodBals(data, from, to).period, [data, from, to]);
+  // Books / ledger: output GST is the CREDIT movement in the output ledgers.
+  const ledger = { igst:r2(-(pb['1312']||0)), cgst:r2(-(pb['1310']||0)), sgst:r2(-(pb['1311']||0)) };
+
+  // GSTR-1 / invoices: tax from outward invoices (SAL − CRN) in the period.
+  const inv = useMemo(() => {
+    let igst=0, cgst=0, sgst=0, taxable=0;
+    (data.vouchers||[]).forEach(v => {
+      if(v.status==='Cancelled' || !v.date.startsWith(month)) return;
+      const s = v.type==='SAL' ? 1 : v.type==='CRN' ? -1 : 0;
+      if(!s) return;
+      igst += s*(v.igst||0); cgst += s*(v.cgst||0); sgst += s*(v.sgst||0); taxable += s*(v.taxable||0);
+    });
+    return { igst:r2(igst), cgst:r2(cgst), sgst:r2(sgst), taxable:r2(taxable) };
+  }, [data.vouchers, month]);
+
+  // GSTR-3B as FILED on the portal — editable, persisted per month. Defaults to invoices.
+  const filedAll = (data.gstFiled||{});
+  const filed = filedAll[month] || { igst:inv.igst, cgst:inv.cgst, sgst:inv.sgst };
+  const setFiled = (patch) => {
+    if(readOnly) return;
+    setData({...data, gstFiled:{...filedAll, [month]:{ igst:filed.igst, cgst:filed.cgst, sgst:filed.sgst, ...patch }}});
+  };
+
+  const heads = [
+    {k:'igst', label:'IGST'},
+    {k:'cgst', label:'CGST'},
+    {k:'sgst', label:'SGST'},
+  ];
+  const rowStatus = (h) => {
+    const vals = [ledger[h], inv[h], filed[h]].map(r2);
+    const max = Math.max(...vals), min = Math.min(...vals);
+    return { ok: (max-min) < 1, spread: r2(max-min) };
+  };
+  const totLedger = r2(ledger.igst+ledger.cgst+ledger.sgst);
+  const totInv    = r2(inv.igst+inv.cgst+inv.sgst);
+  const totFiled  = r2((filed.igst||0)+(filed.cgst||0)+(filed.sgst||0));
+  const anyMismatch = heads.some(h => !rowStatus(h.k).ok) || Math.abs(totLedger-totInv) >= 1 || Math.abs(totInv-totFiled) >= 1;
+
+  const handleExcel = () => exportXLSX(`GST_3Way_Recon_${month}.xlsx`, [{
+    name:'GST Reconciliation',
+    rows:[
+      [`GST Three-Way Reconciliation  ${data.company.name}  ${month}`],[],
+      ['Head','Books (Ledger)','GSTR-1 (Invoices)','GSTR-3B (As Filed)','Max Spread','Status'],
+      ...heads.map(h=>[h.label, ledger[h.k], inv[h.k], filed[h.k]||0, rowStatus(h.k).spread, rowStatus(h.k).ok?'OK':'MISMATCH']),
+      ['Total', totLedger, totInv, totFiled, '', anyMismatch?'CHECK':'OK'],
+      [],['Taxable turnover (invoices)', inv.taxable],
+    ],
+  }]);
+
+  const cell = (v) => '₹'+fmt(v);
+  return (<>
+    <div className="page-head">
+      <div>
+        <h1 className="page-title">GST Reconciliation (3-Way)</h1>
+        <div className="page-sub">Books vs GSTR-1 vs GSTR-3B · {month} · catch mismatches before filing</div>
+      </div>
+      <div className="page-actions">
+        <input type="month" value={month} onChange={e=>setMonth(e.target.value)} className="btn" style={{padding:'6px 10px'}} />
+        <button className="btn btn-sm" onClick={handleExcel}>⬇ Excel</button>
+        <button className="btn btn-sm btn-primary" onClick={()=>window.print()}>⎙ Print</button>
+      </div>
+    </div>
+
+    <div className="stat-grid" style={{marginBottom:14}}>
+      <div className="stat stat-info"><div className="stat-label">Books Output Tax</div><div className="stat-value rupee">₹{fmt(totLedger)}</div><div className="stat-delta">from GST ledgers</div></div>
+      <div className="stat"><div className="stat-label">GSTR-1 (Invoices)</div><div className="stat-value rupee">₹{fmt(totInv)}</div><div className="stat-delta">Taxable ₹{fmt(inv.taxable)}</div></div>
+      <div className="stat stat-gold"><div className="stat-label">GSTR-3B (As Filed)</div><div className="stat-value rupee">₹{fmt(totFiled)}</div><div className="stat-delta">editable below</div></div>
+      <div className={'stat '+(anyMismatch?'stat-danger':'')}>
+        <div className="stat-label">Status</div>
+        <div className="stat-value">{anyMismatch ? '⚠ Mismatch' : '✓ Reconciled'}</div>
+      </div>
+    </div>
+
+    <div className="table-wrap">
+      <table>
+        <thead><tr>
+          <th>Tax Head</th>
+          <th className="num">Books (Ledger)</th>
+          <th className="num">GSTR-1 (Invoices)</th>
+          <th className="num" style={{width:150}}>GSTR-3B (As Filed)</th>
+          <th className="num">Max Spread</th>
+          <th style={{width:120}}>Status</th>
+        </tr></thead>
+        <tbody>
+          {heads.map(h=>{
+            const st = rowStatus(h.k);
+            return (
+              <tr key={h.k} style={st.ok?{}:{background:'#fff8e6'}}>
+                <td style={{fontWeight:600}}>{h.label}</td>
+                <td className="num">{cell(ledger[h.k])}</td>
+                <td className="num">{cell(inv[h.k])}</td>
+                <td className="num">
+                  <input type="number" value={filed[h.k]||0} disabled={readOnly}
+                    onChange={e=>setFiled({[h.k]: r2(parseFloat(e.target.value)||0)})}
+                    style={{width:130,textAlign:'right',padding:'4px 8px',border:'1px solid var(--line-2)',borderRadius:5,fontFamily:'var(--mono)',fontSize:12}} />
+                </td>
+                <td className="num" style={{color:st.ok?'var(--ink-3)':'var(--danger)',fontWeight:st.ok?400:700}}>{fmt(st.spread)}</td>
+                <td>{st.ok ? <span className="badge badge-success">Matched</span> : <span className="badge badge-gold">⚠ Check</span>}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+        <tfoot><tr style={{fontWeight:800,borderTop:'2px solid var(--line)',background:'var(--surface-2)'}}>
+          <td>TOTAL</td>
+          <td className="num">₹{fmt(totLedger)}</td>
+          <td className="num">₹{fmt(totInv)}</td>
+          <td className="num">₹{fmt(totFiled)}</td>
+          <td></td>
+          <td>{anyMismatch ? <span className="badge badge-danger">Reconcile</span> : <span className="badge badge-success">✓</span>}</td>
+        </tr></tfoot>
+      </table>
+    </div>
+
+    <div className="card" style={{marginTop:14,borderLeft:'4px solid var(--info)'}}>
+      <div className="card-body" style={{fontSize:12,color:'var(--ink-2)',lineHeight:1.7}}>
+        <b>How to read this:</b>
+        <b> Books</b> = tax actually posted to your CGST/SGST/IGST output ledgers.
+        <b> GSTR-1</b> = tax computed from your outward invoices (Sales − Credit Notes).
+        <b> GSTR-3B (As Filed)</b> = what you reported on the portal (type it in to reconcile against your books).
+        Books ≠ GSTR-1 usually means an <b>invoice carries tax that never hit the GST ledgers</b> (fix the voucher), or a manual JV moved the ledger.
+        GSTR-1 ≠ As Filed means you <b>under/over-reported</b> — amend before the deadline.
+      </div>
+    </div>
+  </>);
+}
+
 function GSTR1({data}){
   const [periodType, setPeriodType] = useState('monthly');
   const [month, setMonth] = useState(today().slice(0,7));
@@ -16160,6 +16705,12 @@ function HelpGuide({setPage}){
           '<b>Intercompany eliminations</b>  add the other group company as a party <b>with its GSTIN</b> in each entity\'s books; the Eliminations tab then auto-matches intercompany sales↔purchases and receivables↔payables, eliminates the <b>matched</b> amount (mismatches are flagged, never silently removed) and the toggle applies it across all consolidated statements. Unrealised stock profit / minority interest still need manual JVs (AS-21).',
           '<b>Smart entry suggestion</b>  pick a party on a new voucher and a 💡 chip offers the last similar entry — one click copies the items, accounts, narration and TDS setup with today\'s date and a fresh number.',
         ]},
+        {type:'heading', text:'Fund Flow & Duplicate Guards'},
+        {type:'steps', items:[
+          '<b>Fund Flow Statement</b>  the sources-and-applications view banks/CAs ask for: funds from operations (profit + depreciation), capital raised, loans, fixed-asset purchases/sales, reconciled to the change in working capital (with an opening-vs-closing WC schedule).',
+          '<b>Duplicate guards</b>  the party form flags a GSTIN already used by another party; a Payment/Receipt warns if a near-identical one (same party + amount, within 4 days) already exists — catching double payments.',
+          '<b>Recurring catch-up</b>  if a recurring entry was missed for several months, the Dashboard shows "N months due" and posts one for every missed month in a click.',
+        ]},
         {type:'heading', text:'Analysis Reports (Account Manager)'},
         {type:'steps', items:[
           '<b>Budget vs Actual</b>  set an annual budget per P&L account; the report pro-rates it to the period and shows favourable/adverse variance. Click Save Budgets to keep them.',
@@ -16222,6 +16773,7 @@ function HelpGuide({setPage}){
           '<b>GSTR-1</b>  generate the outward-supplies return with correct section logic: B2B (per-rate lines), B2CL (inter-state B2C over ₹1,00,000 — the reduced threshold), B2CS aggregated by place-of-supply + rate, exports, credit/debit notes (registered & unregistered), and HSN split into B2B / B2C. Export the <b>GSTN portal JSON</b> or the <b>Offline-Tool Excel</b> — a workbook whose sheets (b2b,sez,de / b2cl / b2cs / cdnr / cdnur / exp / exemp / hsn(b2b) / hsn(b2c) / docs) and column headers match the official GST Returns Offline Tool, so you can import it there directly.',
           '<b>GSTR-3B</b>  summary return with a books-vs-return reconciliation, ledger-based ITC (includes GST on expenses, not just purchase invoices), the correct ITC set-off order (Rule 88A / Sec 49A-49B), and portal JSON export.',
           '<b>GSTR-2B Recon.</b>  upload the portal 2B; match against your purchases and auto-book missing entries.',
+          '<b>GST 3-Way Recon</b>  compares your <b>Books</b> (GST ledger postings) vs <b>GSTR-1</b> (from invoices) vs <b>GSTR-3B</b> (type in what you filed) side by side, and flags mismatches before you file — a books-vs-GSTR-1 gap usually means an invoice\'s tax never hit the GST ledgers.',
           '<b>GSTR-9 Annual</b>  yearly outward / ITC / tax summary.',
           '<b>TDS</b>  apply TDS on vouchers (with the 206AB higher-rate toggle for non-filers), and the TDS Report gives the deducted register + Form 26Q working.',
           '<b>HSN / SAC Rate Finder</b>  search GST 2.0 rates; the rate auto-fills when you type an HSN on an invoice line.',
