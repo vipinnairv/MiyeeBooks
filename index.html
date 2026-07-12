@@ -3979,6 +3979,7 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
       {id:'debtor_stmt', label:'Debtors Statement', ico:'↗'},
       {id:'vendor_stmt', label:'Vendor Statement', ico:'↙'},
       {id:'mis', label:'CFO Dashboard', ico:'◇'},
+      {id:'valuation', label:'Valuation / Financial Model', ico:'💹'},
       {id:'consolidation', label:'Group Consolidation', ico:'🏢'},
       {id:'mis_ratios', label:'Financial Ratios', ico:'▦'},
       {id:'mis_aging', label:'Aging Analysis', ico:'◫'},
@@ -4158,6 +4159,7 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
           {page==='hsn_finder' && <HSNFinder data={data} />}
           {page==='forex' && <Forex data={data} setData={setData} showToast={showToast} />}
           {page==='mis' && <MISDashboard data={data} balances={ledgerBalances} setPage={setPage} />}
+          {page==='valuation' && <FinancialModel data={data} balances={ledgerBalances} />}
           {page==='consolidation' && <GroupConsolidation data={data} user={user} ownerId={ownerId||user?.uid} companyId={companyId} />}
           {page==='mis_ratios' && <FinancialRatios data={data} balances={ledgerBalances} />}
           {page==='mis_aging' && <AgingAnalysis data={data} balances={ledgerBalances} />}
@@ -7362,6 +7364,25 @@ function VoucherModal({vtype, voucher, prefill, data, onSave, onClose, showToast
   };
   useEffect(() => { setTplUsed(false); }, [f.partyId]);
 
+  // ── Original Invoice link (CRN / DBN) ───────────────────────────────────
+  // A Credit/Debit Note can be raised against ONE original Sales/Purchase
+  // invoice — linking it reuses the same billTags mechanism as PAY/REC, so
+  // Bill-wise Ageing, Collections and the credit-limit check all automatically
+  // reduce that specific invoice's outstanding. "Self" = a general adjustment
+  // (rate correction, discount) not tied to a specific bill.
+  const isNoteType = ['CRN','DBN'].includes(vtype);
+  const noteInvType = vtype==='CRN' ? 'SAL' : 'PUR';
+  const [origInvoiceId, setOrigInvoiceId] = useState(voucher?.originalInvoiceId || '');
+  const noteInvoices = useMemo(() => {
+    if(!isNoteType || !f.partyId) return [];
+    return data.vouchers.filter(v => v.type===noteInvType && v.status!=='Cancelled' && v.partyId===f.partyId)
+      .sort((a,b) => (b.date||'').localeCompare(a.date||''));
+  }, [isNoteType, noteInvType, f.partyId, data.vouchers]);
+  useEffect(() => {
+    if(!isNoteType) return;
+    if(origInvoiceId && !noteInvoices.some(v=>v.id===origInvoiceId)) setOrigInvoiceId('');
+  }, [f.partyId]);
+
   // ── Bill Tagging (PAY / REC) ─────────────────────────────────────────────
   const isBillType = ['PAY','REC'].includes(vtype);
   // PAY → outstanding PUR invoices; REC → outstanding SAL invoices
@@ -7506,9 +7527,13 @@ function VoucherModal({vtype, voucher, prefill, data, onSave, onClose, showToast
     }
 
     const party = data.parties.find(p => p.id === finalData.partyId);
+    const noteInv = isNoteType ? data.vouchers.find(v=>v.id===origInvoiceId) : null;
     onSave({...finalData, partyName: party?.name||finalData.partyName, amount: dr2,
-      billTags: isBillType ? billTags : (finalData.billTags||[]),
+      billTags: isBillType ? billTags : (isNoteType && origInvoiceId ? [{voucherId:origInvoiceId, allocated:dr2}] : (finalData.billTags||[])),
       isAdvance: isBillType ? isAdvance : (finalData.isAdvance||false),
+      originalInvoiceId: isNoteType ? (origInvoiceId||'') : (finalData.originalInvoiceId||''),
+      originalInvoiceNumber: isNoteType ? (noteInv?.number||'') : (finalData.originalInvoiceNumber||''),
+      originalInvoiceDate: isNoteType ? (noteInv?.date||'') : (finalData.originalInvoiceDate||''),
     });
   };
 
@@ -7604,6 +7629,25 @@ function VoucherModal({vtype, voucher, prefill, data, onSave, onClose, showToast
                     setF({...f, partyId:v, partyName: p?.name||'', currency: p?.currency||'INR', placeOfSupply: p?.stateCode || data.company.stateCode});
                   }}
                   placeholder="Type to search party…" />
+              </div>
+            )}
+            {isNoteType && (
+              <div className="field">
+                <label>Against {noteInvType==='SAL'?'Sales':'Purchase'} Invoice</label>
+                <select value={origInvoiceId} onChange={e=>setOrigInvoiceId(e.target.value)} disabled={!f.partyId}>
+                  <option value="">— Self / Not against a specific invoice —</option>
+                  {noteInvoices.map(inv => {
+                    const ctrl = noteInvType==='SAL' ? '2400' : '1300';
+                    const ctrlAmt = (inv.lines||[]).reduce((s,l)=> s + (l.accountId===ctrl ? (noteInvType==='SAL'?(l.debit||0):(l.credit||0)) : 0), 0);
+                    const amt = ctrlAmt || inv.total || inv.amount || 0;
+                    return <option key={inv.id} value={inv.id}>{inv.number} · {fmtDate(inv.date)} · ₹{fmt(amt)}</option>;
+                  })}
+                </select>
+                <div className="help">
+                  {origInvoiceId
+                    ? "Reduces this invoice's outstanding in Bill-wise Ageing & Collections automatically."
+                    : (f.partyId ? 'No invoice selected — this note adjusts the party balance generally (rate correction, discount not tied to one bill).' : 'Select the party first.')}
+                </div>
               </div>
             )}
             {isGstVoucher && (
@@ -9603,9 +9647,14 @@ function YearEndClose({data, setData, showToast}){
     if(hardFail > 0){ showToast('Fix the blocking checks before closing the year','error'); return; }
     if(!confirm(`Close FY ${fyYear}-${String(fyYear+1).slice(2)}?\n\n• Books will be LOCKED up to ${fyEnd}  no entries can be added, edited or cancelled before this date\n• Company FY rolls to ${fyYear+1}-04-01 → ${fyYear+2}-03-31\n• Closing balances carry forward automatically (continuous ledger)\n• This year's P&L is snapshotted for prior-year comparatives\n• A backup will download automatically\n\nProceed?`)) return;
     downloadBackup();
-    // Snapshot the closed year's headline P&L + closing balances for comparatives.
+    // Snapshot the closed year's headline P&L + closing balances for comparatives
+    // (also feeds the Valuation tab's historical financials).
     const closingBal = {}; data.coa.forEach(a=>{ closingBal[a.id] = (pb.opening[a.id]||0) + (pb.period[a.id]||0); });
-    const snapshot = { year: `${fyYear}-${String(fyYear+1).slice(2)}`, fyStart, fyEnd, income:r0(income), expense:r0(expense), profit:r0(profit), closingBalances: closingBal, closedOn: today() };
+    const finCost = data.coa.filter(a=>a.group==='Finance Costs').reduce((s,a)=>s+(pb.period[a.id]||0),0);
+    const deprec  = pb.period['4400']||0;
+    const ebitda  = r0(profit + finCost + deprec);
+    const snapshot = { year: `${fyYear}-${String(fyYear+1).slice(2)}`, fyStart, fyEnd, income:r0(income), expense:r0(expense), profit:r0(profit),
+      ebitda, financeCost:r0(finCost), depreciation:r0(deprec), closingBalances: closingBal, closedOn: today() };
     setData(prev => ({...prev,
       company: {...prev.company,
         fyStart: `${fyYear+1}-04-01`,
@@ -12440,14 +12489,15 @@ function GSTR1({data}){
           <div className="card" style={{marginBottom:14}}>
             <div className="card-head"><h3 className="card-title">Table 9B  Credit/Debit Notes (Registered)  CDNR</h3></div>
             <div style={{overflow:'auto'}}><table>
-              <thead><tr><th>GSTIN of Recipient</th><th>Note Type</th><th>Note No.</th><th>Note Date</th><th>Supply Type</th><th className="num">Note Value</th><th className="num">Taxable</th><th className="num">IGST</th><th className="num">CGST</th><th className="num">SGST</th></tr></thead>
+              <thead><tr><th>GSTIN of Recipient</th><th>Note Type</th><th>Note No.</th><th>Note Date</th><th>Against Invoice</th><th>Supply Type</th><th className="num">Note Value</th><th className="num">Taxable</th><th className="num">IGST</th><th className="num">CGST</th><th className="num">SGST</th></tr></thead>
               <tbody>
-                {cdnr.length===0 ? <tr><td colSpan="10"><div className="empty">No registered CDN in this period</div></td></tr> :
+                {cdnr.length===0 ? <tr><td colSpan="11"><div className="empty">No registered CDN in this period</div></td></tr> :
                 cdnr.map(v=>{const p=data.parties.find(x=>x.id===v.partyId);return(
                   <tr key={v.id}>
                     <td style={{fontFamily:'var(--mono)',fontSize:11}}>{p?.gstin}</td>
                     <td><span className={'badge '+(v.type==='CRN'?'badge-danger':'badge-info')}>{v.type==='CRN'?'Credit Note':'Debit Note'}</span></td>
                     <td style={{fontFamily:'var(--mono)'}}>{v.number}</td><td>{fmtDate(v.date)}</td>
+                    <td style={{fontFamily:'var(--mono)',fontSize:11}}>{v.originalInvoiceNumber ? v.originalInvoiceNumber+' · '+fmtDate(v.originalInvoiceDate) : <span style={{color:'var(--ink-3)',fontStyle:'italic'}}>Self</span>}</td>
                     <td>{v.isInterState?'Inter-State':'Intra-State'}</td>
                     <td className="num">{fmt(v.total||0)}</td><td className="num">{fmt(v.taxable||0)}</td>
                     <td className="num">{fmt(v.igst||0)}</td><td className="num">{fmt(v.cgst||0)}</td><td className="num">{fmt(v.sgst||0)}</td>
@@ -14146,6 +14196,446 @@ function GroupConsolidation({data, user, ownerId, companyId}){
           </div>
         </div>
       )}
+    </>)}
+  </>);
+}
+
+// ============================================================================
+// FINANCIAL MODELING / VALUATION  DCF · Comparable Multiples · Funding Round
+// A founder-facing valuation workbench. Historicals are pulled from closed-year
+// snapshots (company.priorYears, incl. the current run-rate); every assumption
+// is editable with a sensible auto-computed default. Indicative only — not a
+// substitute for a registered valuer's report (Companies Act / FEMA / Income
+// Tax purposes require one).
+// ============================================================================
+function FinancialModel({data, balances}){
+  const r2 = n => Math.round((n||0)*100)/100;
+  const getBal = id => balances[id] || 0;
+  const [tab, setTab] = useState('overview');
+
+  // ── Current-year (run-rate) financials from the live ledger ───────────────
+  const income  = data.coa.filter(a=>a.type==='Income').reduce((s,a)=>s+(-getBal(a.id)),0);
+  const expense = data.coa.filter(a=>a.type==='Expense').reduce((s,a)=>s+getBal(a.id),0);
+  const profitCurrent = r2(income - expense);
+  const finCost = data.coa.filter(a=>a.group==='Finance Costs').reduce((s,a)=>s+getBal(a.id),0);
+  const deprCurrent = getBal('4400');
+  const ebitdaCurrent = r2(profitCurrent + finCost + deprCurrent);
+  const cash = getBal('2500')+getBal('2510')+getBal('2511')+getBal('2520');
+  const ltDebt = -getBal('1200');
+  const netDebt = r2(ltDebt - cash);   // +ve = net debt (reduces equity value); -ve = net cash (adds to it)
+
+  const fyStart = data.company.fyStart || (today().slice(0,4)+'-04-01');
+  const [y0,m0] = fyStart.slice(0,7).split('-').map(Number);
+  const [y1,m1] = today().slice(0,7).split('-').map(Number);
+  const monthsElapsed = Math.max(1, Math.min(12, (y1-y0)*12 + (m1-m0) + 1));
+  const annualize = v => monthsElapsed>=12 ? r2(v) : r2(v * 12 / monthsElapsed);
+  const revenueRunRate = annualize(income);
+  const ebitdaRunRate  = annualize(ebitdaCurrent);
+
+  // ── Historicals from closed years + current run-rate ───────────────────────
+  const priorYears = (data.company.priorYears||[]).slice().sort((a,b)=>a.fyStart.localeCompare(b.fyStart));
+  const historyRows = [
+    ...priorYears.map(p=>({label:'FY '+p.year, revenue:p.income||0, ebitda:(p.ebitda!=null?p.ebitda:p.profit)||0, profit:p.profit||0, closed:true})),
+    {label:'Current FY (run-rate)', revenue:revenueRunRate, ebitda:ebitdaRunRate, profit:annualize(profitCurrent), closed:false},
+  ];
+  const revSeries = historyRows.filter(r=>r.revenue>0).map(r=>r.revenue);
+  let historicalCAGR = null;
+  if(revSeries.length>=2){
+    const n = revSeries.length-1, first = revSeries[0], last = revSeries[revSeries.length-1];
+    if(first>0 && n>0) historicalCAGR = r2((Math.pow(last/first,1/n)-1)*100);
+  }
+  const defaultGrowthY1 = historicalCAGR!=null ? Math.max(0, Math.min(80, historicalCAGR)) : 20;
+  const defaultMargin = revenueRunRate>0 ? r2(ebitdaRunRate/revenueRunRate*100) : 15;
+
+  // ── DCF assumptions (editable; null = auto-computed default) ──────────────
+  const [revOverride, setRevOverride] = useState(null);
+  const [growthY1, setGrowthY1] = useState(null);
+  const [marginOverride, setMarginOverride] = useState(null);
+  const [marginY5, setMarginY5] = useState(null);
+  const [taxRate, setTaxRate] = useState(25);
+  const [daPct, setDaPct] = useState(3);
+  const [capexPct, setCapexPct] = useState(3);
+  const [nwcPct, setNwcPct] = useState(8);
+  const [discountRate, setDiscountRate] = useState(18);
+  const [terminalMethod, setTerminalMethod] = useState('growth');   // 'growth' | 'multiple'
+  const [terminalGrowth, setTerminalGrowth] = useState(4);
+  const [exitMultiple, setExitMultiple] = useState(8);
+  const [shares, setShares] = useState(0);
+
+  const effRevenue = revOverride!=null ? revOverride : revenueRunRate;
+  const effGrowthY1 = growthY1!=null ? growthY1 : defaultGrowthY1;
+  const effMarginCurrent = marginOverride!=null ? marginOverride : defaultMargin;
+  const effMarginY5 = marginY5!=null ? marginY5 : defaultMargin;
+
+  // ── 5-year FCFF projection ──────────────────────────────────────────────
+  const projection = useMemo(() => {
+    const rows = []; let prevRev = effRevenue;
+    for(let y=1;y<=5;y++){
+      const t = (y-1)/4;
+      const g = effGrowthY1 + (terminalGrowth-effGrowthY1)*t;
+      const m = effMarginCurrent + (effMarginY5-effMarginCurrent)*t;
+      const revenue = r2(prevRev*(1+g/100));
+      const ebitdaY = r2(revenue*m/100);
+      const daY = r2(revenue*daPct/100);
+      const ebit = r2(ebitdaY-daY);
+      const nopat = r2(ebit*(1-taxRate/100));
+      const capexY = r2(revenue*capexPct/100);
+      const deltaNwc = r2((revenue-prevRev)*nwcPct/100);
+      const fcff = r2(nopat+daY-capexY-deltaNwc);
+      const disc = Math.pow(1+discountRate/100, y);
+      rows.push({y, growth:r2(g), margin:r2(m), revenue, ebitda:ebitdaY, da:daY, ebit, nopat, capex:capexY, deltaNwc, fcff, disc:r2(disc), pv:r2(fcff/disc)});
+      prevRev = revenue;
+    }
+    return rows;
+  }, [effRevenue, effGrowthY1, terminalGrowth, effMarginCurrent, effMarginY5, daPct, taxRate, capexPct, nwcPct, discountRate]);
+
+  const year5 = projection[4];
+  const sumPvFcff = r2(projection.reduce((s,r)=>s+r.pv,0));
+  const tvGordon = discountRate>terminalGrowth ? r2(year5.fcff*(1+terminalGrowth/100)/((discountRate-terminalGrowth)/100)) : null;
+  const tvMultiple = r2(year5.ebitda*exitMultiple);
+  const terminalValue = terminalMethod==='growth' ? tvGordon : tvMultiple;
+  const pvTerminal = terminalValue!=null ? r2(terminalValue/Math.pow(1+discountRate/100,5)) : 0;
+  const enterpriseValue = terminalValue!=null ? r2(sumPvFcff+pvTerminal) : null;
+  const equityValue = enterpriseValue!=null ? r2(enterpriseValue-netDebt) : null;
+  const perShare = (equityValue!=null && shares>0) ? r2(equityValue/shares) : null;
+
+  // Present value at an alternate discount rate (FCFF is rate-independent — only
+  // the discounting changes) — used for the football-field sensitivity band.
+  const pvAt = (rate) => {
+    let sumPv=0; projection.forEach(r=>{ sumPv+=r.fcff/Math.pow(1+rate/100,r.y); });
+    const tv = terminalMethod==='growth'
+      ? (rate>terminalGrowth ? year5.fcff*(1+terminalGrowth/100)/((rate-terminalGrowth)/100) : null)
+      : tvMultiple;
+    if(tv==null) return null;
+    const pvTv = tv/Math.pow(1+rate/100,5);
+    return r2(sumPv+pvTv-netDebt);
+  };
+  const dcfHigh = pvAt(Math.max(terminalGrowth+1, discountRate-2));
+  const dcfLow  = pvAt(discountRate+2);
+
+  // ── Comparable multiples (trailing / current-year basis) ──────────────────
+  const [evRevLow, setEvRevLow] = useState(2);
+  const [evRevHigh, setEvRevHigh] = useState(4);
+  const [evEbitdaLow, setEvEbitdaLow] = useState(8);
+  const [evEbitdaHigh, setEvEbitdaHigh] = useState(14);
+  const compRevenue = effRevenue;
+  const compEbitda = r2(effRevenue*effMarginCurrent/100);
+  const compEvRevLow = r2(compRevenue*evRevLow), compEvRevHigh = r2(compRevenue*evRevHigh);
+  const compEvEbitdaLow = r2(compEbitda*evEbitdaLow), compEvEbitdaHigh = r2(compEbitda*evEbitdaHigh);
+  const compEqRevLow = r2(compEvRevLow-netDebt), compEqRevHigh = r2(compEvRevHigh-netDebt);
+  const compEqEbitdaLow = r2(compEvEbitdaLow-netDebt), compEqEbitdaHigh = r2(compEvEbitdaHigh-netDebt);
+
+  // ── Football field (summary range across methods) ─────────────────────────
+  const methods = [
+    {label:'DCF (FCFF)', low:dcfLow, high:dcfHigh, mid:equityValue},
+    {label:'EV / Revenue Comps', low:compEqRevLow, high:compEqRevHigh, mid:r2((compEqRevLow+compEqRevHigh)/2)},
+    {label:'EV / EBITDA Comps', low:compEqEbitdaLow, high:compEqEbitdaHigh, mid:r2((compEqEbitdaLow+compEqEbitdaHigh)/2)},
+  ].filter(m=>m.low!=null && m.high!=null);
+  const fieldMax = Math.max(1, ...methods.map(m=>m.high));
+  const fieldMin = Math.min(0, ...methods.map(m=>m.low));
+  const blendedMid = methods.length ? r2(methods.reduce((s,m)=>s+m.mid,0)/methods.length) : 0;
+
+  // ── Funding round / cap table ──────────────────────────────────────────────
+  const [preMoneyOverride, setPreMoneyOverride] = useState(null);
+  const [investment, setInvestment] = useState(0);
+  const [existingShares, setExistingShares] = useState(0);
+  const effPreMoney = preMoneyOverride!=null ? preMoneyOverride : blendedMid;
+  const postMoney = r2(effPreMoney+investment);
+  const newInvestorPct = postMoney>0 ? r2(investment/postMoney*100) : 0;
+  const foundersPct = r2(100-newInvestorPct);
+  const pricePerShare = existingShares>0 ? r2(effPreMoney/existingShares) : null;
+  const newShares = (pricePerShare && pricePerShare>0) ? Math.round(investment/pricePerShare) : null;
+  const totalSharesPost = (existingShares>0 && newShares!=null) ? existingShares+newShares : null;
+
+  // ── VC Method (early-stage sanity check) ──────────────────────────────────
+  const [exitValueOverride, setExitValueOverride] = useState(null);
+  const [targetMultiple, setTargetMultiple] = useState(10);
+  const effExitValue = exitValueOverride!=null ? exitValueOverride : (terminalValue||0);
+  const vcPostMoney = targetMultiple>0 ? r2(effExitValue/targetMultiple) : 0;
+  const vcPreMoney = r2(vcPostMoney-investment);
+  const vcOwnership = vcPostMoney>0 ? r2(investment/vcPostMoney*100) : 0;
+
+  const handleExcel = () => exportXLSX(`Valuation_Model_${today()}.xlsx`, [
+    {name:'Assumptions', rows:[
+      [`Financial Model  ${data.company.name}  ${today()}`],[],
+      ['Base Revenue (run-rate)', effRevenue],['Year 1 Growth %', effGrowthY1],['Terminal Growth %', terminalGrowth],
+      ['Current EBITDA Margin %', effMarginCurrent],['Year 5 EBITDA Margin %', effMarginY5],
+      ['Tax Rate %', taxRate],['D&A % of Revenue', daPct],['CapEx % of Revenue', capexPct],['ΔNWC % of Δ Revenue', nwcPct],
+      ['Discount Rate (WACC) %', discountRate],['Terminal Method', terminalMethod==='growth'?'Gordon Growth':'Exit Multiple'],
+      ['Exit EBITDA Multiple', exitMultiple],['Net Debt / (Net Cash)', netDebt],
+    ]},
+    {name:'DCF Projection', rows:[
+      ['Year','Growth %','Margin %','Revenue','EBITDA','D&A','EBIT','NOPAT','CapEx','Δ NWC','FCFF','Discount Factor','PV of FCFF'],
+      ...projection.map(r=>[r.y,r.growth,r.margin,r.revenue,r.ebitda,r.da,r.ebit,r.nopat,r.capex,r.deltaNwc,r.fcff,r.disc,r.pv]),
+      [],['Sum PV of FCFF', sumPvFcff],['Terminal Value', terminalValue],['PV of Terminal Value', pvTerminal],
+      ['Enterprise Value', enterpriseValue],['Less: Net Debt', netDebt],['Equity Value (DCF)', equityValue],
+    ]},
+    {name:'Comparables', rows:[
+      ['Method','Base','Low Multiple','High Multiple','EV Low','EV High','Equity Value Low','Equity Value High'],
+      ['EV / Revenue', compRevenue, evRevLow, evRevHigh, compEvRevLow, compEvRevHigh, compEqRevLow, compEqRevHigh],
+      ['EV / EBITDA', compEbitda, evEbitdaLow, evEbitdaHigh, compEvEbitdaLow, compEvEbitdaHigh, compEqEbitdaLow, compEqEbitdaHigh],
+    ]},
+    {name:'Football Field', rows:[
+      ['Method','Low','Mid','High'],
+      ...methods.map(m=>[m.label,m.low,m.mid,m.high]),
+      [],['Blended Midpoint', blendedMid],
+    ]},
+    {name:'Funding Round', rows:[
+      ['Pre-Money Valuation', effPreMoney],['Investment Amount', investment],['Post-Money Valuation', postMoney],
+      ['New Investor %', newInvestorPct],['Existing Shareholders %', foundersPct],
+      ['Existing Shares', existingShares],['Price / Share', pricePerShare],['New Shares Issued', newShares],['Total Shares Post-Round', totalSharesPost],
+      [],['VC METHOD',''],['Target Exit Value', effExitValue],['Target Return Multiple', targetMultiple],
+      ['VC-Method Post-Money', vcPostMoney],['VC-Method Pre-Money', vcPreMoney],['Investor Ownership Required %', vcOwnership],
+    ]},
+  ]);
+
+  const Row = ({label, val, bold, sub}) => (
+    <div style={{display:'flex',justifyContent:'space-between',padding:'6px 0',borderBottom:'1px solid var(--line)',fontWeight:bold?700:400}}>
+      <span>{label}{sub && <div style={{fontSize:10.5,color:'var(--ink-3)',fontWeight:400}}>{sub}</div>}</span>
+      <span className="rupee">₹{fmt(val)}</span>
+    </div>
+  );
+
+  return (<>
+    <div className="page-head">
+      <div>
+        <h1 className="page-title">Valuation / Financial Model</h1>
+        <div className="page-sub">DCF · comparable multiples · funding-round math &mdash; indicative, founder-facing</div>
+      </div>
+      <div className="page-actions">
+        <button className="btn btn-sm" onClick={handleExcel}>⬇ Excel</button>
+        <button className="btn btn-sm btn-primary" onClick={()=>window.print()}>⎙ Print</button>
+      </div>
+    </div>
+
+    <div className="card" style={{marginBottom:14,borderLeft:'4px solid var(--accent)'}}>
+      <div className="card-body" style={{fontSize:12,color:'var(--ink-2)',lineHeight:1.6}}>
+        ⚠ <b>Indicative only.</b> This is a founder's working model, not a formal valuation report. For Companies Act (Sec 56(2)(viib)), FEMA (FDI pricing), Income-tax or M&amp;A purposes, engage a Registered Valuer / Merchant Banker for a DCF under Rule 11UA.
+      </div>
+    </div>
+
+    <div className="tabs">
+      {[['overview','Overview'],['dcf','DCF Model'],['comps','Comparables'],['round','Funding Round']].map(([k,l])=>(
+        <div key={k} className={'tab'+(tab===k?' active':'')} onClick={()=>setTab(k)}>{l}</div>
+      ))}
+    </div>
+
+    {tab==='overview' && (<>
+      <div className="stat-grid" style={{marginBottom:14}}>
+        <div className="stat stat-info"><div className="stat-label">Revenue Run-Rate</div><div className="stat-value rupee">₹{fmt(revenueRunRate)}</div><div className="stat-delta">Annualised from {monthsElapsed} month{monthsElapsed>1?'s':''}</div></div>
+        <div className="stat stat-gold"><div className="stat-label">EBITDA Run-Rate</div><div className="stat-value rupee">₹{fmt(ebitdaRunRate)}</div><div className="stat-delta">Margin {fmt(defaultMargin,1)}%</div></div>
+        <div className="stat"><div className="stat-label">Historical CAGR</div><div className="stat-value">{historicalCAGR!=null?fmt(historicalCAGR,1)+'%':'—'}</div><div className="stat-delta">{priorYears.length} closed year{priorYears.length===1?'':'s'} on record</div></div>
+        <div className="stat stat-teal"><div className="stat-label">Blended Valuation (mid)</div><div className="stat-value rupee">₹{fmt(blendedMid)}</div><div className="stat-delta">Average of DCF &amp; Comps</div></div>
+      </div>
+
+      <div className="card" style={{marginBottom:14}}>
+        <div className="card-head"><h3 className="card-title">Football Field &mdash; Valuation Range by Method</h3></div>
+        <div className="card-body">
+          {methods.length===0 ? <div className="empty" style={{padding:20}}>Set assumptions on the DCF / Comparables tabs to see a range.</div> : methods.map((m,i)=>{
+            const lo = Math.max(0, ((m.low-fieldMin)/(fieldMax-fieldMin))*100);
+            const hi = Math.max(0, ((m.high-fieldMin)/(fieldMax-fieldMin))*100);
+            const midPct = Math.max(0, ((m.mid-fieldMin)/(fieldMax-fieldMin))*100);
+            return (
+              <div key={i} style={{marginBottom:16}}>
+                <div style={{display:'flex',justifyContent:'space-between',fontSize:12,marginBottom:4}}>
+                  <b>{m.label}</b>
+                  <span style={{fontFamily:'var(--mono)',color:'var(--ink-2)'}}>₹{fmt(m.low)} &ndash; ₹{fmt(m.high)}</span>
+                </div>
+                <div style={{position:'relative',height:14,background:'var(--surface-2)',borderRadius:8,overflow:'hidden'}}>
+                  <div style={{position:'absolute',left:lo+'%',width:Math.max(1,hi-lo)+'%',top:0,bottom:0,background:'var(--primary)',opacity:.75,borderRadius:8}}></div>
+                  <div style={{position:'absolute',left:midPct+'%',top:-2,bottom:-2,width:2,background:'var(--gold, var(--accent))'}}></div>
+                </div>
+              </div>
+            );
+          })}
+          <div style={{marginTop:10,paddingTop:10,borderTop:'1px solid var(--line)',display:'flex',justifyContent:'space-between',fontWeight:700,fontSize:13}}>
+            <span>Blended Midpoint (simple average)</span><span className="rupee">₹{fmt(blendedMid)}</span>
+          </div>
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="card-head"><h3 className="card-title">Historical &amp; Run-Rate Financials</h3></div>
+        <div style={{overflowX:'auto'}}>
+          <table>
+            <thead><tr><th>Period</th><th className="num">Revenue</th><th className="num">EBITDA</th><th className="num">EBITDA Margin</th><th className="num">Net Profit</th></tr></thead>
+            <tbody>
+              {historyRows.map((r,i)=>(
+                <tr key={i} style={!r.closed?{background:'var(--primary-soft)'}:{}}>
+                  <td style={{fontWeight:600}}>{r.label}{!r.closed && <span className="badge badge-info" style={{marginLeft:6,fontSize:9}}>RUN-RATE</span>}</td>
+                  <td className="num">₹{fmt(r.revenue)}</td>
+                  <td className="num">₹{fmt(r.ebitda)}</td>
+                  <td className="num">{r.revenue>0?fmt(r.ebitda/r.revenue*100,1)+'%':'—'}</td>
+                  <td className="num">₹{fmt(r.profit)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <div style={{padding:'8px 16px',fontSize:11,color:'var(--ink-3)'}}>Closed years come from Year-End Closing snapshots; the run-rate row annualises the current, still-open FY.</div>
+      </div>
+    </>)}
+
+    {tab==='dcf' && (<>
+      <div className="card" style={{marginBottom:14}}>
+        <div className="card-head"><h3 className="card-title">Assumptions</h3></div>
+        <div className="card-body" style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(220px,1fr))',gap:14}}>
+          <div className="field"><label>Base Revenue (run-rate)</label><input type="number" value={effRevenue} onChange={e=>setRevOverride(parseFloat(e.target.value)||0)} /></div>
+          <div className="field"><label>Year 1 Growth %</label><input type="number" value={effGrowthY1} onChange={e=>setGrowthY1(parseFloat(e.target.value)||0)} /></div>
+          <div className="field"><label>Terminal Growth % <span style={{fontWeight:400,color:'var(--ink-3)'}}>(Y5 target &amp; perpetual)</span></label><input type="number" value={terminalGrowth} onChange={e=>setTerminalGrowth(parseFloat(e.target.value)||0)} /></div>
+          <div className="field"><label>Current EBITDA Margin %</label><input type="number" value={effMarginCurrent} onChange={e=>setMarginOverride(parseFloat(e.target.value)||0)} /></div>
+          <div className="field"><label>Year 5 EBITDA Margin %</label><input type="number" value={effMarginY5} onChange={e=>setMarginY5(parseFloat(e.target.value)||0)} /></div>
+          <div className="field"><label>Tax Rate %</label><input type="number" value={taxRate} onChange={e=>setTaxRate(parseFloat(e.target.value)||0)} /></div>
+          <div className="field"><label>D&amp;A % of Revenue</label><input type="number" value={daPct} onChange={e=>setDaPct(parseFloat(e.target.value)||0)} /></div>
+          <div className="field"><label>CapEx % of Revenue</label><input type="number" value={capexPct} onChange={e=>setCapexPct(parseFloat(e.target.value)||0)} /></div>
+          <div className="field"><label>Δ Working Capital % of Δ Revenue</label><input type="number" value={nwcPct} onChange={e=>setNwcPct(parseFloat(e.target.value)||0)} /></div>
+          <div className="field"><label>Discount Rate (WACC) %</label><input type="number" value={discountRate} onChange={e=>setDiscountRate(parseFloat(e.target.value)||0)} /></div>
+          <div className="field"><label>Terminal Value Method</label>
+            <select value={terminalMethod} onChange={e=>setTerminalMethod(e.target.value)}>
+              <option value="growth">Gordon Growth (perpetuity)</option>
+              <option value="multiple">Exit EBITDA Multiple</option>
+            </select>
+          </div>
+          {terminalMethod==='multiple' && <div className="field"><label>Exit EBITDA Multiple (x)</label><input type="number" value={exitMultiple} onChange={e=>setExitMultiple(parseFloat(e.target.value)||0)} /></div>}
+          <div className="field"><label>Shares Outstanding <span style={{fontWeight:400,color:'var(--ink-3)'}}>(optional, for per-share)</span></label><input type="number" value={shares} onChange={e=>setShares(parseFloat(e.target.value)||0)} /></div>
+        </div>
+      </div>
+
+      <div className="card" style={{marginBottom:14}}>
+        <div className="card-head"><h3 className="card-title">5-Year Free Cash Flow Projection</h3></div>
+        <div style={{overflowX:'auto'}}>
+          <table style={{fontSize:12}}>
+            <thead><tr><th>Year</th><th className="num">Growth</th><th className="num">Margin</th><th className="num">Revenue</th><th className="num">EBITDA</th><th className="num">D&amp;A</th><th className="num">EBIT</th><th className="num">NOPAT</th><th className="num">CapEx</th><th className="num">Δ NWC</th><th className="num">FCFF</th><th className="num">PV @ {discountRate}%</th></tr></thead>
+            <tbody>
+              {projection.map(r=>(
+                <tr key={r.y}>
+                  <td style={{fontWeight:700}}>Y{r.y}</td>
+                  <td className="num">{fmt(r.growth,1)}%</td><td className="num">{fmt(r.margin,1)}%</td>
+                  <td className="num">₹{fmt(r.revenue)}</td><td className="num">₹{fmt(r.ebitda)}</td><td className="num">₹{fmt(r.da)}</td>
+                  <td className="num">₹{fmt(r.ebit)}</td><td className="num">₹{fmt(r.nopat)}</td><td className="num">₹{fmt(r.capex)}</td>
+                  <td className="num">₹{fmt(r.deltaNwc)}</td><td className="num bold">₹{fmt(r.fcff)}</td><td className="num bold">₹{fmt(r.pv)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:18}}>
+        <div className="card">
+          <div className="card-head"><h3 className="card-title">Enterprise &amp; Equity Value</h3></div>
+          <div className="card-body">
+            <Row label="Sum of PV — Explicit FCFF (Y1–Y5)" val={sumPvFcff} />
+            <Row label={'Terminal Value ('+(terminalMethod==='growth'?'Gordon Growth':'Exit Multiple '+exitMultiple+'x')+')'} val={terminalValue||0}
+              sub={terminalValue==null?'⚠ Discount rate must exceed terminal growth':''} />
+            <Row label="PV of Terminal Value" val={pvTerminal} />
+            <Row label="Enterprise Value" val={enterpriseValue||0} bold />
+            <Row label={netDebt>=0?'Less: Net Debt':'Add: Net Cash'} val={-netDebt} />
+            <div style={{display:'flex',justifyContent:'space-between',padding:'10px 0',fontWeight:800,fontSize:15,color:'var(--primary)'}}>
+              <span>Equity Value (DCF)</span><span className="rupee">₹{fmt(equityValue||0)}</span>
+            </div>
+            {perShare!=null && <div style={{fontSize:12,color:'var(--ink-3)',textAlign:'right'}}>≈ ₹{fmt(perShare)} / share ({fmt(shares,0)} shares)</div>}
+          </div>
+        </div>
+        <div className="card">
+          <div className="card-head"><h3 className="card-title">Sensitivity — Value vs Discount Rate</h3></div>
+          <div className="card-body">
+            {[discountRate-2, discountRate-1, discountRate, discountRate+1, discountRate+2].map((rate,i)=>{
+              const v = pvAt(rate);
+              return (
+                <div key={i} style={{display:'flex',justifyContent:'space-between',padding:'7px 0',borderBottom:'1px solid var(--line)',
+                  background:rate===discountRate?'var(--primary-soft)':'transparent',fontWeight:rate===discountRate?700:400}}>
+                  <span>{fmt(rate,1)}% WACC</span>
+                  <span className="rupee">{v!=null?'₹'+fmt(v):'—'}</span>
+                </div>
+              );
+            })}
+            <div style={{marginTop:10,fontSize:11,color:'var(--ink-3)',lineHeight:1.6}}>A 1-point swing in the discount rate typically moves equity value by several percent — this is the single most sensitive assumption in a DCF.</div>
+          </div>
+        </div>
+      </div>
+    </>)}
+
+    {tab==='comps' && (<>
+      <div className="card" style={{marginBottom:14}}>
+        <div className="card-head"><h3 className="card-title">Multiple Assumptions</h3></div>
+        <div className="card-body" style={{fontSize:12.5,color:'var(--ink-2)',marginBottom:10}}>
+          Applied to current-year (trailing) revenue of ₹{fmt(compRevenue)} and EBITDA of ₹{fmt(compEbitda)}. Set ranges from recent deals or listed peers in your sector.
+        </div>
+        <div className="card-body" style={{paddingTop:0,display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(200px,1fr))',gap:14}}>
+          <div className="field"><label>EV / Revenue &mdash; Low (x)</label><input type="number" value={evRevLow} onChange={e=>setEvRevLow(parseFloat(e.target.value)||0)} /></div>
+          <div className="field"><label>EV / Revenue &mdash; High (x)</label><input type="number" value={evRevHigh} onChange={e=>setEvRevHigh(parseFloat(e.target.value)||0)} /></div>
+          <div className="field"><label>EV / EBITDA &mdash; Low (x)</label><input type="number" value={evEbitdaLow} onChange={e=>setEvEbitdaLow(parseFloat(e.target.value)||0)} /></div>
+          <div className="field"><label>EV / EBITDA &mdash; High (x)</label><input type="number" value={evEbitdaHigh} onChange={e=>setEvEbitdaHigh(parseFloat(e.target.value)||0)} /></div>
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="card-head"><h3 className="card-title">Implied Valuation Range</h3></div>
+        <div style={{overflowX:'auto'}}>
+          <table>
+            <thead><tr><th>Method</th><th className="num">Multiple Range</th><th className="num">EV Low</th><th className="num">EV High</th><th className="num">Equity Value Low</th><th className="num">Equity Value High</th></tr></thead>
+            <tbody>
+              <tr>
+                <td style={{fontWeight:600}}>EV / Revenue</td>
+                <td className="num">{evRevLow}x &ndash; {evRevHigh}x</td>
+                <td className="num">₹{fmt(compEvRevLow)}</td><td className="num">₹{fmt(compEvRevHigh)}</td>
+                <td className="num bold">₹{fmt(compEqRevLow)}</td><td className="num bold">₹{fmt(compEqRevHigh)}</td>
+              </tr>
+              <tr>
+                <td style={{fontWeight:600}}>EV / EBITDA</td>
+                <td className="num">{evEbitdaLow}x &ndash; {evEbitdaHigh}x</td>
+                <td className="num">₹{fmt(compEvEbitdaLow)}</td><td className="num">₹{fmt(compEvEbitdaHigh)}</td>
+                <td className="num bold">₹{fmt(compEqEbitdaLow)}</td><td className="num bold">₹{fmt(compEqEbitdaHigh)}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div style={{padding:'8px 16px',fontSize:11,color:'var(--ink-3)'}}>Equity Value = Enterprise Value &minus; Net Debt (or + Net Cash). Net debt used: ₹{fmt(netDebt)}.</div>
+      </div>
+    </>)}
+
+    {tab==='round' && (<>
+      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:18,marginBottom:18}}>
+        <div className="card">
+          <div className="card-head"><h3 className="card-title">Priced Round &amp; Cap Table Math</h3></div>
+          <div className="card-body">
+            <div className="field" style={{marginBottom:12}}><label>Pre-Money Valuation <span style={{fontWeight:400,color:'var(--ink-3)'}}>(defaults to blended midpoint)</span></label>
+              <input type="number" value={effPreMoney} onChange={e=>setPreMoneyOverride(parseFloat(e.target.value)||0)} /></div>
+            <div className="field" style={{marginBottom:12}}><label>Investment Amount</label>
+              <input type="number" value={investment} onChange={e=>setInvestment(parseFloat(e.target.value)||0)} /></div>
+            <div className="field" style={{marginBottom:14}}><label>Existing Shares Outstanding <span style={{fontWeight:400,color:'var(--ink-3)'}}>(optional, for price/share)</span></label>
+              <input type="number" value={existingShares} onChange={e=>setExistingShares(parseFloat(e.target.value)||0)} /></div>
+            <Row label="Post-Money Valuation" val={postMoney} bold />
+            <div style={{display:'flex',justifyContent:'space-between',padding:'6px 0',borderBottom:'1px solid var(--line)'}}><span>New Investor Ownership</span><b>{fmt(newInvestorPct,1)}%</b></div>
+            <div style={{display:'flex',justifyContent:'space-between',padding:'6px 0',borderBottom:'1px solid var(--line)'}}><span>Existing Shareholders (post-dilution)</span><b>{fmt(foundersPct,1)}%</b></div>
+            {pricePerShare!=null && <>
+              <div style={{display:'flex',justifyContent:'space-between',padding:'6px 0',borderBottom:'1px solid var(--line)'}}><span>Price / Share</span><b className="rupee">₹{fmt(pricePerShare)}</b></div>
+              <div style={{display:'flex',justifyContent:'space-between',padding:'6px 0',borderBottom:'1px solid var(--line)'}}><span>New Shares Issued</span><b>{fmt(newShares,0)}</b></div>
+              <div style={{display:'flex',justifyContent:'space-between',padding:'6px 0'}}><span>Total Shares Post-Round</span><b>{fmt(totalSharesPost,0)}</b></div>
+            </>}
+          </div>
+        </div>
+
+        <div className="card">
+          <div className="card-head"><h3 className="card-title">VC Method <span style={{fontSize:11,color:'var(--ink-3)',fontWeight:400}}>&mdash; early-stage sanity check</span></h3></div>
+          <div className="card-body">
+            <div className="field" style={{marginBottom:12}}><label>Target Exit Value <span style={{fontWeight:400,color:'var(--ink-3)'}}>(defaults to DCF terminal value)</span></label>
+              <input type="number" value={effExitValue} onChange={e=>setExitValueOverride(parseFloat(e.target.value)||0)} /></div>
+            <div className="field" style={{marginBottom:14}}><label>Target Return Multiple (x)</label>
+              <input type="number" value={targetMultiple} onChange={e=>setTargetMultiple(parseFloat(e.target.value)||0)} /></div>
+            <Row label="Implied Post-Money" val={vcPostMoney} bold />
+            <Row label="Implied Pre-Money" val={vcPreMoney} />
+            <div style={{display:'flex',justifyContent:'space-between',padding:'10px 0',fontWeight:800,fontSize:14,color:'var(--primary)'}}>
+              <span>Ownership Required</span><span>{fmt(vcOwnership,1)}%</span>
+            </div>
+            <div style={{marginTop:8,fontSize:11,color:'var(--ink-3)',lineHeight:1.6}}>
+              Post-Money = Exit Value ÷ Target Multiple. Pre-Money = Post-Money &minus; Investment. Investors typically use this to
+              sanity-check a DCF/comps-derived valuation against the return they need for their fund.
+            </div>
+          </div>
+        </div>
+      </div>
     </>)}
   </>);
 }
@@ -16667,8 +17157,8 @@ function HelpGuide({setPage}){
           '<b>Receipt (REC)</b>  Record receipt from customer. Pick bank and income/debtor account.',
           '<b>Journal (JV)</b>  General journal entry with manual Dr/Cr lines. Used for adjustments, provisions, depreciation, payroll.',
           '<b>Contra (CON)</b>  Cash-to-bank or bank-to-bank transfer.',
-          '<b>Credit Note (CRN)</b>  Sales return or discount. Works like reverse Sales.',
-          '<b>Debit Note (DBN)</b>  Purchase return. Works like reverse Purchase.',
+          '<b>Credit Note (CRN)</b>  Sales return or discount. Works like reverse Sales. Pick <b>Against Sales Invoice</b> to link it to the original bill (its outstanding reduces automatically everywhere), or leave it on <b>Self</b> for a general adjustment.',
+          '<b>Debit Note (DBN)</b>  Purchase return. Works like reverse Purchase. Same <b>Against Purchase Invoice / Self</b> choice  linking it helps purchase-side reconciliation and keeps Bill-wise Ageing accurate.',
         ]},
         {type:'heading', text:'TDS in Vouchers'},
         {type:'text', text:'When posting Purchase, JV, or Payment vouchers, check "<b>Apply TDS</b>" at the bottom. Select the TDS section  rate and amount auto-calculate. The TDS amount credits the linked TDS Payable ledger. Net payable = Invoice amount − TDS.'},
@@ -16694,6 +17184,14 @@ function HelpGuide({setPage}){
       title:'Advanced & New Features',
       body: [
         {type:'text', text:'Beyond core accounting, MiyeeBooks includes analysis and automation tools to save time and add insight.'},
+        {type:'heading', text:'Valuation / Financial Model'},
+        {type:'steps', items:[
+          '<b>Overview</b>  historical &amp; run-rate revenue/EBITDA (pulled from closed-year snapshots + your current run-rate), historical CAGR, and a <b>football-field chart</b> blending DCF and comparable-multiple ranges into one view.',
+          '<b>DCF Model</b>  a 5-year free-cash-flow-to-firm projection with editable growth, margin, tax, D&amp;A, CapEx and working-capital assumptions; choose <b>Gordon Growth</b> or an <b>exit-multiple</b> terminal value; a sensitivity table shows how the discount rate swings the answer.',
+          '<b>Comparables</b>  apply EV/Revenue and EV/EBITDA multiple ranges (from recent deals or listed peers) to your trailing financials for an implied valuation range.',
+          '<b>Funding Round</b>  standard priced-round math (pre/post-money, dilution %, price/share, new shares) plus the <b>VC Method</b> (exit value ÷ target multiple) as an early-stage sanity check.',
+          'This is a founder\'s working model, not a substitute for a Registered Valuer\'s report — Companies Act, FEMA and Income-tax filings need one.',
+        ]},
         {type:'heading', text:'CFO Dashboard & MIS'},
         {type:'steps', items:[
           '<b>13-Week Cash Forecast</b>  weekly cash projection: receivables collect on due date (invoice + credit days), payables go out likewise, plus recurring entries, average payroll and the next GST/TDS dues. Highlights the lowest-cash week and warns of a projected gap  the classic CFO survival tool.',
