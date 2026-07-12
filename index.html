@@ -7186,6 +7186,26 @@ function VoucherModal({vtype, voucher, prefill, data, onSave, onClose, showToast
         if(f.partyId){
           lines.push({id:uid(), accountId:'1300', debit:0, credit:total, narration:'To ' + (party?.name||'')});
         }
+      } else if(vtype === 'CRN'){
+        // Credit Note = reverse of a Sale: Dr income + Dr GST-output reversal, Cr Customer
+        f.items.forEach(it => {
+          const amt = (it.qty||0)*(it.rate||0);
+          if(amt>0) lines.push({id:uid(), accountId: it.accountId || '3100', debit:amt, credit:0, narration:it.description||'Sales return'});
+        });
+        if(isInterState && igst>0) lines.push({id:uid(), accountId:'1312', debit:igst, credit:0, narration:'IGST reversal'});
+        if(!isInterState && cgst>0) lines.push({id:uid(), accountId:'1310', debit:cgst, credit:0, narration:'CGST reversal'});
+        if(!isInterState && sgst>0) lines.push({id:uid(), accountId:'1311', debit:sgst, credit:0, narration:'SGST reversal'});
+        if(f.partyId) lines.push({id:uid(), accountId:'2400', debit:0, credit:total, narration:'To ' + (party?.name||''), partyId:f.partyId});
+      } else if(vtype === 'DBN'){
+        // Debit Note = reverse of a Purchase: Dr Vendor, Cr purchase + Cr GST-input reversal
+        if(f.partyId) lines.push({id:uid(), accountId:'1300', debit:total, credit:0, narration:'To ' + (party?.name||''), partyId:f.partyId});
+        f.items.forEach(it => {
+          const amt = (it.qty||0)*(it.rate||0);
+          if(amt>0) lines.push({id:uid(), accountId: it.accountId || '4100', debit:0, credit:amt, narration:it.description||'Purchase return'});
+        });
+        if(isInterState && igst>0) lines.push({id:uid(), accountId:'2602', debit:0, credit:igst, narration:'IGST reversal'});
+        if(!isInterState && cgst>0) lines.push({id:uid(), accountId:'2600', debit:0, credit:cgst, narration:'CGST reversal'});
+        if(!isInterState && sgst>0) lines.push({id:uid(), accountId:'2601', debit:0, credit:sgst, narration:'SGST reversal'});
       }
       // Stamp voucher-level Cost Centre / Department onto generated lines.
       // Reports only read CC from Income/Expense accounts, so stamping all
@@ -7382,6 +7402,20 @@ function VoucherModal({vtype, voucher, prefill, data, onSave, onClose, showToast
     if(!isNoteType) return;
     if(origInvoiceId && !noteInvoices.some(v=>v.id===origInvoiceId)) setOrigInvoiceId('');
   }, [f.partyId]);
+
+  // Pull the original invoice's line items + place-of-supply into this note, so
+  // a full return is one dropdown pick. Zeroing taxable/total forces the auto-GST
+  // effect above to rebuild the reversal lines from the imported items.
+  const importFromInvoice = (inv) => {
+    if(!inv) return;
+    setF(prev => ({...prev,
+      placeOfSupply: inv.placeOfSupply || prev.placeOfSupply,
+      reference: inv.number || prev.reference,
+      narration: prev.narration || ((vtype==='CRN'?'Credit note against ':'Debit note against ')+(inv.number||'')),
+      items: (inv.items||[]).map(it => ({...it, id:uid()})),
+      taxable:0, cgst:0, sgst:0, igst:0, total:0, amount:0,
+    }));
+  };
 
   // ── Bill Tagging (PAY / REC) ─────────────────────────────────────────────
   const isBillType = ['PAY','REC'].includes(vtype);
@@ -7634,7 +7668,17 @@ function VoucherModal({vtype, voucher, prefill, data, onSave, onClose, showToast
             {isNoteType && (
               <div className="field">
                 <label>Against {noteInvType==='SAL'?'Sales':'Purchase'} Invoice</label>
-                <select value={origInvoiceId} onChange={e=>setOrigInvoiceId(e.target.value)} disabled={!f.partyId}>
+                <select value={origInvoiceId}
+                  onChange={e=>{
+                    const id = e.target.value; setOrigInvoiceId(id);
+                    if(!id) return;
+                    const inv = noteInvoices.find(v=>v.id===id);
+                    if(!inv) return;
+                    const hasData = (f.items||[]).some(it => (it.description||'').trim() || (it.rate||0)>0);
+                    if(hasData && !window.confirm('Import the line items from '+inv.number+'?\n\nThis replaces the current items on this note with the original invoice\'s items (you can then edit quantities for a partial return).')) return;
+                    importFromInvoice(inv);
+                  }}
+                  disabled={!f.partyId}>
                   <option value="">— Self / Not against a specific invoice —</option>
                   {noteInvoices.map(inv => {
                     const ctrl = noteInvType==='SAL' ? '2400' : '1300';
@@ -7645,7 +7689,7 @@ function VoucherModal({vtype, voucher, prefill, data, onSave, onClose, showToast
                 </select>
                 <div className="help">
                   {origInvoiceId
-                    ? "Reduces this invoice's outstanding in Bill-wise Ageing & Collections automatically."
+                    ? "✓ Items imported from the invoice — edit quantities/rates for a partial return. Reduces the invoice's outstanding automatically."
                     : (f.partyId ? 'No invoice selected — this note adjusts the party balance generally (rate correction, discount not tied to one bill).' : 'Select the party first.')}
                 </div>
               </div>
