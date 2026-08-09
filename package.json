@@ -1,0 +1,15 @@
+{
+  "name": "miyeebooks",
+  "version": "1.0.0",
+  "description": "MiyeeBooks - MSME Accounting Suite. Modular JSX sources compiled to a static, pre-compiled multi-file site.",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "watch": "node build.mjs --watch",
+    "split": "node scripts/split-source.mjs"
+  },
+  "devDependencies": {
+    "esbuild": "^0.21.5"
+  }
+}
