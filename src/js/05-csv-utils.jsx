@@ -60,7 +60,7 @@ const computePeriodBals = (data, fromDate, toDate) => {
   const opening = {}, period = {};
   data.coa.forEach(a => { opening[a.id] = a.opening || 0; period[a.id] = 0; });
   data.vouchers.forEach(v => {
-    if(v.status === 'Cancelled') return;
+    if(!affectsLedger(v)) return;
     (v.lines||[]).forEach(l => {
       const id = l.accountId;
       const mv = (l.debit||0) - (l.credit||0);

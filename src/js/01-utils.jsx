@@ -3,6 +3,12 @@ const { useState, useEffect, useMemo, useRef } = React;
 // ============================================================================
 // UTILITIES
 // ============================================================================
+// A voucher affects the ledgers only once it is effective: Cancelled entries
+// and (under maker-checker) Pending / Rejected / Draft entries are excluded
+// from every balance and statement. Legacy vouchers without a status still
+// count, so existing books are unaffected.
+const NON_LEDGER_STATUS = { Cancelled:1, Pending:1, Rejected:1, Draft:1 };
+const affectsLedger = (v) => !(v && NON_LEDGER_STATUS[v.status]);
 const fmt = (n, dec=2) => {
   if(n===null||n===undefined||isNaN(n))return '0.00';
   const num = Number(n);
@@ -72,6 +78,15 @@ const validateGSTIN = (gstin) => {
   if(g.length !== 15) return {valid:false, reason:'length'};
   if(!/^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}$/.test(g)) return {valid:false, reason:'format'};
   return gstinCheckDigit(g.slice(0,14)) === g[14] ? {valid:true, reason:'ok'} : {valid:false, reason:'checksum'};
+};
+// PAN: 5 letters + 4 digits + 1 letter. The 4th letter is the holder type
+// (P individual, C company, H HUF, F firm, A AOP, T trust, B BOI, etc.).
+const PAN_HOLDER = {P:'Individual',C:'Company',H:'HUF',F:'Firm/LLP',A:'AOP',T:'Trust',B:'BOI',L:'Local Authority',J:'Artificial Juridical',G:'Government'};
+const validatePAN = (pan) => {
+  const p = String(pan||'').toUpperCase().trim();
+  if(!p) return {valid:false, reason:'empty'};
+  if(!/^[A-Z]{5}[0-9]{4}[A-Z]$/.test(p)) return {valid:false, reason:'format'};
+  return {valid:true, reason:'ok', holder: PAN_HOLDER[p[3]] || null};
 };
 // PT helper (Gujarat): Rs200/month, manual (keep ptAmount editable)
 // Monthly: returns 0 if not joined, else ptAmount (user sets this)

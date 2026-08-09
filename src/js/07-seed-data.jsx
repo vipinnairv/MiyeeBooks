@@ -110,6 +110,10 @@ const DEFAULT_COMPANY = {
   invoiceTemplate: 'classic',
   upiId: '',             // e.g. name@okhdfcbank - prints a Pay-Now QR on sales invoices
   numberingSeries: {},   // per voucher type: {SAL:{prefix,padding,includeFY}}
+  taxRate: 25,           // income-tax % for the P&L / Balance Sheet estimate
+  roundOff: true,        // round GST invoices to the nearest rupee
+  makerChecker: false,   // require approval (owner/admin) before entries post
+  requireNarration: false, // every voucher must carry a narration or reference
 };
 
 // A clean, fresh dataset (used on first load AND by Reset). Deep-copies seeds so

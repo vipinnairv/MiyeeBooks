@@ -47,6 +47,10 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
       // Migrate: invoice round-off defaults ON (best practice; GST amounts are
       // rounded to the nearest rupee)
       if(saved.company.roundOff === undefined) saved.company.roundOff = true;
+      // Migrate: controls default OFF for existing books (opt-in, so an existing
+      // workflow is never suddenly blocked)
+      if(saved.company.makerChecker === undefined)    saved.company.makerChecker = false;
+      if(saved.company.requireNarration === undefined) saved.company.requireNarration = false;
       // Migrate: ensure modules config exists (preserve existing true for legacy installs)
       if(!saved.company.modules) {
         saved.company.modules = { gst:true, tds:true, payroll:true, factory:false, trader:false, service:false };
@@ -247,7 +251,7 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
     const bal = {};
     data.coa.forEach(a => { bal[a.id] = a.opening || 0; });
     data.vouchers.forEach(v => {
-      if(v.status === 'Cancelled') return;
+      if(!affectsLedger(v)) return;
       (v.lines||[]).forEach(l => {
         if(!bal[l.accountId]) bal[l.accountId] = 0;
         // Debits positive for Asset/Expense; Credits positive for Liability/Equity/Income
@@ -451,7 +455,7 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
           {page==='departments'  && <DepartmentMaster data={data} setData={canWrite?setData:()=>{}} showToast={showToast} readOnly={isViewer} />}
           {page==='cc_report'    && <CostCentreReport data={data} />}
           {page==='dept_report'  && <DepartmentReport data={data} />}
-          {page==='vouchers' && <Vouchers data={data} setData={canWrite?setData:()=>{}} showToast={showToast} readOnly={isViewer} />}
+          {page==='vouchers' && <Vouchers data={data} setData={canWrite?setData:()=>{}} showToast={showToast} readOnly={isViewer} userRole={userRole} />}
           {page==='salesdocs' && <SalesDocs data={data} setData={canWrite?setData:()=>{}} showToast={showToast} readOnly={isViewer} />}
           {page==='collections' && <Collections data={data} showToast={showToast} />}
           {page==='daybook' && <DayBook data={data} />}

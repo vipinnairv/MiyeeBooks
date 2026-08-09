@@ -411,8 +411,20 @@ function PartyModal({party, existingParties=[], onSave, onClose}){
               })()}
             </div>
             <div className="field"><label>PAN</label>
-              <input value={f.pan||''} onChange={e => setF({...f, pan:e.target.value.toUpperCase()})} placeholder="ABCDE1234F" maxLength="10" style={{fontFamily:'var(--mono)'}} />
-              <div className="help">Required for TDS deduction &amp; Form 26Q</div>
+              <input value={f.pan||''} onChange={e => setF({...f, pan:e.target.value.toUpperCase()})} placeholder="ABCDE1234F" maxLength="10"
+                style={{fontFamily:'var(--mono)', ...((f.pan||'').length===10 && !validatePAN(f.pan).valid ? {borderColor:'var(--danger)'} : {})}} />
+              <div className="help" style={(f.pan||'').length===10 ? {color: validatePAN(f.pan).valid ? 'var(--primary)' : 'var(--danger)', fontWeight:600} : {}}>
+                {(() => {
+                  const p = (f.pan||'').toUpperCase();
+                  if(!p) return 'Required for TDS deduction & Form 26Q';
+                  if(p.length < 10) return '✗ Must be 10 chars ('+p.length+'/10)';
+                  const r = validatePAN(p);
+                  if(!r.valid) return '✗ Invalid PAN format (AAAAA9999A)';
+                  let msg = '✓ Valid PAN' + (r.holder ? ' · '+r.holder : '');
+                  if((f.gstin||'').length===15 && f.gstin.slice(2,12) !== p) msg += ' · ⚠ does not match GSTIN';
+                  return msg;
+                })()}
+              </div>
             </div>
             <div className="field"><label>TAN (if applicable)</label>
               <input value={f.tan||''} onChange={e => setF({...f, tan:e.target.value.toUpperCase()})} placeholder="MUMX12345X" maxLength="10" style={{fontFamily:'var(--mono)'}} />
@@ -771,6 +783,17 @@ function CompanySettings({data, setData, showToast, readOnly=false}){
                 <input type="checkbox" checked={f.roundOff !== false}
                   onChange={e => setF({...f, roundOff: e.target.checked})} />
                 <span>Round GST invoices to the nearest rupee (posts the difference to the Round Off ledger)</span>
+              </label></div>
+            <div className="field" style={{gridColumn:'span 2'}}><label>Controls (SOPs)</label>
+              <label style={{display:'flex',alignItems:'center',gap:8,fontSize:13,cursor:'pointer',padding:'4px 0'}}>
+                <input type="checkbox" checked={f.makerChecker === true}
+                  onChange={e => setF({...f, makerChecker: e.target.checked})} />
+                <span>Maker-checker: new entries are created as <b>Pending</b> and must be approved by an owner/admin before they post to the ledgers</span>
+              </label>
+              <label style={{display:'flex',alignItems:'center',gap:8,fontSize:13,cursor:'pointer',padding:'4px 0'}}>
+                <input type="checkbox" checked={f.requireNarration === true}
+                  onChange={e => setF({...f, requireNarration: e.target.checked})} />
+                <span>Require a narration (or reference) on every voucher</span>
               </label></div>
             <div className="field" style={{gridColumn:'span 2'}}><label>Bank Details (for invoices)</label><input value={f.bankDetails||''} onChange={e => setF({...f, bankDetails:e.target.value})} placeholder="A/c No: XXXX | Bank: Kotak | IFSC: KKBK..." /></div>
             <div className="field"><label>UPI ID (prints a Pay-Now QR on invoices)</label>
