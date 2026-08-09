@@ -24,6 +24,7 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
       if(!saved.costCentres) saved.costCentres = [];
       if(!saved.departments) saved.departments = [];
       if(!saved.bankRecon)   saved.bankRecon   = [];
+      if(!saved.periodCloses) saved.periodCloses = [];
       if(!saved.allocations) saved.allocations = [];
       if(!saved.bankRules)   saved.bankRules   = [];
       if(!saved.auditLog)    saved.auditLog    = [];

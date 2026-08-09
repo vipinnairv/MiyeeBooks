@@ -2476,6 +2476,13 @@ function BalanceSheet({data, balances}){
   const income   = data.coa.filter(a=>a.type==='Income').reduce((s,a)=>s+(-( pbFull.period[a.id]||0)),0);
   const expense  = data.coa.filter(a=>a.type==='Expense').reduce((s,a)=>s+(pbFull.period[a.id]||0),0);
   const currentProfit = income - expense;                 // pre-tax profit for the period
+  // Accumulated P&L from BEFORE this FY (the income/expense openings). In the
+  // continuous-ledger model prior-year profit is never posted to reserves, so
+  // it must be folded into retained earnings here or the sheet stops tallying
+  // from the second year onward (Assets carry it, Equity otherwise wouldn't).
+  const priorInc = data.coa.filter(a=>a.type==='Income').reduce((s,a)=>s+(-(pbFull.opening[a.id]||0)),0);
+  const priorExp = data.coa.filter(a=>a.type==='Expense').reduce((s,a)=>s+(pbFull.opening[a.id]||0),0);
+  const retainedPrior = priorInc - priorExp;              // retained earnings of earlier years
   // Consistent with the P&L: carry PAT into reserves and show the estimated
   // current-tax charge as a short-term provision, so both statements agree and
   // the sheet still tallies (reserves -tax, provision +tax nets to zero).
@@ -2495,7 +2502,7 @@ function BalanceSheet({data, balances}){
   const dtl            = -g('1210');
   const tradePayables  = -g('1300');
   const provisions     = -g('1330');
-  const reserves       = equityFromAccounts - shareCapital + currentPAT;   // opening reserves + profit AFTER tax
+  const reserves       = equityFromAccounts - shareCapital + retainedPrior + currentPAT;   // opening reserves + prior retained + profit AFTER tax
   // Residual current liabilities = everything else (GST output, TDS, PF, ESIC, PT, salary payable…)
   const otherCL        = liabFromAccounts - lt_borrowings - dtl - tradePayables - provisions;
   const otherCLIds     = data.coa.filter(a=>a.type==='Liability' && !['1300','1330','1200','1210'].includes(a.id)).map(a=>a.id);
@@ -2622,7 +2629,9 @@ function BalanceSheet({data, balances}){
             <tr className="group"><td colSpan="2">I. EQUITY AND LIABILITIES</td></tr>
             <tr style={{fontWeight:600}}><td>(1) Shareholders' Funds</td><td></td></tr>
             {dRow('(a) Share Capital', shareCapital, ['1100'], true)}
-            {dRow('(b) Reserves & Surplus (incl. profit after tax ₹'+fmt(currentPAT)+')', reserves, ['1110'], true)}
+            {dRow('(b) Reserves & Surplus', reserves, ['1110'], true)}
+            <tr><td style={{paddingLeft:42,fontSize:11,color:'var(--ink-3)'}}>
+              {Math.abs(retainedPrior) >= 1 ? `Retained earnings (earlier years): ₹${fmt(retainedPrior)} · ` : ''}Current-year profit after tax: ₹{fmt(currentPAT)}</td><td></td></tr>
             <tr style={{fontWeight:700,background:'var(--surface-2)'}}><td style={{paddingLeft:12}}>Sub-total  Shareholders' Funds</td><td className="num">₹{fmt(totalEquity)}</td></tr>
 
             <tr style={{fontWeight:600}}><td>(2) Non-Current Liabilities</td><td></td></tr>
