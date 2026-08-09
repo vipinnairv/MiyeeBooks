@@ -766,6 +766,12 @@ function CompanySettings({data, setData, showToast, readOnly=false}){
               <input type="number" min="0" max="60" step="0.01" value={f.taxRate ?? 25}
                 onChange={e => setF({...f, taxRate: e.target.value===''? '' : parseFloat(e.target.value)})}
                 placeholder="25" /></div>
+            <div className="field"><label>Invoice Round-Off</label>
+              <label style={{display:'flex',alignItems:'center',gap:8,fontSize:13,cursor:'pointer',padding:'6px 0'}}>
+                <input type="checkbox" checked={f.roundOff !== false}
+                  onChange={e => setF({...f, roundOff: e.target.checked})} />
+                <span>Round GST invoices to the nearest rupee (posts the difference to the Round Off ledger)</span>
+              </label></div>
             <div className="field" style={{gridColumn:'span 2'}}><label>Bank Details (for invoices)</label><input value={f.bankDetails||''} onChange={e => setF({...f, bankDetails:e.target.value})} placeholder="A/c No: XXXX | Bank: Kotak | IFSC: KKBK..." /></div>
             <div className="field"><label>UPI ID (prints a Pay-Now QR on invoices)</label>
               <input value={f.upiId||''} onChange={e => setF({...f, upiId:e.target.value.trim().toLowerCase()})} placeholder="yourname@okhdfcbank"

@@ -69,6 +69,7 @@ const SEED_COA = [
   {id:'4540', name:'Office Supplies', group:'Other Expenses', type:'Expense', schedule:'Other Expenses', opening:0, gstRate:18},
   {id:'4550', name:'Professional Fees', group:'Other Expenses', type:'Expense', schedule:'Other Expenses', opening:0, gstRate:18},
   {id:'4560', name:'Forex Loss', group:'Other Expenses', type:'Expense', schedule:'Other Expenses', opening:0},
+  {id:'4900', name:'Round Off', group:'Other Expenses', type:'Expense', schedule:'Other Expenses', opening:0, system:true},
 ];
 
 const SEED_PARTIES = [

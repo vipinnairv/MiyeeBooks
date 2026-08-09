@@ -35,13 +35,17 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
       if(!saved.company.premiumSince) saved.company.premiumSince = '';
       if(!saved.company.booksLockedUpto) saved.company.booksLockedUpto = '';
       if(!saved.company.invoiceTemplate) saved.company.invoiceTemplate = 'classic';
-      // Migrate: ensure new TDS-payable ledgers (ITA-2025 sections) exist
-      ['1325','1326','1327','1328','1329'].forEach(id => {
+      // Migrate: ensure new TDS-payable ledgers (ITA-2025 sections) + the
+      // Round Off ledger exist
+      ['1325','1326','1327','1328','1329','4900'].forEach(id => {
         if(saved.coa && !saved.coa.find(a => a.id === id)){
           const seed = SEED_COA.find(a => a.id === id);
           if(seed) saved.coa.push({...seed});
         }
       });
+      // Migrate: invoice round-off defaults ON (best practice; GST amounts are
+      // rounded to the nearest rupee)
+      if(saved.company.roundOff === undefined) saved.company.roundOff = true;
       // Migrate: ensure modules config exists (preserve existing true for legacy installs)
       if(!saved.company.modules) {
         saved.company.modules = { gst:true, tds:true, payroll:true, factory:false, trader:false, service:false };

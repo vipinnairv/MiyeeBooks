@@ -497,7 +497,31 @@ function VoucherModal({vtype, voucher, prefill, data, onSave, onClose, showToast
       const stamped = lines.map(l => ({...l,
         costCentreId: f.costCentreId || l.costCentreId || '',
         departmentId: f.departmentId || l.departmentId || ''}));
-      setF(prev => ({...prev, lines: stamped, taxable, cgst, sgst, igst, total, amount: total, isInterState, isExport}));
+
+      // Round the invoice to the nearest rupee and book the paise difference to
+      // the Round Off ledger (standard GST practice), so the amount receivable /
+      // payable is a clean rupee and the entry stays balanced.
+      const ROUNDOFF_ACCT = '4900';
+      let finalLines = stamped, roundOff = 0, roundedTotal = total;
+      const roundCfg = ({SAL:['2400','debit'], DBN:['1300','debit'], PUR:['1300','credit'], CRN:['2400','credit']})[vtype];
+      const roEnabled = data.company.roundOff !== false && data.coa.some(a=>a.id===ROUNDOFF_ACCT);
+      if(roEnabled && roundCfg){
+        roundedTotal = Math.round(total);
+        roundOff = Math.round((roundedTotal - total)*100)/100;
+        const [pAcct, pSide] = roundCfg;
+        const pLine = Math.abs(roundOff) >= 0.01 ? finalLines.find(l => l.accountId===pAcct && (l[pSide]||0) > 0) : null;
+        if(pLine){
+          finalLines = finalLines.map(l => l===pLine ? {...l, [pSide]: roundedTotal} : l);
+          const dr = finalLines.reduce((s,l)=>s+(l.debit||0),0);
+          const cr = finalLines.reduce((s,l)=>s+(l.credit||0),0);
+          const d  = Math.round((dr-cr)*100)/100;   // + → need a credit; − → need a debit
+          if(Math.abs(d) >= 0.01) finalLines = [...finalLines, {id:uid(), accountId:ROUNDOFF_ACCT,
+            debit: d<0 ? -d : 0, credit: d>0 ? d : 0, narration:'Round Off',
+            costCentreId:f.costCentreId||'', departmentId:f.departmentId||''}];
+        } else { roundOff = 0; roundedTotal = total; }
+      }
+      setF(prev => ({...prev, lines: finalLines, taxable, cgst, sgst, igst, total,
+        roundOff, grandTotal: roundedTotal, amount: roundedTotal, isInterState, isExport}));
     }
   }, [f.items, f.partyId]);
 
@@ -1092,7 +1116,10 @@ function VoucherModal({vtype, voucher, prefill, data, onSave, onClose, showToast
                       <div style={{display:'flex', justifyContent:'space-between', padding:'3px 0'}}><span>CGST:</span> <b className="rupee">₹{fmt(f.cgst||0)}</b></div>
                       <div style={{display:'flex', justifyContent:'space-between', padding:'3px 0'}}><span>SGST:</span> <b className="rupee">₹{fmt(f.sgst||0)}</b></div>
                     </>)}
-                    <div style={{display:'flex', justifyContent:'space-between', padding:'8px 0 0', marginTop:6, borderTop:'2px solid var(--primary)', color:'var(--primary)', fontWeight:700, fontSize:14}}><span>Invoice Total:</span> <span className="rupee">₹{fmt(f.total||0)}</span></div>
+                    {Math.abs(f.roundOff||0) >= 0.01 && (
+                      <div style={{display:'flex', justifyContent:'space-between', padding:'3px 0', color:'var(--ink-3)'}}><span>Round Off:</span> <b className="rupee">{(f.roundOff>0?'+':'')}₹{fmt(f.roundOff||0)}</b></div>
+                    )}
+                    <div style={{display:'flex', justifyContent:'space-between', padding:'8px 0 0', marginTop:6, borderTop:'2px solid var(--primary)', color:'var(--primary)', fontWeight:700, fontSize:14}}><span>Invoice Total:</span> <span className="rupee">₹{fmt((Math.abs(f.roundOff||0) >= 0.01 ? f.grandTotal : f.total)||0)}</span></div>
                   </div>
                 </div>
               )}
