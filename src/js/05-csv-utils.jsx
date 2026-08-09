@@ -60,7 +60,7 @@ const computePeriodBals = (data, fromDate, toDate) => {
   const opening = {}, period = {};
   data.coa.forEach(a => { opening[a.id] = a.opening || 0; period[a.id] = 0; });
   data.vouchers.forEach(v => {
-    if(v.status === 'Cancelled') return;
+    if(!affectsLedger(v)) return;
     (v.lines||[]).forEach(l => {
       const id = l.accountId;
       const mv = (l.debit||0) - (l.credit||0);
@@ -76,6 +76,19 @@ const computePeriodBals = (data, fromDate, toDate) => {
   });
   return { opening, period, asOn };
 };
+
+// ── Estimated current-tax provision ──────────────────────────────────────────
+// The P&L and the Balance Sheet must agree on tax: the P&L shows PAT after an
+// estimated current-tax charge, and the Balance Sheet must carry the same
+// amount as a provision so reserves reflect PAT (not pre-tax profit). Keeping
+// the rate and the formula in one place is what guarantees they never drift.
+const companyTaxRate = (data) => {
+  const r = data && data.company && data.company.taxRate;
+  return (r === 0 || r) ? Number(r) : 25;   // default 25% MSME company rate
+};
+// Estimated current tax on a positive PBT; 0 for a loss (no tax on losses, and
+// deferred-tax assets are out of scope for this estimate).
+const estimateTax = (pbt, rate) => pbt > 0 ? Math.round(pbt * (rate/100) * 100)/100 : 0;
 
 // ── COA role resolver ────────────────────────────────────────────────────────
 // Reports historically hardcoded ledger ids ('2400','1300','1310','2600'…), which

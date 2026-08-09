@@ -24,6 +24,7 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
       if(!saved.costCentres) saved.costCentres = [];
       if(!saved.departments) saved.departments = [];
       if(!saved.bankRecon)   saved.bankRecon   = [];
+      if(!saved.periodCloses) saved.periodCloses = [];
       if(!saved.allocations) saved.allocations = [];
       if(!saved.bankRules)   saved.bankRules   = [];
       if(!saved.auditLog)    saved.auditLog    = [];
@@ -35,13 +36,21 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
       if(!saved.company.premiumSince) saved.company.premiumSince = '';
       if(!saved.company.booksLockedUpto) saved.company.booksLockedUpto = '';
       if(!saved.company.invoiceTemplate) saved.company.invoiceTemplate = 'classic';
-      // Migrate: ensure new TDS-payable ledgers (ITA-2025 sections) exist
-      ['1325','1326','1327','1328','1329'].forEach(id => {
+      // Migrate: ensure new TDS-payable ledgers (ITA-2025 sections) + the
+      // Round Off ledger exist
+      ['1325','1326','1327','1328','1329','4900'].forEach(id => {
         if(saved.coa && !saved.coa.find(a => a.id === id)){
           const seed = SEED_COA.find(a => a.id === id);
           if(seed) saved.coa.push({...seed});
         }
       });
+      // Migrate: invoice round-off defaults ON (best practice; GST amounts are
+      // rounded to the nearest rupee)
+      if(saved.company.roundOff === undefined) saved.company.roundOff = true;
+      // Migrate: controls default OFF for existing books (opt-in, so an existing
+      // workflow is never suddenly blocked)
+      if(saved.company.makerChecker === undefined)    saved.company.makerChecker = false;
+      if(saved.company.requireNarration === undefined) saved.company.requireNarration = false;
       // Migrate: ensure modules config exists (preserve existing true for legacy installs)
       if(!saved.company.modules) {
         saved.company.modules = { gst:true, tds:true, payroll:true, factory:false, trader:false, service:false };
@@ -242,7 +251,7 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
     const bal = {};
     data.coa.forEach(a => { bal[a.id] = a.opening || 0; });
     data.vouchers.forEach(v => {
-      if(v.status === 'Cancelled') return;
+      if(!affectsLedger(v)) return;
       (v.lines||[]).forEach(l => {
         if(!bal[l.accountId]) bal[l.accountId] = 0;
         // Debits positive for Asset/Expense; Credits positive for Liability/Equity/Income
@@ -446,7 +455,7 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
           {page==='departments'  && <DepartmentMaster data={data} setData={canWrite?setData:()=>{}} showToast={showToast} readOnly={isViewer} />}
           {page==='cc_report'    && <CostCentreReport data={data} />}
           {page==='dept_report'  && <DepartmentReport data={data} />}
-          {page==='vouchers' && <Vouchers data={data} setData={canWrite?setData:()=>{}} showToast={showToast} readOnly={isViewer} />}
+          {page==='vouchers' && <Vouchers data={data} setData={canWrite?setData:()=>{}} showToast={showToast} readOnly={isViewer} userRole={userRole} />}
           {page==='salesdocs' && <SalesDocs data={data} setData={canWrite?setData:()=>{}} showToast={showToast} readOnly={isViewer} />}
           {page==='collections' && <Collections data={data} showToast={showToast} />}
           {page==='daybook' && <DayBook data={data} />}

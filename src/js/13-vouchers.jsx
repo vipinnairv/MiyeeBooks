@@ -2,8 +2,12 @@
 // ============================================================================
 // VOUCHERS
 // ============================================================================
-function Vouchers({data, setData, showToast, readOnly=false}){
+function Vouchers({data, setData, showToast, readOnly=false, userRole='owner'}){
   const [editing, setEditing] = useState(null);
+  // Maker-checker: an approver (owner/admin) can post entries; other roles
+  // create them as Pending for review when the control is enabled.
+  const makerChecker = data.company.makerChecker === true;
+  const canApprove   = userRole === 'owner' || userRole === 'admin';
   const [dup, setDup] = useState(null);          // duplicate-source prefill (new voucher)
   const [showModal, setShowModal] = useState(false);
   const [showImport, setShowImport] = useState(false);
@@ -195,20 +199,26 @@ function Vouchers({data, setData, showToast, readOnly=false}){
       return;
     }
     if(editing){
+      // Preserve the entry's workflow status across edits (a Pending stays
+      // Pending; a Posted stays Posted). Record what changed for the audit.
+      const changes = [];
+      if(Math.abs((editing.amount||0)-(v.amount||0))>0.01) changes.push(`amount ₹${fmt(editing.amount||0)}→₹${fmt(v.amount||0)}`);
+      if(editing.date !== v.date) changes.push(`date ${fmtDate(editing.date)}→${fmtDate(v.date)}`);
       setData(prev => ({...prev,
-        vouchers: prev.vouchers.map(x => x.id === editing.id ? {...v, id:editing.id} : x),
-        auditLog: [...(prev.auditLog||[]), auditEntry('EDIT', `${editing.number} (${v.type}) ₹${fmt(v.amount||0)} dt ${fmtDate(v.date)}`)],
+        vouchers: prev.vouchers.map(x => x.id === editing.id ? {...v, id:editing.id, status: editing.status || v.status || 'Posted'} : x),
+        auditLog: [...(prev.auditLog||[]), auditEntry('EDIT', `${editing.number} (${v.type})${changes.length?' · '+changes.join(', '):' ₹'+fmt(v.amount||0)+' dt '+fmtDate(v.date)}`)],
       }));
       showToast('Voucher updated: ' + v.number);
     } else {
+      const status = makerChecker ? 'Pending' : (v.status || 'Posted');
       setData(prev => {
         const num = nextVoucherNumber(prev, v.type);
         return {...prev,
-          vouchers: [...prev.vouchers, {...v, id:uid(), number:v.number||num, createdAt:new Date().toISOString()}],
-          auditLog: [...(prev.auditLog||[]), auditEntry('CREATE', `${v.number||num} (${v.type}) ₹${fmt(v.amount||0)} dt ${fmtDate(v.date)}`)],
+          vouchers: [...prev.vouchers, {...v, id:uid(), number:v.number||num, status, createdAt:new Date().toISOString()}],
+          auditLog: [...(prev.auditLog||[]), auditEntry('CREATE', `${v.number||num} (${v.type}) ₹${fmt(v.amount||0)} dt ${fmtDate(v.date)}${status==='Pending'?' · PENDING approval':''}`)],
         };
       });
-      showToast('Voucher posted: ' + (v.number || v.type));
+      showToast(makerChecker ? 'Voucher created (pending approval): ' + (v.number || v.type) : 'Voucher posted: ' + (v.number || v.type));
     }
     setShowModal(false);
     setEditing(null);
@@ -227,6 +237,25 @@ function Vouchers({data, setData, showToast, readOnly=false}){
     showToast('Voucher cancelled');
   };
 
+  const approveVoucher = (v) => {
+    if(!canApprove) return showToast('Only an owner or admin can approve entries','error');
+    if(isDateLocked(data.company, v.date)) return showToast('Period is locked','error');
+    setData({...data,
+      vouchers: data.vouchers.map(x => x.id === v.id ? {...x, status:'Posted', approvedOn:today()} : x),
+      auditLog: [...(data.auditLog||[]), auditEntry('APPROVE', `${v.number} (${v.type}) ₹${fmt(v.amount||0)} approved & posted`)],
+    });
+    showToast('Approved & posted: ' + v.number);
+  };
+  const rejectVoucher = (v) => {
+    if(!canApprove) return showToast('Only an owner or admin can reject entries','error');
+    if(!confirm('Reject voucher ' + v.number + '? It will not affect the ledgers.')) return;
+    setData({...data,
+      vouchers: data.vouchers.map(x => x.id === v.id ? {...x, status:'Rejected'} : x),
+      auditLog: [...(data.auditLog||[]), auditEntry('REJECT', `${v.number} (${v.type}) ₹${fmt(v.amount||0)} rejected`)],
+    });
+    showToast('Voucher rejected');
+  };
+
   return (
     <>
       <div className="page-head">
@@ -242,6 +271,14 @@ function Vouchers({data, setData, showToast, readOnly=false}){
       {readOnly && <div style={{background:'#fff8e1',border:'1px solid #ffe082',borderRadius:8,padding:'10px 16px',marginBottom:16,fontSize:12,color:'#5d4037'}}>
         👁 <b>Viewer / Auditor mode</b>  you can view all entries but cannot create, edit or cancel vouchers.
       </div>}
+
+      {makerChecker && (() => {
+        const pend = (data.vouchers||[]).filter(v=>v.status==='Pending').length;
+        if(!pend) return null;
+        return <div style={{background:'var(--accent-soft)',border:'1px solid var(--accent)',borderRadius:8,padding:'10px 16px',marginBottom:16,fontSize:12.5,color:'var(--warning)'}}>
+          ⏳ <b>{pend} entr{pend===1?'y':'ies'} pending approval.</b> {canApprove ? 'Review and Approve/Reject below - pending entries do not affect the ledgers until approved.' : 'An owner or admin must approve them before they post to the ledgers.'}
+        </div>;
+      })()}
 
       {/* Free tier usage banner */}
       {SUBSCRIPTION_ENABLED && !prem && !readOnly && (
@@ -318,9 +355,11 @@ function Vouchers({data, setData, showToast, readOnly=false}){
                 <td>{v.partyName || ''}</td>
                 <td style={{maxWidth:280, fontSize:12, color:'var(--ink-2)'}}>{v.narration || ''}</td>
                 <td className="num bold">₹{fmt(v.amount||0)}</td>
-                <td><span className={'badge ' + (v.status==='Cancelled'?'badge-danger':'badge-success')}>{v.status||'Posted'}</span></td>
+                <td><span className={'badge ' + (v.status==='Cancelled'||v.status==='Rejected'?'badge-danger':v.status==='Pending'?'badge-gold':'badge-success')}>{v.status||'Posted'}</span></td>
                 <td className="actions">
-                  {!readOnly && <button className="btn btn-sm btn-ghost" onClick={() => { setEditing(v); setVtype(v.type); setShowModal(true); }}>{v.status==='Cancelled'?'View':'Edit'}</button>}
+                  {!readOnly && canApprove && v.status==='Pending' && <button className="btn btn-sm" style={{background:'var(--green)',color:'#fff'}} title="Approve & post" onClick={() => approveVoucher(v)}>✓ Approve</button>}
+                  {!readOnly && canApprove && v.status==='Pending' && <button className="btn btn-sm btn-ghost" style={{color:'var(--danger)'}} title="Reject" onClick={() => rejectVoucher(v)}>✕ Reject</button>}
+                  {!readOnly && <button className="btn btn-sm btn-ghost" onClick={() => { setEditing(v); setVtype(v.type); setShowModal(true); }}>{v.status==='Cancelled'||v.status==='Rejected'?'View':'Edit'}</button>}
                   {!readOnly && <button className="btn btn-sm btn-ghost" style={{color:'var(--ink-2)'}} title="Create a new voucher pre-filled from this one" onClick={() => duplicate(v)}>⧉ Copy</button>}
                   {['SAL','PUR','CRN','DBN'].includes(v.type) && v.status!=='Cancelled' && <button className="btn btn-sm btn-ghost" style={{color:'var(--primary)'}} onClick={() => generateInvoicePDF(v, data)}>⎙ PDF</button>}
                   {['SAL','CRN','DBN'].includes(v.type) && v.status!=='Cancelled' && (v.items||[]).length>0 && <button className="btn btn-sm btn-ghost" style={{color:'var(--info)'}} title="Download e-invoice IRP JSON" onClick={() => generateEInvoiceJSON(v, data)}>⊕ e-Inv</button>}
@@ -497,7 +536,31 @@ function VoucherModal({vtype, voucher, prefill, data, onSave, onClose, showToast
       const stamped = lines.map(l => ({...l,
         costCentreId: f.costCentreId || l.costCentreId || '',
         departmentId: f.departmentId || l.departmentId || ''}));
-      setF(prev => ({...prev, lines: stamped, taxable, cgst, sgst, igst, total, amount: total, isInterState, isExport}));
+
+      // Round the invoice to the nearest rupee and book the paise difference to
+      // the Round Off ledger (standard GST practice), so the amount receivable /
+      // payable is a clean rupee and the entry stays balanced.
+      const ROUNDOFF_ACCT = '4900';
+      let finalLines = stamped, roundOff = 0, roundedTotal = total;
+      const roundCfg = ({SAL:['2400','debit'], DBN:['1300','debit'], PUR:['1300','credit'], CRN:['2400','credit']})[vtype];
+      const roEnabled = data.company.roundOff !== false && data.coa.some(a=>a.id===ROUNDOFF_ACCT);
+      if(roEnabled && roundCfg){
+        roundedTotal = Math.round(total);
+        roundOff = Math.round((roundedTotal - total)*100)/100;
+        const [pAcct, pSide] = roundCfg;
+        const pLine = Math.abs(roundOff) >= 0.01 ? finalLines.find(l => l.accountId===pAcct && (l[pSide]||0) > 0) : null;
+        if(pLine){
+          finalLines = finalLines.map(l => l===pLine ? {...l, [pSide]: roundedTotal} : l);
+          const dr = finalLines.reduce((s,l)=>s+(l.debit||0),0);
+          const cr = finalLines.reduce((s,l)=>s+(l.credit||0),0);
+          const d  = Math.round((dr-cr)*100)/100;   // + → need a credit; − → need a debit
+          if(Math.abs(d) >= 0.01) finalLines = [...finalLines, {id:uid(), accountId:ROUNDOFF_ACCT,
+            debit: d<0 ? -d : 0, credit: d>0 ? d : 0, narration:'Round Off',
+            costCentreId:f.costCentreId||'', departmentId:f.departmentId||''}];
+        } else { roundOff = 0; roundedTotal = total; }
+      }
+      setF(prev => ({...prev, lines: finalLines, taxable, cgst, sgst, igst, total,
+        roundOff, grandTotal: roundedTotal, amount: roundedTotal, isInterState, isExport}));
     }
   }, [f.items, f.partyId]);
 
@@ -797,6 +860,23 @@ function VoucherModal({vtype, voucher, prefill, data, onSave, onClose, showToast
     }
     if(dr2 === 0){ showToast('Cannot post a zero-value entry','error'); return; }
 
+    // Control: mandatory narration (a core bookkeeping SOP  every entry should
+    // say why it exists). A reference satisfies it too.
+    if(data.company.requireNarration && !(finalData.narration||'').trim() && !(finalData.reference||'').trim()){
+      showToast('A narration (or reference) is required for every entry','error');
+      return;
+    }
+    // Control: duplicate supplier-bill guard  the same vendor + bill reference
+    // already posted is very likely a double entry (paying a bill twice).
+    if(['PUR','DBN'].includes(vtype) && finalData.partyId && (finalData.reference||'').trim()){
+      const ref = finalData.reference.trim().toLowerCase();
+      const dupBill = (data.vouchers||[]).some(v => v.id !== (voucher && voucher.id)
+        && v.status !== 'Cancelled' && v.status !== 'Rejected'
+        && v.type === vtype && v.partyId === finalData.partyId
+        && (v.reference||'').trim().toLowerCase() === ref);
+      if(dupBill && !window.confirm(`A ${vtype} for this party with reference "${finalData.reference}" already exists  this may be a duplicate bill.\n\nPost anyway?`)) return;
+    }
+
     // Budget enforcement for Cost Centres
     const ccBudgetWarnings = [];
     const ccBudgetBlocks   = [];
@@ -1092,7 +1172,10 @@ function VoucherModal({vtype, voucher, prefill, data, onSave, onClose, showToast
                       <div style={{display:'flex', justifyContent:'space-between', padding:'3px 0'}}><span>CGST:</span> <b className="rupee">₹{fmt(f.cgst||0)}</b></div>
                       <div style={{display:'flex', justifyContent:'space-between', padding:'3px 0'}}><span>SGST:</span> <b className="rupee">₹{fmt(f.sgst||0)}</b></div>
                     </>)}
-                    <div style={{display:'flex', justifyContent:'space-between', padding:'8px 0 0', marginTop:6, borderTop:'2px solid var(--primary)', color:'var(--primary)', fontWeight:700, fontSize:14}}><span>Invoice Total:</span> <span className="rupee">₹{fmt(f.total||0)}</span></div>
+                    {Math.abs(f.roundOff||0) >= 0.01 && (
+                      <div style={{display:'flex', justifyContent:'space-between', padding:'3px 0', color:'var(--ink-3)'}}><span>Round Off:</span> <b className="rupee">{(f.roundOff>0?'+':'')}₹{fmt(f.roundOff||0)}</b></div>
+                    )}
+                    <div style={{display:'flex', justifyContent:'space-between', padding:'8px 0 0', marginTop:6, borderTop:'2px solid var(--primary)', color:'var(--primary)', fontWeight:700, fontSize:14}}><span>Invoice Total:</span> <span className="rupee">₹{fmt((Math.abs(f.roundOff||0) >= 0.01 ? f.grandTotal : f.total)||0)}</span></div>
                   </div>
                 </div>
               )}

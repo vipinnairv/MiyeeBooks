@@ -38,6 +38,22 @@ function PeriodClose({data, setData, showToast, setPage, readOnly=false}){
     showToast(`✓ GST set-off JV ${num} posted ₹${fmt(totSetoff)}`);
   };
 
+  // Period sign-off: record the close and lock the books up to the month-end so
+  // the period can no longer be edited (a core month-end control).
+  const closedRec = (data.periodCloses||[]).find(p=>p.month===month);
+  const alreadyLocked = isDateLocked(data.company, pEnd);
+  const markClosed = () => {
+    if(readOnly) return;
+    if(!confirm(`Mark ${month} as CLOSED and lock the books up to ${pEnd}?\n\nEntries dated on or before ${pEnd} can no longer be added, edited or cancelled. You can unlock later from Year-End Closing.`)) return;
+    const prevLock = data.company.booksLockedUpto || '';
+    const newLock  = prevLock && prevLock > pEnd ? prevLock : pEnd;
+    setData({...data,
+      company:{...data.company, booksLockedUpto:newLock},
+      periodCloses:[...(data.periodCloses||[]).filter(p=>p.month!==month), {month, closedOn:today(), lockUpto:pEnd}],
+      auditLog:[...(data.auditLog||[]), auditEntry('PERIOD_CLOSE', `${month} closed · books locked up to ${pEnd}`)]});
+    showToast(`✓ ${month} closed & locked up to ${pEnd}`);
+  };
+
   const checklist = [
     {label:'Depreciation posted for the period', detail:'Use the Fixed Asset Register to compute & post depreciation.', page:'fixed_assets'},
     {label:'Prepaid / accrual amortization run', detail:'Post this month’s prepaid portions.', page:'amortization'},
@@ -109,6 +125,22 @@ function PeriodClose({data, setData, showToast, setPage, readOnly=false}){
             <button className="btn btn-sm" onClick={()=>setPage && c.page && setPage(c.page)}>Open</button>
           </div>
         ))}
+      </div>
+    </div>
+
+    <div className="card" style={{marginTop:18}}>
+      <div className="card-head"><h3 className="card-title">Sign off &amp; lock the period</h3></div>
+      <div className="card-body" style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:12,flexWrap:'wrap'}}>
+        <div style={{fontSize:12.5,color:'var(--ink-3)',maxWidth:560}}>
+          {closedRec
+            ? <span style={{color:'var(--green)'}}>✓ <b>{month} closed</b> on {fmtDate(closedRec.closedOn)} · books locked up to {closedRec.lockUpto}.</span>
+            : alreadyLocked
+              ? <span>Books are already locked up to {data.company.booksLockedUpto}. You can still record a formal sign-off for {month}.</span>
+              : <span>Once the checklist above is done, sign off {month}. This locks all entries up to {pEnd} so the closed period can’t be changed. Unlock later from Year-End Closing if needed.</span>}
+        </div>
+        <button className="btn btn-primary" disabled={readOnly || !!closedRec} onClick={markClosed}>
+          {closedRec ? '🔒 Period Closed' : '🔒 Mark '+month+' Closed & Lock'}
+        </button>
       </div>
     </div>
   </>);

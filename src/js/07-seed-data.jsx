@@ -69,6 +69,7 @@ const SEED_COA = [
   {id:'4540', name:'Office Supplies', group:'Other Expenses', type:'Expense', schedule:'Other Expenses', opening:0, gstRate:18},
   {id:'4550', name:'Professional Fees', group:'Other Expenses', type:'Expense', schedule:'Other Expenses', opening:0, gstRate:18},
   {id:'4560', name:'Forex Loss', group:'Other Expenses', type:'Expense', schedule:'Other Expenses', opening:0},
+  {id:'4900', name:'Round Off', group:'Other Expenses', type:'Expense', schedule:'Other Expenses', opening:0, system:true},
 ];
 
 const SEED_PARTIES = [
@@ -109,6 +110,10 @@ const DEFAULT_COMPANY = {
   invoiceTemplate: 'classic',
   upiId: '',             // e.g. name@okhdfcbank - prints a Pay-Now QR on sales invoices
   numberingSeries: {},   // per voucher type: {SAL:{prefix,padding,includeFY}}
+  taxRate: 25,           // income-tax % for the P&L / Balance Sheet estimate
+  roundOff: true,        // round GST invoices to the nearest rupee
+  makerChecker: false,   // require approval (owner/admin) before entries post
+  requireNarration: false, // every voucher must carry a narration or reference
 };
 
 // A clean, fresh dataset (used on first load AND by Reset). Deep-copies seeds so
