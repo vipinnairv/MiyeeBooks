@@ -1146,9 +1146,13 @@ function HealthCheck({data, setPage}){
     })();
     const badGstin = (data.parties||[]).filter(p => p.gstin && !validateGSTIN(p.gstin).valid).map(p=>p.name);
     if(data.company && data.company.gstin && !validateGSTIN(data.company.gstin).valid) badGstin.unshift('(Your company)');
+    // Opening balances must themselves net to zero (a balanced opening trial
+    // balance). A non-zero net means the opening entries are lopsided and the
+    // difference belongs in an Opening Balance / Suspense ledger.
+    const openingNet = Math.round(data.coa.reduce((s,a)=>s+(a.opening||0),0)*100)/100;
     const sizeKB = new Blob([JSON.stringify(data)]).size/1024;
     return {unbalanced, orphan, tbDr, tbCr, tbDiff, empty, missingParty, gstMissing, negCash, dupNums, badGstin,
-      sizeKB, auditCount:(data.auditLog||[]).length, voucherCount:active.length};
+      openingNet, sizeKB, auditCount:(data.auditLog||[]).length, voucherCount:active.length};
   }, [data]);
 
   const items = [
@@ -1158,6 +1162,9 @@ function HealthCheck({data, setPage}){
     { key:'unbal', label:'All vouchers balanced (Dr = Cr per entry)', ok: checks.unbalanced.length===0,
       detail: checks.unbalanced.length===0 ? 'Every voucher is internally balanced' : `${checks.unbalanced.length} unbalanced: ${checks.unbalanced.slice(0,6).map(v=>v.number).join(', ')}`,
       fix:'Vouchers' },
+    { key:'opening', label:'Opening balances net to zero (opening TB balanced)', ok: Math.abs(checks.openingNet)<1, warn:true,
+      detail: Math.abs(checks.openingNet)<1 ? 'Opening balances are internally balanced' : `Opening balances are out by ₹${fmt(Math.abs(checks.openingNet))} (excess ${checks.openingNet>0?'Debit':'Credit'}) - post the difference to an Opening Balance / Suspense ledger`,
+      fix:'coa' },
     { key:'orphan', label:'No orphaned voucher lines (account exists in COA)', ok: checks.orphan.length===0,
       detail: checks.orphan.length===0 ? 'Every line references a valid ledger' : `${checks.orphan.length} line(s) point to a deleted account: ${checks.orphan.slice(0,6).join(', ')}` },
     { key:'empty', label:'No empty / zero-value vouchers', ok: checks.empty.length===0,
@@ -2044,19 +2051,45 @@ function TrialBalance({data, balances}){
   const [typeFilter, setTypeFilter] = useState('');
   const [drill, setDrill] = useState(null);
 
-  // Compute as-on balances (opening + all movements up to 'to')
-  const bals = useMemo(() => computePeriodBals(data, from, to).asOn, [data, from, to]);
+  // 4-column trial balance: Opening balance (as of 'from'), gross Debit and
+  // Credit movement during the period, and the Closing balance (as on 'to').
+  // computePeriodBals gives net opening/closing; gross period Dr/Cr are summed
+  // here from the vouchers falling inside the period.
+  const tb = useMemo(() => {
+    const pb = computePeriodBals(data, from, to);
+    const drMv = {}, crMv = {};
+    (data.vouchers||[]).forEach(v => {
+      if(v.status === 'Cancelled') return;
+      if(from && v.date < from) return;
+      if(to && v.date > to) return;
+      (v.lines||[]).forEach(l => {
+        drMv[l.accountId] = (drMv[l.accountId]||0) + (l.debit||0);
+        crMv[l.accountId] = (crMv[l.accountId]||0) + (l.credit||0);
+      });
+    });
+    return { opening: pb.opening, closing: pb.asOn, drMv, crMv };
+  }, [data, from, to]);
 
   const rows = useMemo(() => data.coa.map(a => {
-    const raw = bals[a.id] || 0;
-    return { ...a, dr: raw > 0 ? raw : 0, cr: raw < 0 ? -raw : 0 };
-  }).filter(r => (r.dr > 0 || r.cr > 0 || r.opening !== 0)
+    const op = tb.opening[a.id] || 0;      // signed: +Dr / -Cr
+    const cl = tb.closing[a.id] || 0;
+    const d  = tb.drMv[a.id] || 0;
+    const c  = tb.crMv[a.id] || 0;
+    return { ...a,
+      openDr: op > 0 ? op : 0, openCr: op < 0 ? -op : 0,
+      perDr: d, perCr: c,
+      closeDr: cl > 0 ? cl : 0, closeCr: cl < 0 ? -cl : 0 };
+  }).filter(r => (r.openDr || r.openCr || r.perDr || r.perCr || r.closeDr || r.closeCr)
     && (!typeFilter || r.type === typeFilter)
     && (!search || r.name.toLowerCase().includes(search.toLowerCase()) || r.id.includes(search))
-  ), [bals, data.coa, typeFilter, search]);
+  ), [tb, data.coa, typeFilter, search]);
 
-  const totalDr = rows.reduce((s,r) => s + r.dr, 0);
-  const totalCr = rows.reduce((s,r) => s + r.cr, 0);
+  const T = rows.reduce((s,r) => ({
+    openDr:s.openDr+r.openDr, openCr:s.openCr+r.openCr,
+    perDr:s.perDr+r.perDr,    perCr:s.perCr+r.perCr,
+    closeDr:s.closeDr+r.closeDr, closeCr:s.closeCr+r.closeCr,
+  }), {openDr:0,openCr:0,perDr:0,perCr:0,closeDr:0,closeCr:0});
+  const totalDr = T.closeDr, totalCr = T.closeCr;   // closing balance tally
 
   const handleExcel = () => exportXLSX(`TrialBalance_${data.company.name}_${to}.xlsx`, [{
     name: 'Trial Balance',
@@ -2064,10 +2097,10 @@ function TrialBalance({data, balances}){
       [`Trial Balance  ${data.company.name}`],
       [`Period: ${from} to ${to}`],
       [],
-      ['Code','Particulars','Type','Group','Debit (₹)','Credit (₹)'],
-      ...rows.map(r => [r.id, r.name, r.type, r.group, r.dr||'', r.cr||'']),
+      ['Code','Particulars','Type','Group','Opening Dr','Opening Cr','Debit','Credit','Closing Dr','Closing Cr'],
+      ...rows.map(r => [r.id, r.name, r.type, r.group, r.openDr||'', r.openCr||'', r.perDr||'', r.perCr||'', r.closeDr||'', r.closeCr||'']),
       [],
-      ['','','','TOTAL', totalDr, totalCr],
+      ['','','','TOTAL', T.openDr, T.openCr, T.perDr, T.perCr, T.closeDr, T.closeCr],
     ]
   }]);
 
@@ -2108,15 +2141,23 @@ function TrialBalance({data, balances}){
           <div className="report-title">Trial Balance</div>
           <div className="report-period">Period: {fmtDate(from)} to {fmtDate(to)}</div>
         </div>
+        <div style={{overflowX:'auto'}}>
         <table>
           <thead>
             <tr>
-              <th style={{width:80}}>Code</th>
-              <th>Particulars</th>
-              <th style={{width:80}}>Type</th>
-              <th>Group</th>
-              <th className="num">Debit (₹)</th>
-              <th className="num">Credit (₹)</th>
+              <th style={{width:70}} rowSpan="2">Code</th>
+              <th rowSpan="2">Particulars</th>
+              <th className="num" colSpan="2" style={{textAlign:'center',borderBottom:'1px solid var(--line)'}}>Opening Balance</th>
+              <th className="num" colSpan="2" style={{textAlign:'center',borderBottom:'1px solid var(--line)'}}>Transactions</th>
+              <th className="num" colSpan="2" style={{textAlign:'center',borderBottom:'1px solid var(--line)'}}>Closing Balance</th>
+            </tr>
+            <tr>
+              <th className="num" style={{width:90}}>Dr (₹)</th>
+              <th className="num" style={{width:90}}>Cr (₹)</th>
+              <th className="num" style={{width:90}}>Debit (₹)</th>
+              <th className="num" style={{width:90}}>Credit (₹)</th>
+              <th className="num" style={{width:90}}>Dr (₹)</th>
+              <th className="num" style={{width:90}}>Cr (₹)</th>
             </tr>
           </thead>
           <tbody>
@@ -2124,27 +2165,35 @@ function TrialBalance({data, balances}){
               <tr key={r.id} style={{cursor:'pointer'}} onClick={()=>setDrill({accountIds:[r.id],title:`${r.id} · ${r.name}`})}
                 className="hover-row">
                 <td style={{fontFamily:'var(--mono)',color:'var(--primary)'}}>{r.id}</td>
-                <td style={{color:'var(--primary)',textDecoration:'underline dotted',fontWeight:500}}>{r.name}</td>
-                <td><span style={{fontSize:10,padding:'1px 6px',borderRadius:10,fontWeight:600,
-                  background:r.type==='Asset'?'var(--info-soft)':r.type==='Income'?'var(--primary-soft)':r.type==='Expense'?'var(--danger-soft)':'var(--accent-soft)',
-                  color:r.type==='Asset'?'var(--info)':r.type==='Income'?'var(--primary)':r.type==='Expense'?'var(--danger)':'var(--warning)'}}>{r.type}</span></td>
-                <td style={{fontSize:11,color:'var(--ink-3)'}}>{r.group}</td>
-                <td className="num">{r.dr ? fmt(r.dr) : ''}</td>
-                <td className="num">{r.cr ? fmt(r.cr) : ''}</td>
+                <td style={{color:'var(--primary)',textDecoration:'underline dotted',fontWeight:500}}>{r.name}
+                  <span style={{fontSize:10,color:'var(--ink-3)',marginLeft:6}}>{r.group}</span></td>
+                <td className="num">{r.openDr ? fmt(r.openDr) : ''}</td>
+                <td className="num">{r.openCr ? fmt(r.openCr) : ''}</td>
+                <td className="num">{r.perDr ? fmt(r.perDr) : ''}</td>
+                <td className="num">{r.perCr ? fmt(r.perCr) : ''}</td>
+                <td className="num">{r.closeDr ? fmt(r.closeDr) : ''}</td>
+                <td className="num">{r.closeCr ? fmt(r.closeCr) : ''}</td>
               </tr>
             ))}
             <tr className="total">
-              <td colSpan="4" style={{textAlign:'right'}}>TOTAL</td>
-              <td className="num">₹{fmt(totalDr)}</td>
-              <td className="num">₹{fmt(totalCr)}</td>
+              <td colSpan="2" style={{textAlign:'right'}}>TOTAL</td>
+              <td className="num">₹{fmt(T.openDr)}</td>
+              <td className="num">₹{fmt(T.openCr)}</td>
+              <td className="num">₹{fmt(T.perDr)}</td>
+              <td className="num">₹{fmt(T.perCr)}</td>
+              <td className="num">₹{fmt(T.closeDr)}</td>
+              <td className="num">₹{fmt(T.closeCr)}</td>
             </tr>
-            <tr><td colSpan="6" style={{textAlign:'center',padding:14}}>
+            <tr><td colSpan="8" style={{textAlign:'center',padding:14}}>
               {Math.abs(totalDr-totalCr) < 0.01
-                ? <span className="badge badge-success">✓ Balanced  Books are in order</span>
-                : <span className="badge badge-danger">✗ Difference: ₹{fmt(Math.abs(totalDr-totalCr))}</span>}
+                ? <span className="badge badge-success">✓ Balanced  Closing Dr ₹{fmt(totalDr)} = Cr ₹{fmt(totalCr)}</span>
+                : <span className="badge badge-danger">✗ Difference: ₹{fmt(Math.abs(totalDr-totalCr))}  check entries / opening balances</span>}
+              {Math.abs(T.perDr-T.perCr) >= 0.01 &&
+                <span className="badge badge-danger" style={{marginLeft:8}}>⚠ Period movements unbalanced by ₹{fmt(Math.abs(T.perDr-T.perCr))}</span>}
             </td></tr>
           </tbody>
         </table>
+        </div>
         <div className="report-foot">
           <span>Click any account row to view detailed ledger · Generated by MiyeeBooks · {new Date().toLocaleString('en-IN')}</span>
           <span>For {data.company.name}</span>
