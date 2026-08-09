@@ -2207,7 +2207,9 @@ function ProfitLoss({data, balances}){
   const totalExpP  = costMatP + empBenefitP + finCostP + deprP + otherExpP;
   const pbt        = totalRev - totalExp;
   const pbtP       = totalRevP - totalExpP;
-  const tax        = pbt > 0 ? Math.round(pbt * 0.25 * 100)/100 : 0;
+  const taxRatePct = companyTaxRate(data);
+  const tax        = estimateTax(pbt, taxRatePct);
+  const taxP       = estimateTax(pbtP, taxRatePct);
   const pat        = pbt - tax;
 
   // Per-account note lines (for Notes section)
@@ -2252,7 +2254,7 @@ function ProfitLoss({data, balances}){
         ['Finance Costs', finCost],['Depreciation & Amortization', depr],['Other Expenses', otherExp],
         ['Total Expenses', totalExp],['',''],
         ['III. Profit Before Tax (PBT)', pbt],
-        ['Current Tax (est. 25%)', tax],['V. Profit After Tax (PAT)', pat],
+        [`Current Tax (est. ${taxRatePct}%)`, tax],['V. Profit After Tax (PAT)', pat],
       ]},
       { name:'Income (Note)', rows:[['Code','Account','Group','Income (₹)'],...incRows]},
       { name:'Expenses (Note)', rows:[['Code','Account','Group','','Expense (₹)'],...expRows]},
@@ -2318,11 +2320,14 @@ function ProfitLoss({data, balances}){
               </>}
             </tr>
             <tr className="group"><td colSpan={compare?4:2}>IV. TAX EXPENSE</td></tr>
-            {drillRow(`Current Tax (estimated @ 25%)`, tax, [])}
+            {drillRow(`Current Tax (estimated @ ${taxRatePct}%)`, tax, [], false, false, taxP)}
             {drillRow('Deferred Tax', 0, [])}
             <tr className="total"><td>V. Profit After Tax (PAT)</td>
               <td className="num" style={{color:pat>=0?'var(--primary)':'var(--danger)'}}>₹{fmt(pat)}</td>
-              {compare && <td className="num" colSpan="2"></td>}
+              {compare && <>
+                <td className="num" style={{color:'var(--ink-3)'}}>₹{fmt(pbtP - taxP)}</td>
+                <td className="num" style={{fontSize:11,color:((pat)-(pbtP-taxP))>=0?'var(--primary)':'var(--danger)'}}>{variance(pat, pbtP - taxP)}</td>
+              </>}
             </tr>
             <tr><td style={{paddingTop:14,fontSize:11,color:'var(--ink-3)'}}>Earnings Per Share (Basic &amp; Diluted)</td>
               <td className="num" style={{fontSize:11,color:'var(--ink-3)'}}>₹{((pat/Math.max(1,(balances['1100']||1000000)/10))||0).toFixed(2)}</td></tr>
@@ -2396,7 +2401,7 @@ function ProfitLoss({data, balances}){
         </div>
 
         <div className="report-foot">
-          <span>Tax estimate at 25% MSME rate · Subject to audit · Click any line for ledger detail · Generated {new Date().toLocaleDateString('en-IN')}</span>
+          <span>Tax estimate at {taxRatePct}% · Subject to audit · Click any line for ledger detail · Generated {new Date().toLocaleDateString('en-IN')}</span>
           <span>MiyeeBooks · {data.company.name}</span>
         </div>
       </div>
@@ -2421,7 +2426,13 @@ function BalanceSheet({data, balances}){
   // P&L for the period (FY start → asOn)  uses period movements
   const income   = data.coa.filter(a=>a.type==='Income').reduce((s,a)=>s+(-( pbFull.period[a.id]||0)),0);
   const expense  = data.coa.filter(a=>a.type==='Expense').reduce((s,a)=>s+(pbFull.period[a.id]||0),0);
-  const currentProfit = income - expense;
+  const currentProfit = income - expense;                 // pre-tax profit for the period
+  // Consistent with the P&L: carry PAT into reserves and show the estimated
+  // current-tax charge as a short-term provision, so both statements agree and
+  // the sheet still tallies (reserves -tax, provision +tax nets to zero).
+  const taxRatePct   = companyTaxRate(data);
+  const taxProvision = estimateTax(currentProfit, taxRatePct);
+  const currentPAT   = currentProfit - taxProvision;
 
   // Equity & Liabilities - totals derive from ACCOUNT-TYPE sums (not hardcoded
   // id lists) so the sheet can NEVER drift, whatever ledgers a voucher touches.
@@ -2435,13 +2446,15 @@ function BalanceSheet({data, balances}){
   const dtl            = -g('1210');
   const tradePayables  = -g('1300');
   const provisions     = -g('1330');
-  const reserves       = equityFromAccounts - shareCapital + currentProfit;   // opening reserves + current profit
+  const reserves       = equityFromAccounts - shareCapital + currentPAT;   // opening reserves + profit AFTER tax
   // Residual current liabilities = everything else (GST output, TDS, PF, ESIC, PT, salary payable…)
   const otherCL        = liabFromAccounts - lt_borrowings - dtl - tradePayables - provisions;
   const otherCLIds     = data.coa.filter(a=>a.type==='Liability' && !['1300','1330','1200','1210'].includes(a.id)).map(a=>a.id);
-  const totalEquity    = shareCapital + reserves;     // = equityFromAccounts + currentProfit
+  const totalEquity    = shareCapital + reserves;     // = equityFromAccounts + currentPAT
   const totalNCL       = lt_borrowings + dtl;
-  const totalCL        = tradePayables + otherCL + provisions;
+  // taxProvision is an estimated presentation line (not a posted ledger) that
+  // exactly offsets the tax removed from reserves, so the sheet still tallies.
+  const totalCL        = tradePayables + otherCL + provisions + taxProvision;
   const totalLiab      = totalEquity + totalNCL + totalCL;   // ≡ assetsExact, always tallies
 
   // Assets
@@ -2482,6 +2495,7 @@ function BalanceSheet({data, balances}){
         ['Sub-total  Shareholders\' Funds', totalEquity],
         ['Long-term Borrowings', lt_borrowings],['Deferred Tax Liability', dtl],['Sub-total  NCL', totalNCL],
         ['Trade Payables', tradePayables],['Other CL (Statutory)', otherCL],['Provisions', provisions],
+        [`Provision for Income Tax (est. ${taxRatePct}%)`, taxProvision],
         ['Sub-total  CL', totalCL],['TOTAL EQUITY & LIABILITIES', totalLiab],['',''],
         ['II. ASSETS',''],
         ['PPE (Net)', netPPE],['  Gross Block', grossPPE],['  Acc. Depreciation', Math.abs(accDepr)],
@@ -2559,7 +2573,7 @@ function BalanceSheet({data, balances}){
             <tr className="group"><td colSpan="2">I. EQUITY AND LIABILITIES</td></tr>
             <tr style={{fontWeight:600}}><td>(1) Shareholders' Funds</td><td></td></tr>
             {dRow('(a) Share Capital', shareCapital, ['1100'], true)}
-            {dRow('(b) Reserves & Surplus (incl. current profit ₹'+fmt(currentProfit)+')', reserves, ['1110'], true)}
+            {dRow('(b) Reserves & Surplus (incl. profit after tax ₹'+fmt(currentPAT)+')', reserves, ['1110'], true)}
             <tr style={{fontWeight:700,background:'var(--surface-2)'}}><td style={{paddingLeft:12}}>Sub-total  Shareholders' Funds</td><td className="num">₹{fmt(totalEquity)}</td></tr>
 
             <tr style={{fontWeight:600}}><td>(2) Non-Current Liabilities</td><td></td></tr>
@@ -2571,6 +2585,7 @@ function BalanceSheet({data, balances}){
             {dRow('(a) Trade Payables', tradePayables, ['1300'], true)}
             {dRow('(b) Other Current Liabilities (Statutory: GST, TDS, PF/ESIC/PT, Salary)', otherCL, otherCLIds, true)}
             {dRow('(c) Short-term Provisions', provisions, ['1330'], true)}
+            {dRow('(d) Provision for Income Tax (estimated @ '+taxRatePct+'%)', taxProvision, null, true)}
             <tr style={{fontWeight:700,background:'var(--surface-2)'}}><td style={{paddingLeft:12}}>Sub-total  Current Liab.</td><td className="num">₹{fmt(totalCL)}</td></tr>
             <tr className="total"><td>TOTAL EQUITY &amp; LIABILITIES</td><td className="num">₹{fmt(totalLiab)}</td></tr>
 

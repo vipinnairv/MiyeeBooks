@@ -762,6 +762,10 @@ function CompanySettings({data, setData, showToast, readOnly=false}){
             <div className="field"><label>Base Currency</label><select value={f.baseCurrency} onChange={e => setF({...f, baseCurrency:e.target.value})}><option>INR</option><option>USD</option></select></div>
             <div className="field"><label>FY Start</label><input type="date" value={f.fyStart} onChange={e => setF({...f, fyStart:e.target.value})} /></div>
             <div className="field"><label>FY End</label><input type="date" value={f.fyEnd} onChange={e => setF({...f, fyEnd:e.target.value})} /></div>
+            <div className="field"><label>Income-Tax Rate % <span style={{color:'var(--ink-3)',fontWeight:400}}>(P&amp;L / Balance Sheet estimate)</span></label>
+              <input type="number" min="0" max="60" step="0.01" value={f.taxRate ?? 25}
+                onChange={e => setF({...f, taxRate: e.target.value===''? '' : parseFloat(e.target.value)})}
+                placeholder="25" /></div>
             <div className="field" style={{gridColumn:'span 2'}}><label>Bank Details (for invoices)</label><input value={f.bankDetails||''} onChange={e => setF({...f, bankDetails:e.target.value})} placeholder="A/c No: XXXX | Bank: Kotak | IFSC: KKBK..." /></div>
             <div className="field"><label>UPI ID (prints a Pay-Now QR on invoices)</label>
               <input value={f.upiId||''} onChange={e => setF({...f, upiId:e.target.value.trim().toLowerCase()})} placeholder="yourname@okhdfcbank"
