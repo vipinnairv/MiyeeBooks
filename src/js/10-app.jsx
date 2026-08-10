@@ -302,8 +302,8 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
       {id:'debtor_stmt', label:'Debtors Statement', ico:'↗'},
       {id:'vendor_stmt', label:'Vendor Statement', ico:'↙'},
       {id:'mis', label:'CFO Dashboard', ico:'◇'},
-      {id:'valuation', label:'Valuation / Financial Model', ico:'💹'},
-      {id:'consolidation', label:'Group Consolidation', ico:'🏢'},
+      {id:'valumetrics', label:'Financial Model & Valuation', ico:'💹'},
+      {id:'valuation', label:'Quick Valuation (DCF)', ico:'💰'},
       {id:'mis_ratios', label:'Financial Ratios', ico:'▦'},
       {id:'mis_aging', label:'Aging Analysis', ico:'◫'},
     ]},
@@ -485,8 +485,8 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
           {page==='forex' && <Forex data={data} setData={setData} showToast={showToast} />}
           {page==='ceo' && <CEODashboard data={data} balances={ledgerBalances} setPage={setPage} />}
           {page==='mis' && <MISDashboard data={data} balances={ledgerBalances} setPage={setPage} />}
+          {page==='valumetrics' && <ValuMetrics />}
           {page==='valuation' && <FinancialModel data={data} balances={ledgerBalances} />}
-          {page==='consolidation' && <GroupConsolidation data={data} user={user} ownerId={ownerId||user?.uid} companyId={companyId} />}
           {page==='mis_ratios' && <FinancialRatios data={data} balances={ledgerBalances} />}
           {page==='mis_aging' && <AgingAnalysis data={data} balances={ledgerBalances} />}
           {page==='datamanage' && <DataManagement data={data} setData={setData} showToast={showToast} />}

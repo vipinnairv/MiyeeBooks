@@ -85,6 +85,10 @@ async function buildOnce() {
   for (const asset of ['og-image.svg']) {
     if (existsSync(join(root, asset))) copyFileSync(join(root, asset), join(distDir, asset));
   }
+  // Standalone embedded pages (self-contained apps loaded in an iframe)
+  if (existsSync(join(srcDir, 'valumetrics.html'))) {
+    copyFileSync(join(srcDir, 'valumetrics.html'), join(distDir, 'valumetrics.html'));
+  }
 
   console.log(`Built ${files.length} module(s) → dist/  (${tags.length} scripts)`);
 }
