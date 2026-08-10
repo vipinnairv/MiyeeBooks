@@ -2704,6 +2704,163 @@ function BalanceSheet({data, balances}){
 }
 
 // ============================================================================
+// NOTES TO ACCOUNTS & SIGNIFICANT ACCOUNTING POLICIES (Schedule III)
+// A standalone, printable statement: the significant accounting policies plus
+// the note schedules that back the Balance Sheet & P&L, all built live from the
+// ledgers so they always agree with the primary statements.
+// ============================================================================
+function NotesToAccounts({data, balances}){
+  const [asOn, setAsOn] = useState(today());
+  const fyStart = data.company.fyStart || '';
+  const co = data.company;
+  const pb = useMemo(() => computePeriodBals(data, fyStart, asOn), [data, fyStart, asOn]);
+  const g  = (id) => pb.asOn[id] || 0;
+  const has = (id) => data.coa.some(a=>a.id===id);
+
+  // Profit split (consistent with the Balance Sheet)
+  const income  = data.coa.filter(a=>a.type==='Income').reduce((s,a)=>s+(-(pb.period[a.id]||0)),0);
+  const expense = data.coa.filter(a=>a.type==='Expense').reduce((s,a)=>s+(pb.period[a.id]||0),0);
+  const currentProfit = income - expense;
+  const taxRate  = companyTaxRate(data);
+  const taxProv  = estimateTax(currentProfit, taxRate);
+  const currentPAT = currentProfit - taxProv;
+  const priorInc = data.coa.filter(a=>a.type==='Income').reduce((s,a)=>s+(-(pb.opening[a.id]||0)),0);
+  const priorExp = data.coa.filter(a=>a.type==='Expense').reduce((s,a)=>s+(pb.opening[a.id]||0),0);
+  const retainedPrior = priorInc - priorExp;
+
+  // Balances by role
+  const shareCapital = -g('1100');
+  const openReserves = -g('1110');
+  const reservesClose= openReserves + retainedPrior + currentPAT;
+  const excludeLiab  = ['1100','1110','1200','1210','1300','1330'];
+  const otherCL      = data.coa.filter(a=>a.type==='Liability' && !excludeLiab.includes(a.id) && Math.abs(g(a.id))>=1);
+  const grossPPE     = g('2100')+g('2110')+g('2120');
+  const accDepr      = g('2130');
+  const excludeAsset = ['2100','2110','2120','2130','2200','2300','2310','2400','2500','2510','2511','2520'];
+  const otherCA      = data.coa.filter(a=>a.type==='Asset' && !excludeAsset.includes(a.id) && Math.abs(g(a.id))>=1);
+  const cashList     = data.coa.filter(a=>a.isBank || ['2500','2510','2511','2520'].includes(a.id)).filter(a=>Math.abs(g(a.id))>=1);
+
+  const fyLabel = (co.fyStart?.slice(0,4)||'')+'-'+(co.fyEnd?.slice(2,4)||'');
+  const policies = [
+    ['1. Basis of preparation', `The financial statements are prepared under the historical-cost convention on the accrual basis of accounting and in accordance with the presentation requirements of Schedule III to the Companies Act, 2013, for the financial year ${fyLabel}.`],
+    ['2. Use of estimates', 'The preparation of financial statements requires management to make estimates and assumptions that affect the reported amounts of assets, liabilities, income and expenses. Actual results may differ from those estimates.'],
+    ['3. Revenue recognition', 'Revenue from the sale of goods is recognised when the significant risks and rewards of ownership pass to the buyer; revenue from services is recognised as the services are rendered. Revenue is stated net of GST, returns and discounts.'],
+    ['4. Property, plant & equipment and depreciation', 'PPE is stated at cost less accumulated depreciation. Depreciation is provided over the useful lives of the assets as prescribed under Schedule II to the Companies Act, 2013.'],
+    ['5. Inventories', 'Inventories are valued at the lower of cost and net realisable value. Cost is determined on the basis followed consistently by the entity (FIFO / weighted average).'],
+    ['6. Taxes on income', `Current tax is provided on the taxable income at the applicable rate (estimated at ${taxRate}% for these statements). Deferred tax, where applicable, is recognised on timing differences.`],
+    ['7. Provisions & contingencies', 'Provisions are recognised when there is a present obligation as a result of a past event that can be reliably estimated. Contingent liabilities are disclosed, not provided for.'],
+    ['8. Foreign-currency transactions', 'Foreign-currency transactions are recorded at the exchange rate on the transaction date; monetary items are restated at the closing rate and the resulting gain or loss is recognised in the Statement of Profit & Loss.'],
+  ];
+
+  const NoteHead = ({no, title, total}) => (
+    <div style={{fontWeight:700,fontSize:13,borderBottom:'1px solid var(--ink)',paddingBottom:5,margin:'16px 0 8px',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+      <span><span style={{background:'var(--primary)',color:'#fff',borderRadius:4,padding:'1px 8px',fontSize:11,marginRight:8}}>Note {no}</span>{title}</span>
+      {total!=null && <span className="rupee">₹{fmt(total)}</span>}
+    </div>
+  );
+  const NoteTable = ({rows}) => (
+    <table style={{width:'100%',borderCollapse:'collapse',fontSize:12.5}}>
+      <tbody>{rows.filter(Boolean).map((r,i)=>(
+        <tr key={i} style={r[2]?{fontWeight:700,background:'var(--surface-2)'}:{}}>
+          <td style={{padding:'5px 8px',borderBottom:'1px solid var(--line)',paddingLeft:r[3]?24:8}}>{r[0]}</td>
+          <td className="num" style={{padding:'5px 8px',borderBottom:'1px solid var(--line)'}}>{r[1]==null?'':'₹'+fmt(r[1])}</td>
+        </tr>
+      ))}</tbody>
+    </table>
+  );
+
+  return (<>
+    <div className="page-head">
+      <div>
+        <h1 className="page-title">Notes to Accounts</h1>
+        <div className="page-sub">Significant accounting policies &amp; Schedule III notes · as at {fmtDate(asOn)}</div>
+      </div>
+      <div className="page-actions">
+        <input type="date" value={asOn} onChange={e=>setAsOn(e.target.value)} className="btn" style={{padding:'6px 10px'}} />
+        <button className="btn btn-sm btn-primary" onClick={()=>window.print()}>⎙ Print</button>
+      </div>
+    </div>
+
+    <div className="report">
+      <div className="report-head">
+        {co.logo && <img className="report-logo" src={co.logo} alt="Logo" />}
+        <div className="report-co">{co.name}</div>
+        <div style={{fontSize:11,color:'var(--ink-3)'}}>CIN: {co.cin} · PAN: {co.pan} · GSTIN: {co.gstin}</div>
+        <div className="report-title">Notes forming part of the Financial Statements</div>
+        <div className="report-period">As at {fmtDate(asOn)} · FY {fyLabel}</div>
+      </div>
+
+      <div style={{fontWeight:700,fontSize:14,borderBottom:'2px solid var(--ink)',paddingBottom:6,marginBottom:10}}>A · Significant Accounting Policies</div>
+      {policies.map(([t,txt],i)=>(
+        <div key={i} style={{marginBottom:9}}>
+          <div style={{fontWeight:600,fontSize:12.5}}>{t}</div>
+          <div style={{fontSize:12,color:'var(--ink-2)',lineHeight:1.5}}>{txt}</div>
+        </div>
+      ))}
+
+      <div style={{fontWeight:700,fontSize:14,borderBottom:'2px solid var(--ink)',paddingBottom:6,margin:'22px 0 4px'}}>B · Notes to the Balance Sheet</div>
+
+      <NoteHead no="1" title="Share Capital" total={shareCapital} />
+      <NoteTable rows={[['Issued, subscribed & paid-up capital', shareCapital]]} />
+
+      <NoteHead no="2" title="Reserves & Surplus" total={reservesClose} />
+      <NoteTable rows={[
+        ['Opening reserves', openReserves],
+        ['Add: Retained earnings of earlier years', retainedPrior],
+        ['Add: Profit for the year (after tax)', currentPAT],
+        ['Closing balance', reservesClose, true],
+      ]} />
+
+      {has('1200') && <><NoteHead no="3" title="Long-term Borrowings" total={-g('1200')} />
+        <NoteTable rows={[['Term loans / borrowings', -g('1200')]]} /></>}
+
+      <NoteHead no="4" title="Trade Payables" total={-g('1300')} />
+      <NoteTable rows={[['Total outstanding dues to creditors', -g('1300')]]} />
+
+      <NoteHead no="5" title="Other Current Liabilities (statutory & other)" total={otherCL.reduce((s,a)=>s+(-g(a.id)),0)} />
+      <NoteTable rows={otherCL.map(a=>[a.name, -g(a.id), false, true]).concat([['Total', otherCL.reduce((s,a)=>s+(-g(a.id)),0), true]])} />
+
+      <NoteHead no="6" title="Short-term Provisions" total={(-g('1330'))+taxProv} />
+      <NoteTable rows={[
+        has('1330') && ['Provisions (as per books)', -g('1330'), false, true],
+        [`Provision for income tax (estimated @ ${taxRate}%)`, taxProv, false, true],
+        ['Total', (-g('1330'))+taxProv, true],
+      ]} />
+
+      <NoteHead no="7" title="Property, Plant & Equipment" total={grossPPE+accDepr} />
+      <NoteTable rows={[
+        ['Gross block', grossPPE, false, true],
+        ['Less: Accumulated depreciation', accDepr, false, true],
+        ['Net block', grossPPE+accDepr, true],
+      ]} />
+
+      {has('2200') && Math.abs(g('2200'))>=1 && <><NoteHead no="8" title="Non-current Investments" total={g('2200')} />
+        <NoteTable rows={[['Investments', g('2200')]]} /></>}
+
+      <NoteHead no="9" title="Inventories" total={g('2300')+g('2310')} />
+      <NoteTable rows={[['Closing stock (raw material / finished goods)', g('2300')+g('2310')]]} />
+
+      <NoteHead no="10" title="Trade Receivables" total={g('2400')} />
+      <NoteTable rows={[['Outstanding from customers', g('2400')]]} />
+
+      <NoteHead no="11" title="Cash & Bank Balances" total={cashList.reduce((s,a)=>s+g(a.id),0)} />
+      <NoteTable rows={cashList.map(a=>[a.name, g(a.id), false, true]).concat([['Total', cashList.reduce((s,a)=>s+g(a.id),0), true]])} />
+
+      {otherCA.length>0 && <><NoteHead no="12" title="Other Current Assets (ITC, TDS receivable, advances)" total={otherCA.reduce((s,a)=>s+g(a.id),0)} />
+        <NoteTable rows={otherCA.map(a=>[a.name, g(a.id), false, true]).concat([['Total', otherCA.reduce((s,a)=>s+g(a.id),0), true]])} /></>}
+
+      <NoteHead no="13" title="Contingent Liabilities & Commitments" />
+      <div style={{fontSize:12,color:'var(--ink-2)'}}>Nil, except as disclosed. (Bank guarantees, disputed tax demands and capital commitments, if any, are to be listed here.)</div>
+
+      <div className="report-foot" style={{marginTop:20}}>
+        <span>These notes form an integral part of the financial statements · Subject to audit</span>
+        <span>For {co.name} · MiyeeBooks</span>
+      </div>
+    </div>
+  </>);
+}
+
+// ============================================================================
 // CASH FLOW (AS-3 Indirect Method)
 // ============================================================================
 // ============================================================================
