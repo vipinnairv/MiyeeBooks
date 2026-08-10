@@ -1681,6 +1681,22 @@ function MISDashboard({data, balances, setPage}){
   const barWidth = (v) => Math.max(2, (v/maxRevenue)*100) + '%';
   const monthNames = ['','Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 
+  // Executive strip: statutory dues, approval queue and headline liquidity so
+  // the CFO sees what needs action before the detailed analytics below.
+  const cfoDues     = useMemo(()=>complianceDues(data), [data]);
+  const cfoDueTotal = cfoDues.reduce((s,d)=>s+Math.max(0,d.amount),0);
+  const cfoOverdue  = cfoDues.filter(d=>d.amount>1 && d.days<0).length;
+  const cfoPending  = data.company.makerChecker===true ? (data.vouchers||[]).filter(v=>v.status==='Pending').length : 0;
+  const workingCap  = currentAssets - currentLiab;
+  const currentRatio= currentLiab>0 ? currentAssets/currentLiab : null;
+  const execTile = (label, value, sub, tone, page) => (
+    <div onClick={page?()=>setPage(page):undefined} style={{flex:1,minWidth:150,border:'1px solid var(--line-2)',borderLeft:'3px solid '+(tone||'var(--primary)'),borderRadius:8,padding:'10px 14px',cursor:page?'pointer':'default'}} className={page?'drill-row':''}>
+      <div style={{fontSize:11,color:'var(--ink-3)',fontWeight:600}}>{label}</div>
+      <div className="rupee" style={{fontSize:17,fontWeight:700}}>{value}</div>
+      {sub && <div style={{fontSize:10.5,color:tone||'var(--ink-3)'}}>{sub}</div>}
+    </div>
+  );
+
   return (
     <>
       <div className="page-head">
@@ -1689,12 +1705,22 @@ function MISDashboard({data, balances, setPage}){
           <div className="page-sub">MIS analytics · {data.company.name} · FY {data.company.fyStart?.slice(0,4)}–{data.company.fyEnd?.slice(2,4)}</div>
         </div>
         <div className="page-actions">
+          <button className="btn btn-sm" onClick={() => setPage('ceo')}>★ CEO Dashboard</button>
           <button className="btn" onClick={() => setPage('mis_ratios')}>▦ Financial Ratios</button>
           <button className="btn" onClick={() => setPage('mis_aging')}>◫ Aging</button>
           <button className="btn btn-primary" onClick={handleMISPack}>⬇ MIS Pack (Excel)</button>
           <button className="btn btn-primary" onClick={() => generateReportBundle(data, balances)}>⎙ PDF Bundle</button>
           <button className="btn" onClick={() => window.print()}>⎙ Print</button>
         </div>
+      </div>
+
+      {/* Executive strip - action items first */}
+      <div style={{display:'flex',gap:10,flexWrap:'wrap',marginBottom:18}}>
+        {execTile('Working Capital', '₹'+fmt(workingCap), currentRatio!=null?('Current ratio '+currentRatio.toFixed(2)):'CA - CL', workingCap>=0?'var(--green)':'var(--danger)', 'mis_aging')}
+        {execTile('Cash Runway', runwayLabel, monthlyBurn>0?('Burn ₹'+fmt(monthlyBurn)+'/mo'):'Cash-positive', monthlyBurn>0&&runwayMonths<6?'var(--danger)':'var(--green)', 'cash_forecast')}
+        {execTile('Statutory Dues', '₹'+fmt(cfoDueTotal), cfoOverdue?(cfoOverdue+' overdue'):'GST/TDS/PF/ESIC/PT', cfoOverdue?'var(--danger)':'var(--warning)', 'compliance')}
+        {execTile('Net GST Payable', '₹'+fmt(gstNet), gstNet>0?'Cash payable':'ITC in hand', gstNet>0?'var(--warning)':'var(--green)', 'gstr3b')}
+        {data.company.makerChecker===true && execTile('Pending Approvals', String(cfoPending), cfoPending?'Awaiting sign-off':'Queue clear', cfoPending?'var(--warning)':'var(--green)', 'vouchers')}
       </div>
 
       {/* P&L KPIs */}
