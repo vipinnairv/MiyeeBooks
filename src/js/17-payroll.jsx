@@ -670,29 +670,60 @@ function RunPayroll({data, setData, showToast}){
   const activeEmployees = (data.employees||[]).filter(e => e.status === 'Active');
   const existingRun = (data.payrollRuns||[]).find(r => r.month === month);
 
-  const generatePreview = () => {
-    const eligible = activeEmployees.filter(e => {
-      if(!e.doj) return true;
-      const payMonthEnd = new Date(parseInt(month.slice(0,4)), parseInt(month.slice(5,7)), 0);
-      return new Date(e.doj) <= payMonthEnd;
-    });
-    const lines = eligible.map(e => {
-      const gross = (e.basic||0)+(e.hra||0)+(e.da||0)+(e.sa||0)+(e.allowances||[]).reduce((s,a)=>s+(a.amount||0),0);
-      const pfEe = e.pfApplicable ? Math.round(Math.min(e.pfBase||e.basic||0, 15000)*0.12) : 0;
-      const pfEr = e.pfApplicable ? Math.round(Math.min(e.pfBase||e.basic||0, 15000)*0.12) : 0;
-      const esicEe = e.esicApplicable && gross <= 21000 ? Math.round(gross*0.0075) : 0;
-      const esicEr = e.esicApplicable && gross <= 21000 ? Math.round(gross*0.0325) : 0;
-      const pt = calcPTMonthly(e, month, data.company.fyStart);
-      const tds = e.tdsSalary || 0;
-      const totalDed = pfEe + esicEe + pt + tds;
-      const net = gross - totalDed;
-      return {empId:e.id, empCode:e.empCode, name:e.name, designation:e.designation||'', department:e.department||'', pan:e.pan||'', uan:e.uan||'', bankAcc:e.bankAcc||'', basic:e.basic||0, hra:e.hra||0, da:e.da||0, sa:e.sa||0, allowances:e.allowances||[], gross, pfEe, pfEr, esicEe, esicEr, pt, tds, totalDed, net};
-    });
-    setPreview(lines);
+  const daysInMonth = new Date(parseInt(month.slice(0,4)), parseInt(month.slice(5,7)), 0).getDate();
+
+  // Compute one payslip line, prorated for Loss of Pay (LOP) days and with any
+  // one-time bonus/arrears folded into the earnings so the payslip stays
+  // internally consistent (earnings total == gross).
+  const computeLine = (e, lopDays=0, bonus=0) => {
+    const rnd = n => Math.round(n||0);
+    lopDays = Math.max(0, Math.min(daysInMonth, lopDays||0));
+    bonus   = Math.max(0, bonus||0);
+    const paidDays = daysInMonth - lopDays;
+    const factor   = daysInMonth>0 ? paidDays/daysInMonth : 1;   // LOP proration
+    const basic = rnd((e.basic||0)*factor);
+    const hra   = rnd((e.hra||0)*factor);
+    const da    = rnd((e.da||0)*factor);
+    const sa    = rnd((e.sa||0)*factor);
+    const allowances = (e.allowances||[]).map(a => ({...a, amount: rnd((a.amount||0)*factor)}));
+    if(bonus>0) allowances.push({name:'Bonus / Arrears', amount:rnd(bonus), oneTime:true});
+    const gross = basic + hra + da + sa + allowances.reduce((s,a)=>s+(a.amount||0),0);
+    const pfWage = Math.min(e.pfBase||e.basic||0, 15000) * factor;
+    const pfEe = e.pfApplicable ? rnd(pfWage*0.12) : 0;
+    const pfEr = e.pfApplicable ? rnd(pfWage*0.12) : 0;
+    const esicEe = e.esicApplicable && gross <= 21000 ? rnd(gross*0.0075) : 0;
+    const esicEr = e.esicApplicable && gross <= 21000 ? rnd(gross*0.0325) : 0;
+    const pt  = calcPTMonthly(e, month, data.company.fyStart);
+    const tds = e.tdsSalary || 0;
+    const totalDed = pfEe + esicEe + pt + tds;
+    const net = gross - totalDed;
+    return {empId:e.id, empCode:e.empCode, name:e.name, designation:e.designation||'', department:e.department||'',
+      pan:e.pan||'', uan:e.uan||'', bankAcc:e.bankAcc||'',
+      lopDays, bonus, paidDays, daysInMonth,
+      basic, hra, da, sa, allowances, gross, pfEe, pfEr, esicEe, esicEr, pt, tds, totalDed, net};
   };
+
+  const generatePreview = () => {
+    const payMonthEnd = new Date(parseInt(month.slice(0,4)), parseInt(month.slice(5,7)), 0);
+    const eligible = activeEmployees.filter(e => !e.doj || new Date(e.doj) <= payMonthEnd);
+    setPreview(eligible.map(e => computeLine(e, 0, 0)));
+  };
+
+  // Recompute a single line when its LOP days / bonus are edited in the preview.
+  const updateLine = (empId, patch) => setPreview(prev => prev.map(l => {
+    if(l.empId !== empId) return l;
+    const e = activeEmployees.find(x => x.id === empId) || l;
+    return computeLine(e, patch.lopDays != null ? patch.lopDays : l.lopDays, patch.bonus != null ? patch.bonus : l.bonus);
+  }));
 
   const postPayroll = () => {
     if(!preview || preview.length === 0) return;
+    const voucherDate = month+'-28';
+    // Respect the period lock (a closed month can't take new entries)
+    if(isDateLocked(data.company, voucherDate)){
+      showToast(`Books are locked up to ${data.company.booksLockedUpto} - cannot post payroll for ${month}`,'error');
+      return;
+    }
     const totalGross = preview.reduce((s,l)=>s+l.gross,0);
     const totalPfEe = preview.reduce((s,l)=>s+l.pfEe,0);
     const totalPfEr = preview.reduce((s,l)=>s+l.pfEr,0);
@@ -722,14 +753,18 @@ function RunPayroll({data, setData, showToast}){
     lines.push({id:uid(), accountId:'1320', debit:0, credit:totalNet, narration:'Net salary payable'});
 
     const voucherNum = 'JV/SAL/' + month;
+    // Under maker-checker the JV is created as Pending and only hits the ledgers
+    // once an owner/admin approves it (Vouchers screen).
+    const status = data.company.makerChecker === true ? 'Pending' : 'Posted';
+    const totalLop = preview.reduce((s,l)=>s+(l.lopDays||0),0);
     const newVoucher = {
-      id:uid(), type:'JV', date:month+'-28', number:voucherNum, partyName:'Payroll  '+month,
-      narration:'Being salary for '+month+' (' +preview.length+' employees)', reference:'Payroll',
-      lines, amount:totalGross+totalPfEr+totalEsicEr, status:'Posted', createdAt:new Date().toISOString(),
+      id:uid(), type:'JV', date:voucherDate, number:voucherNum, partyName:'Payroll  '+month,
+      narration:'Being salary for '+month+' (' +preview.length+' employees'+(totalLop?`, ${totalLop} LOP days`:'')+')', reference:'Payroll',
+      lines, amount:totalGross+totalPfEr+totalEsicEr, status, createdAt:new Date().toISOString(),
     };
 
     const payrollRun = {
-      id:uid(), month, processedAt:new Date().toISOString(), voucherId:newVoucher.id,
+      id:uid(), month, processedAt:new Date().toISOString(), voucherId:newVoucher.id, status,
       employees:preview, totalGross, totalNet,
       totalPfEe, totalPfEr, totalEsicEe, totalEsicEr, totalPT, totalTDS,
     };
@@ -737,8 +772,11 @@ function RunPayroll({data, setData, showToast}){
     setData(prev => ({...prev,
       vouchers:[...(prev.vouchers||[]), newVoucher],
       payrollRuns:[...(prev.payrollRuns||[]), payrollRun],
+      auditLog:[...(prev.auditLog||[]), auditEntry('CREATE', `${voucherNum} (JV) Payroll ${month} · ${preview.length} emp · gross ₹${fmt(totalGross)}${status==='Pending'?' · PENDING approval':''}`)],
     }));
-    showToast('Payroll JV posted for '+month+' · '+preview.length+' employees · Voucher: '+voucherNum);
+    showToast(status==='Pending'
+      ? 'Payroll JV created (pending approval) for '+month+' · '+voucherNum
+      : 'Payroll JV posted for '+month+' · '+preview.length+' employees · '+voucherNum);
     setPreview(null);
   };
 
@@ -786,16 +824,23 @@ function RunPayroll({data, setData, showToast}){
             <div style={{overflow:'auto'}}>
               <table>
                 <thead>
-                  <tr><th>Code</th><th>Employee</th><th className="num">Basic</th><th className="num">HRA</th><th className="num">DA+SA+Allowances</th><th className="num">Gross</th><th className="num">PF (EE)</th><th className="num">ESIC (EE)</th><th className="num">PT</th><th className="num">TDS</th><th className="num">Total Ded.</th><th className="num">Net Pay</th></tr>
+                  <tr><th>Code</th><th>Employee</th><th className="num">Paid Days</th><th className="num">LOP</th><th className="num">Bonus/Arrears</th><th className="num">Basic</th><th className="num">HRA</th><th className="num">DA+SA+Allow</th><th className="num">Gross</th><th className="num">PF (EE)</th><th className="num">ESIC (EE)</th><th className="num">PT</th><th className="num">TDS</th><th className="num">Total Ded.</th><th className="num">Net Pay</th></tr>
                 </thead>
                 <tbody>
                   {preview.map(l => (
                     <tr key={l.empId}>
                       <td style={{fontFamily:'var(--mono)'}}>{l.empCode}</td>
                       <td><b>{l.name}</b></td>
+                      <td className="num" style={{color:l.lopDays?'var(--warning)':'var(--ink-3)'}}>{l.paidDays}/{l.daysInMonth}</td>
+                      <td className="num"><input type="number" min="0" max={l.daysInMonth} step="0.5" value={l.lopDays} disabled={!!existingRun}
+                        onChange={e=>updateLine(l.empId,{lopDays:parseFloat(e.target.value)||0})}
+                        style={{width:50,padding:'3px 4px',border:'1px solid var(--line-2)',borderRadius:4,fontSize:12,textAlign:'right'}} /></td>
+                      <td className="num"><input type="number" min="0" step="100" value={l.bonus} disabled={!!existingRun}
+                        onChange={e=>updateLine(l.empId,{bonus:parseFloat(e.target.value)||0})}
+                        style={{width:74,padding:'3px 4px',border:'1px solid var(--line-2)',borderRadius:4,fontSize:12,textAlign:'right'}} /></td>
                       <td className="num">{fmt(l.basic)}</td>
                       <td className="num">{fmt(l.hra)}</td>
-                      <td className="num">{fmt((l.da||0)+(l.sa||0)+(l.allowances||[]).reduce((s,a)=>s+(a.amount||0),0))}</td>
+                      <td className="num">{fmt((l.da||0)+(l.sa||0)+(l.allowances||[]).filter(a=>!a.oneTime).reduce((s,a)=>s+(a.amount||0),0))}</td>
                       <td className="num bold">{fmt(l.gross)}</td>
                       <td className="num">{l.pfEe?fmt(l.pfEe):''}</td>
                       <td className="num">{l.esicEe?fmt(l.esicEe):''}</td>
@@ -806,7 +851,7 @@ function RunPayroll({data, setData, showToast}){
                     </tr>
                   ))}
                   <tr className="total">
-                    <td colSpan="5" style={{textAlign:'right'}}>TOTAL</td>
+                    <td colSpan="8" style={{textAlign:'right'}}>TOTAL</td>
                     <td className="num">₹{fmt(preview.reduce((s,l)=>s+l.gross,0))}</td>
                     <td className="num">{fmt(preview.reduce((s,l)=>s+l.pfEe,0))}</td>
                     <td className="num">{fmt(preview.reduce((s,l)=>s+l.esicEe,0))}</td>
