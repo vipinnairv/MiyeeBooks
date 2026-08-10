@@ -1066,6 +1066,22 @@ function exportJSON(){var s={co:co,pnl:pnl,bs:bs,drivers:drivers,peers:peers,scn
 function importJSON(e){var f=e.target.files[0];if(!f)return;var r=new FileReader();r.onload=function(ev){try{var s=JSON.parse(ev.target.result);adopt(s);updateYears();render();document.getElementById('json-msg').className='msg show ok';document.getElementById('json-msg').innerHTML='Model imported successfully.';}catch(err){document.getElementById('json-msg').className='msg show err';document.getElementById('json-msg').innerHTML='Invalid JSON file.';}};r.readAsText(f);}
 function resetAll(){if(!confirm('Reset to the built-in sample company? Your saved data will be cleared.'))return;localStorage.removeItem(KEY);location.reload();}
 
+/* ============ IMPORT FROM MIYEEBOOKS (one-click hand-off) ============
+   The MiyeeBooks host (parent window, same origin) sends the company's actuals
+   already mapped to this model's fields and converted to Cr. We overwrite only
+   the ACT actual columns and rebuild the forecast from the drivers. */
+window.MiyeeImport=function(p){try{
+  if(!p)return false;
+  if(p.co)Object.keys(co).forEach(function(k){if(p.co[k]!=null)co[k]=p.co[k];});
+  if(typeof p.startYear==='number')startYear=p.startYear;
+  forecastMode='driver';
+  function setA(target,src){if(!src)return;Object.keys(src).forEach(function(k){if(!target[k])return;var arr=src[k];for(var i=0;i<ACT&&i<arr.length;i++){if(arr[i]!=null&&!isNaN(arr[i]))target[k][i]=arr[i];}});}
+  setA(pnl,p.pnl);setA(bs,p.bs);
+  buildForecast();saveState();updateYears();render();
+  return true;
+}catch(e){return false;}};
+window.addEventListener('message',function(e){var d=e.data;if(d&&d.type==='miyee-import'){var ok=window.MiyeeImport(d.payload);try{e.source&&e.source.postMessage({type:'miyee-import-done',ok:ok},'*');}catch(_){}}});
+
 /* ==================== CSV ==================== */
 var PMAP={revenue:'Revenue',cogs:'COGS',otherOpEx:'OtherOpEx',da:'DA',interestExp:'InterestExp',otherIncome:'OtherIncome',taxRate:'TaxRate'};
 var BMAP={cash:'Cash',receivables:'Receivables',inventory:'Inventory',otherCA:'OtherCA',grossBlock:'GrossBlock',accDepr:'AccDepr',otherNCA:'OtherNCA',payables:'Payables',shortDebt:'ShortDebt',otherCL:'OtherCL',longDebt:'LongDebt',otherNCL:'OtherNCL',shareCapital:'ShareCapital'};

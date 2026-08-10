@@ -441,19 +441,123 @@ function CashForecast({data, balances}){
 // so it is served as dist/valumetrics.html and loaded here in a same-origin
 // iframe - this keeps its styling fully isolated from the MiyeeBooks app.
 // ============================================================================
-function ValuMetrics(){
+// Map MiyeeBooks actuals to the ValuMetrics model fields, converted to ₹ Cr.
+// Fills up to 3 actual years (older years from closed-year snapshots, the newest
+// from the current-year run-rate) which ValuMetrics uses as its actuals before
+// projecting the forecast.
+function buildValuMetricsPayload(data){
+  const CR = 1e7, r = n => Math.round(((n||0)/CR)*100)/100;
+  const coa = data.coa || [];
+  const taxRate = companyTaxRate(data);
+  const fyStart = data.company.fyStart || (today().slice(0,4)+'-04-01');
+  const curYear = parseInt(fyStart.slice(0,4)) || new Date().getFullYear();
+
+  // Balance-sheet mapping from any accessor bal(id)=raw signed balance.
+  const bsFrom = (bal) => {
+    const cashIds = new Set(['2500','2510','2511','2520']); coa.forEach(a=>{ if(a.isBank) cashIds.add(a.id); });
+    let cash = 0; cashIds.forEach(id => cash += bal(id));
+    const receivables = bal('2400');
+    const inventory   = bal('2300') + bal('2310');
+    const grossBlock  = bal('2100') + bal('2110') + bal('2120');
+    const accDepr     = Math.abs(bal('2130'));
+    const netPPE      = grossBlock - accDepr;
+    const otherNCA    = bal('2200');
+    const totalAssets = coa.filter(a=>a.type==='Asset').reduce((s,a)=>s+bal(a.id),0);
+    const otherCA     = totalAssets - cash - receivables - inventory - netPPE - otherNCA;
+    const payables    = -bal('1300');
+    const longDebt    = -bal('1200');
+    const otherNCL    = -bal('1210');
+    const shortDebt   = 0;
+    const totalLiab   = coa.filter(a=>a.type==='Liability').reduce((s,a)=>s+(-bal(a.id)),0);
+    const otherCL     = totalLiab - payables - longDebt - otherNCL - shortDebt;
+    const shareCapital= -bal('1100');   // reserves are ValuMetrics' balancing figure
+    return {cash:r(cash), receivables:r(receivables), inventory:r(inventory), otherCA:r(otherCA),
+      grossBlock:r(grossBlock), accDepr:r(accDepr), otherNCA:r(otherNCA), payables:r(payables),
+      shortDebt:r(shortDebt), otherCL:r(otherCL), longDebt:r(longDebt), otherNCL:r(otherNCL), shareCapital:r(shareCapital)};
+  };
+
+  // Current-year P&L + BS from the ledgers.
+  const pb  = computePeriodBals(data, fyStart, today());
+  const per = id => pb.period[id]||0;
+  const grp = (pred, sign) => coa.filter(pred).reduce((s,a)=>s+sign*(pb.period[a.id]||0),0);
+  const revOps    = grp(a=>a.group==='Revenue from Operations', -1);
+  const otherInc  = grp(a=>a.group==='Other Income', -1);
+  const cogs      = grp(a=>a.group==='Cost of Materials'||a.group==='Purchase of Stock-in-Trade', 1);
+  const da        = per('4400') || grp(a=>a.group==='Depreciation', 1);
+  const interest  = grp(a=>a.group==='Finance Costs', 1);
+  const totalExp  = coa.filter(a=>a.type==='Expense').reduce((s,a)=>s+(pb.period[a.id]||0),0);
+  const otherOpEx = totalExp - cogs - da - interest;
+  const cogsRatio = revOps>0 ? cogs/revOps : 0.6;
+  const curPnl = {revenue:r(revOps), cogs:r(cogs), otherOpEx:r(otherOpEx), da:r(da), interestExp:r(interest), otherIncome:r(otherInc), taxRate};
+  const curBs  = bsFrom(id => pb.asOn[id]||0);
+
+  // Prior closed years from year-end snapshots (coarser: no COGS/opex split in
+  // the snapshot, so split operating cost using the current-year COGS ratio -
+  // this preserves EBITDA/EBIT/PBT exactly).
+  const priors = (data.company.priorYears||[]).slice().sort((a,b)=>String(a.year).localeCompare(String(b.year)));
+  const priorActuals = priors.map(sn => {
+    const income=sn.income||0, expense=sn.expense||0, dep=sn.depreciation||0, fin=sn.financeCost||0;
+    const cg = income*cogsRatio, op = expense - cg - dep - fin;
+    const pnlY = {revenue:r(income), cogs:r(cg), otherOpEx:r(op), da:r(dep), interestExp:r(fin), otherIncome:0, taxRate};
+    const cb = sn.closingBalances || null;
+    return { pnl:pnlY, bs: cb ? bsFrom(id=>cb[id]||0) : null };
+  });
+
+  // Assemble up to 3 actuals (oldest -> newest); pad the front if we have fewer.
+  let years = [...priorActuals, {pnl:curPnl, bs:curBs}].slice(-3);
+  while(years.length < 3) years.unshift(years[0]);
+  const newestBs = years[years.length-1].bs || curBs;
+  years = years.map(y => ({ pnl:y.pnl, bs: y.bs || newestBs }));
+
+  const pnlKeys = ['revenue','cogs','otherOpEx','da','interestExp','otherIncome','taxRate'];
+  const bsKeys  = ['cash','receivables','inventory','otherCA','grossBlock','accDepr','otherNCA','payables','shortDebt','otherCL','longDebt','otherNCL','shareCapital'];
+  const pnlOut = {}; pnlKeys.forEach(k => pnlOut[k] = years.map(y=>y.pnl[k]));
+  const bsOut  = {}; bsKeys.forEach(k  => bsOut[k]  = years.map(y=>y.bs[k]));
+
+  return {
+    co: { name: data.company.name||'My Company', taxRate,
+          currency: 'INR (₹ Cr)',
+          sector: (data.company.modules && data.company.modules.factory) ? 'Manufacturing' : 'Services' },
+    startYear: curYear - 2,
+    pnl: pnlOut, bs: bsOut,
+  };
+}
+
+function ValuMetrics({data, showToast}){
+  const iframeRef = useRef(null);
+  const [imported, setImported] = useState(false);
+
+  const importData = () => {
+    const win = iframeRef.current && iframeRef.current.contentWindow;
+    if(!win){ showToast && showToast('Open the model first, then import','error'); return; }
+    let payload;
+    try { payload = buildValuMetricsPayload(data); }
+    catch(e){ showToast && showToast('Could not read your financials: '+e.message,'error'); return; }
+    try {
+      if(typeof win.MiyeeImport === 'function') win.MiyeeImport(payload);
+      else win.postMessage({type:'miyee-import', payload}, '*');
+      setImported(true);
+      const yrs = (payload.pnl.revenue||[]).length;
+      showToast && showToast(`Imported ${yrs}-year actuals into the model (₹ Cr) - review & adjust the forecast drivers`);
+    } catch(e){ showToast && showToast('Import failed: '+e.message,'error'); }
+  };
+
   return (<>
     <div className="page-head">
       <div>
         <h1 className="page-title">Financial Model &amp; Valuation</h1>
-        <div className="page-sub">Institutional-grade DCF / valuation suite · ValuMetrics</div>
+        <div className="page-sub">Institutional-grade DCF / valuation suite · ValuMetrics {imported && <span style={{color:'var(--green)'}}>· data imported</span>}</div>
       </div>
       <div className="page-actions">
+        <button className="btn btn-sm btn-primary" onClick={importData} title="Push this company's actuals from MiyeeBooks into the model (₹ Cr)">⬇ Import data for Financial Modelling</button>
         <button className="btn btn-sm" onClick={()=>window.open('valumetrics.html','_blank')}>↗ Open in new tab</button>
       </div>
     </div>
-    <div style={{border:'1px solid var(--line-2)',borderRadius:10,overflow:'hidden',height:'calc(100vh - 168px)',minHeight:560}}>
-      <iframe src="valumetrics.html" title="ValuMetrics - Financial Model &amp; Valuation"
+    <div style={{fontSize:11.5,color:'var(--ink-3)',margin:'0 0 10px'}}>
+      Import maps your Revenue, costs, depreciation, finance cost, working capital and net worth into the model's actual years (converted to ₹ Cr). Prior years come from closed-year snapshots; the latest year is your current run-rate. Valuation assumptions (share price, beta, WACC) stay analyst-set.
+    </div>
+    <div style={{border:'1px solid var(--line-2)',borderRadius:10,overflow:'hidden',height:'calc(100vh - 210px)',minHeight:540}}>
+      <iframe ref={iframeRef} src="valumetrics.html" title="ValuMetrics - Financial Model &amp; Valuation"
         style={{width:'100%',height:'100%',border:'none',display:'block'}} />
     </div>
   </>);
