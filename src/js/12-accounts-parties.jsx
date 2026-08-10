@@ -785,11 +785,18 @@ function CompanySettings({data, setData, showToast, readOnly=false}){
                 <span>Round GST invoices to the nearest rupee (posts the difference to the Round Off ledger)</span>
               </label></div>
             <div className="field" style={{gridColumn:'span 2'}}><label>Controls (SOPs)</label>
-              <label style={{display:'flex',alignItems:'center',gap:8,fontSize:13,cursor:'pointer',padding:'4px 0'}}>
-                <input type="checkbox" checked={f.makerChecker === true}
-                  onChange={e => setF({...f, makerChecker: e.target.checked})} />
-                <span>Maker-checker: new entries are created as <b>Pending</b> and must be approved by an owner/admin before they post to the ledgers</span>
-              </label>
+              <div style={{border:'1px solid var(--line-2)',borderRadius:8,padding:'10px 12px',marginBottom:8,background:f.makerChecker?'var(--accent-soft)':'transparent'}}>
+                <label style={{display:'flex',alignItems:'center',gap:8,fontSize:13,cursor:'pointer',fontWeight:600}}>
+                  <input type="checkbox" checked={f.makerChecker === true}
+                    onChange={e => setF({...f, makerChecker: e.target.checked})} />
+                  <span>Voucher Approval (Finance-Team Mode)</span>
+                </label>
+                <div style={{fontSize:11.5,color:'var(--ink-3)',marginTop:4,paddingLeft:24}}>
+                  Enable this <b>only if you have a finance team</b>. When ON, entries made by staff are saved as
+                  <b> Pending</b> and take effect on the ledgers only after an owner/admin <b>Approves</b> them (maker-checker).
+                  When OFF, MiyeeBooks works in <b>normal mode</b> - every entry posts immediately.
+                </div>
+              </div>
               <label style={{display:'flex',alignItems:'center',gap:8,fontSize:13,cursor:'pointer',padding:'4px 0'}}>
                 <input type="checkbox" checked={f.requireNarration === true}
                   onChange={e => setF({...f, requireNarration: e.target.checked})} />

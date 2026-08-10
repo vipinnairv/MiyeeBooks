@@ -2,7 +2,7 @@
 // ============================================================================
 // VOUCHERS
 // ============================================================================
-function Vouchers({data, setData, showToast, readOnly=false, userRole='owner'}){
+function Vouchers({data, setData, showToast, readOnly=false, userRole='owner', initialStatus='All'}){
   const [editing, setEditing] = useState(null);
   // Maker-checker: an approver (owner/admin) can post entries; other roles
   // create them as Pending for review when the control is enabled.
@@ -32,6 +32,7 @@ function Vouchers({data, setData, showToast, readOnly=false, userRole='owner'}){
   const isAtLimit = SUBSCRIPTION_ENABLED && !prem && activeCount >= FREE_VOUCHER_LIMIT;
   const [vtype, setVtype] = useState('JV');
   const [filter, setFilter] = useState('All');
+  const [statusFilter, setStatusFilter] = useState(initialStatus);
   const [search, setSearch] = useState('');
   const [page, setPage] = useState(1);
   const vPageSize = 50;
@@ -173,6 +174,7 @@ function Vouchers({data, setData, showToast, readOnly=false, userRole='owner'}){
 
   const filteredVouchers = data.vouchers
     .filter(v => filter==='All' || v.type === filter)
+    .filter(v => statusFilter==='All' || (v.status||'Posted') === statusFilter)
     .filter(v => { if(!search) return true; const q=search.toLowerCase();
       return (v.number||'').toLowerCase().includes(q) || (v.partyName||'').toLowerCase().includes(q)
           || (v.narration||'').toLowerCase().includes(q) || (v.reference||'').toLowerCase().includes(q); })
@@ -329,6 +331,15 @@ function Vouchers({data, setData, showToast, readOnly=false, userRole='owner'}){
           <select value={filter} onChange={e => setFilter(e.target.value)}>
             <option>All</option>
             {VOUCHER_TYPES.map(vt => <option key={vt.code} value={vt.code}>{vt.name} ({vt.code})</option>)}
+          </select>
+        </div>
+        <div className="field"><label>Status</label>
+          <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)}>
+            <option>All</option>
+            {makerChecker && <option>Pending</option>}
+            <option>Posted</option>
+            {makerChecker && <option>Rejected</option>}
+            <option>Cancelled</option>
           </select>
         </div>
         <div className="field" style={{flex:1,minWidth:200}}><label>Search</label>
