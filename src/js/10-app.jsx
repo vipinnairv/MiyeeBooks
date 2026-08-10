@@ -292,6 +292,7 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
       {id:'pnl', label:'Profit & Loss', ico:'⊞'},
       {id:'pnl_trend', label:'P&L Monthly Trend', ico:'📈'},
       {id:'bs', label:'Balance Sheet', ico:'⊠'},
+      {id:'notes', label:'Notes to Accounts', ico:'❋'},
       {id:'cashflow', label:'Cash Flow (AS-3)', ico:'⊜'},
       {id:'fund_flow', label:'Fund Flow Statement', ico:'⇅'},
       {id:'cash_forecast', label:'13-Week Cash Forecast', ico:'⛅'},
@@ -465,6 +466,7 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
           {page==='trial' && <TrialBalance data={data} balances={ledgerBalances} />}
           {page==='pnl' && <ProfitLoss data={data} balances={ledgerBalances} />}
           {page==='bs' && <BalanceSheet data={data} balances={ledgerBalances} />}
+          {page==='notes' && <NotesToAccounts data={data} balances={ledgerBalances} />}
           {page==='cashflow' && <CashFlow data={data} balances={ledgerBalances} />}
           {page==='fund_flow' && <FundFlow data={data} />}
           {page==='cash_forecast' && <CashForecast data={data} balances={ledgerBalances} />}
