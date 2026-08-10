@@ -274,6 +274,7 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
   const nav = [
     {section:'Overview', items:[
       {id:'dashboard', label:'Dashboard', ico:'◈'},
+      {id:'ceo', label:'CEO Dashboard', ico:'★'},
     ]},
     {section:'👨‍💻 Accountant', items:[
       {id:'vouchers', label:'Vouchers / Entry', ico:'✎'},
@@ -478,6 +479,7 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
           {page==='compliance' && <ComplianceCalendar data={data} setPage={setPage} />}
           {page==='hsn_finder' && <HSNFinder data={data} />}
           {page==='forex' && <Forex data={data} setData={setData} showToast={showToast} />}
+          {page==='ceo' && <CEODashboard data={data} balances={ledgerBalances} setPage={setPage} />}
           {page==='mis' && <MISDashboard data={data} balances={ledgerBalances} setPage={setPage} />}
           {page==='valuation' && <FinancialModel data={data} balances={ledgerBalances} />}
           {page==='consolidation' && <GroupConsolidation data={data} user={user} ownerId={ownerId||user?.uid} companyId={companyId} />}
