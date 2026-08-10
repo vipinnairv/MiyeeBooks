@@ -2909,9 +2909,24 @@ function CashFlow({data, balances}){
   // Operating is the RESIDUAL: everything that isn't investing or financing.
   // This guarantees CFO + CFI + CFF == the real cash movement, every time.
   const netCFO   = netChange - netCFI - netCFF;
-  // "Other WC changes" absorbs all non-named current items (GST input, TDS recv/payable,
-  // PF/ESIC/PT, provisions, salary payable…) so the operating build-up also reconciles.
-  const namedCFO = operatingProfit + debtorsChange + inventoryChange + creditorsChange + gstChange;
+
+  // Named working-capital movements, broken out for an auditable statement.
+  // sumDelta(ids, isAsset): cash impact of the period movement in those ledgers
+  // (a rise in an asset consumes cash; a rise in a liability releases cash).
+  const has = id => data.coa.some(a=>a.id===id);
+  const sumDelta = (ids, isAsset) => ids.reduce((s,id)=>s+wcDelta(id,isAsset),0);
+  const gstInputIds = ['2600','2601','2602'].filter(has);
+  const itcChange   = sumDelta(gstInputIds, true);                       // ITC / GST input (asset)
+  const statPayIds  = data.coa.filter(a=>a.type==='Liability' && /tds\s*payable|pf\s*payable|provident|esic|professional\s*tax/i.test(a.name||'')).map(a=>a.id);
+  const provIds     = ['1330'].filter(has);
+  const statutoryChange = sumDelta([...new Set([...statPayIds, ...provIds])], false); // statutory dues + provisions (liab)
+  const taxAssetIds = data.coa.filter(a=>a.type==='Asset' && /advance\s*tax|income\s*tax|tds\s*receivable|tax\s*provision/i.test(a.name||'')).map(a=>a.id);
+  const taxPaid     = sumDelta(taxAssetIds, true);                       // income tax / advance tax paid (asset)
+
+  // Whatever named lines don't capture still reconciles via this residual, so
+  // CFO always ties to the real cash movement.
+  const namedCFO = operatingProfit + debtorsChange + inventoryChange + creditorsChange
+                 + gstChange + itcChange + statutoryChange + taxPaid;
   const otherWC  = netCFO - namedCFO;
   const closingCash  = openingCash + netChange;   // ≡ actualClose
 
@@ -2932,8 +2947,11 @@ function CashFlow({data, balances}){
       ['Less: Interest Income', -interestInc],['Forex Loss/(Gain)', forexLoss-forexGain],
       ['Operating Profit before WC Changes', operatingProfit],
       ['(Inc)/Dec in Trade Receivables', debtorsChange],['(Inc)/Dec in Inventories', inventoryChange],
+      ['(Inc)/Dec in Input Tax Credit (ITC)', itcChange],
       ['Inc/(Dec) in Trade Payables', creditorsChange],['Inc/(Dec) in GST Payable', gstChange],
-      ['Other WC / Statutory Dues (TDS, PF, ESIC, PT, ITC…)', otherWC],
+      ['Inc/(Dec) in Statutory Dues & Provisions', statutoryChange],
+      ['Other Working-Capital Movements', otherWC],
+      ['Less: Income Taxes Paid (net)', taxPaid],
       ['Net Cash from Operating (A)', netCFO],['',''],
       ['B. INVESTING ACTIVITIES',''],
       ['Purchase of PPE (net)', ppeChange],['Purchase/Sale of Investments', investChange],
@@ -2984,9 +3002,13 @@ function CashFlow({data, balances}){
             <tr><td style={{paddingLeft:12,fontStyle:'italic',color:'var(--ink-3)'}}>Working capital adjustments:</td><td></td></tr>
             {row('(Increase) / Decrease in Trade Receivables', debtorsChange, true)}
             {row('(Increase) / Decrease in Inventories', inventoryChange, true)}
+            {row('(Increase) / Decrease in Input Tax Credit (ITC)', itcChange, true)}
             {row('Increase / (Decrease) in Trade Payables', creditorsChange, true)}
             {row('Increase / (Decrease) in GST Payable (net)', gstChange, true)}
-            {row('Other WC / Statutory Dues (TDS, PF, ESIC, PT, ITC…)', otherWC, true)}
+            {row('Increase / (Decrease) in Statutory Dues & Provisions', statutoryChange, true)}
+            {Math.abs(otherWC) >= 1 && row('Other Working-Capital Movements', otherWC, true)}
+            {row('Cash Generated from Operations', operatingProfit+debtorsChange+inventoryChange+itcChange+creditorsChange+gstChange+statutoryChange+otherWC, false, true)}
+            {row('Less: Income Taxes Paid (net)', taxPaid, true)}
             {row('Net Cash from Operating Activities (A)', netCFO, false, true)}
 
             <tr className="group"><td colSpan="2">B. CASH FLOW FROM INVESTING ACTIVITIES</td></tr>
