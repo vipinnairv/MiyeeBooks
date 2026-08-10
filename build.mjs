@@ -11,6 +11,14 @@ import {
 } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createHash } from 'node:crypto';
+
+// Short content hash for cache-busting. Because the module filenames are stable
+// (10-app.js, …), browsers and GitHub's CDN would otherwise serve a stale copy
+// after a deploy. Appending ?v=<hash of the file's content> makes the URL change
+// only when the content changes, so every deploy is picked up immediately with
+// no hard refresh - and unchanged files stay cached.
+const hash = (s) => createHash('sha256').update(s).digest('hex').slice(0, 10);
 
 const root    = dirname(fileURLToPath(import.meta.url));
 const srcDir  = join(root, 'src');
@@ -55,15 +63,19 @@ async function buildOnce() {
     }
     const outName = f.replace(/\.jsx$/, '.js');
     writeFileSync(join(distJs, outName), out.code);
-    tags.push(`<script src="js/${outName}"></script>`);
+    tags.push(`<script src="js/${outName}?v=${hash(out.code)}"></script>`);
   }
 
-  // index.html - inject ordered script tags
+  // index.html - inject ordered script tags + cache-bust the stylesheet link
   const shell = readFileSync(join(srcDir, 'index.html'), 'utf8');
   if (!shell.includes('<!--APP_SCRIPTS-->')) {
     throw new Error('src/index.html is missing the <!--APP_SCRIPTS--> placeholder');
   }
-  writeFileSync(join(distDir, 'index.html'), shell.replace('<!--APP_SCRIPTS-->', tags.join('\n')));
+  const cssSrc = readFileSync(join(srcDir, 'styles.css'), 'utf8');
+  const html = shell
+    .replace('<!--APP_SCRIPTS-->', tags.join('\n'))
+    .replace('href="styles.css"', `href="styles.css?v=${hash(cssSrc)}"`);
+  writeFileSync(join(distDir, 'index.html'), html);
 
   // .nojekyll - tell GitHub Pages to serve the files as-is (no Jekyll pass)
   writeFileSync(join(distDir, '.nojekyll'), '');
