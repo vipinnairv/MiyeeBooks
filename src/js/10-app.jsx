@@ -96,6 +96,17 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
     try { localStorage.setItem('mb_theme', darkMode?'dark':'light'); } catch(e){}
   }, [darkMode]);
 
+  // Horizontal menu: which section's dropdown is open. Close on outside-click / Esc.
+  const [openMenu, setOpenMenu] = useState(null);
+  useEffect(() => {
+    if(!openMenu) return;
+    const onDoc = (e) => { if(!(e.target.closest && e.target.closest('.hmenu'))) setOpenMenu(null); };
+    const onKey = (e) => { if(e.key === 'Escape') setOpenMenu(null); };
+    document.addEventListener('click', onDoc);
+    document.addEventListener('keydown', onKey);
+    return () => { document.removeEventListener('click', onDoc); document.removeEventListener('keydown', onKey); };
+  }, [openMenu]);
+
   // Tally-style function keys: F4 Contra · F5 Payment · F6 Receipt · F7 Journal · F8 Sales · F9 Purchase
   useEffect(() => {
     const KEYMAP = {F4:'CON', F5:'PAY', F6:'REC', F7:'JV', F8:'SAL', F9:'PUR'};
@@ -362,7 +373,6 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
     <>
       <div className="topbar">
         <div className="brand">
-          <button className="nav-toggle" onClick={()=>document.body.classList.toggle('navopen')} title="Menu">☰</button>
           <span className="brand-mark">Miyee<span className="dot">·</span>Books</span>
           <span className="brand-tag">MSME Accounting Suite</span>
         </div>
@@ -410,45 +420,32 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
           </>)}
         </div>
       </div>
-      <div className="app">
-        <aside className="sidebar">
-          {nav.map(sec => (
-            <div className="nav-section" key={sec.section}>
-              <div className="nav-section-title">{sec.section}</div>
-              {sec.items.map(it => (
-                <div key={it.id} className={'nav-item' + (page===it.id?' active':'')} onClick={() => { setPage(it.id); document.body.classList.remove('navopen'); }}>
-                  <span className="ico">{it.ico}</span>
-                  <span>{it.label}</span>
-                </div>
-              ))}
-            </div>
-          ))}
-          {/* Premium status card at sidebar bottom */}
-          {SUBSCRIPTION_ENABLED && <div style={{padding:'10px 12px 14px',marginTop:'auto'}}>
-            {isPrem ? (
-              <div onClick={()=>triggerUpgrade('manage')} style={{background:'linear-gradient(135deg,#c9a227,#e6be4e)',borderRadius:10,padding:'11px 14px',cursor:'pointer',boxShadow:'0 2px 8px #c9a22730'}}>
-                <div style={{fontWeight:800,fontSize:12,color:'#3d2c00',letterSpacing:'.3px'}}>✦ PREMIUM ACTIVE</div>
-                <div style={{fontSize:10,color:'#5a3e00',marginTop:2}}>Unlimited entries · All modules</div>
-                <div style={{fontSize:9,color:'#7a5e00',marginTop:1}}>Since: {data.company.premiumSince||''}</div>
-              </div>
-            ) : (
-              <div onClick={()=>triggerUpgrade('sidebar')} style={{background:'linear-gradient(135deg,#0b6b4f,#1a9a72)',borderRadius:10,padding:'11px 14px',cursor:'pointer',boxShadow:'0 2px 8px #0b6b4f30'}}>
-                <div style={{fontWeight:800,fontSize:11,color:'#fff',letterSpacing:'.4px'}}>⚡ UPGRADE TO PREMIUM</div>
-                <div style={{fontSize:10,color:'rgba(255,255,255,.8)',marginTop:3}}>
-                  <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:4}}>
-                    <div style={{flex:1,height:4,background:'rgba(255,255,255,.25)',borderRadius:4}}>
-                      <div style={{height:'100%',background:'#fff',borderRadius:4,width:`${Math.min(100,(activeVoucherCount/FREE_VOUCHER_LIMIT)*100)}%`}}></div>
+      {/* Horizontal dropdown menu (replaces the long left sidebar) */}
+      <nav className="hmenu">
+        {nav.map(sec => {
+          const activeSec = sec.items.some(it => it.id === page);
+          const isOpen = openMenu === sec.section;
+          return (
+            <div className="hmenu-group" key={sec.section}>
+              <button className={"hmenu-btn" + (activeSec?" active":"") + (isOpen?" open":"")}
+                onClick={()=>setOpenMenu(isOpen?null:sec.section)}>
+                {sec.section}<span className="hmenu-caret">▾</span>
+              </button>
+              {isOpen && (
+                <div className="hmenu-dd">
+                  {sec.items.map(it => (
+                    <div key={it.id} className={"hmenu-dd-item" + (page===it.id?" active":"")}
+                      onClick={()=>{ setPage(it.id); setOpenMenu(null); }}>
+                      <span className="ico">{it.ico}</span><span>{it.label}</span>
                     </div>
-                    <span style={{fontSize:9,fontWeight:700,whiteSpace:'nowrap'}}>{activeVoucherCount}/{FREE_VOUCHER_LIMIT}</span>
-                  </div>
-                  ₹1,500/month · Unlimited entries
+                  ))}
                 </div>
-              </div>
-            )}
-          </div>}
-        </aside>
-        <div className="nav-overlay" onClick={()=>document.body.classList.remove('navopen')}></div>
-        <main className="main">
+              )}
+            </div>
+          );
+        })}
+      </nav>
+      <main className="main">
           {page==='dashboard' && <Dashboard data={data} balances={ledgerBalances} setPage={setPage} setData={canWrite?setData:()=>{}} showToast={showToast} />}
           {page==='coa' && <ChartOfAccounts data={data} setData={canWrite?setData:()=>{}} balances={ledgerBalances} showToast={showToast} readOnly={isViewer} />}
           {page==='parties' && <Parties data={data} setData={canWrite?setData:()=>{}} showToast={showToast} readOnly={isViewer} />}
@@ -534,7 +531,6 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
             <div><b>Miyee<span style={{color:'var(--accent)'}}>·</span>Books</b> &nbsp;·&nbsp; MSME Accounting Suite &nbsp;·&nbsp; Built by <b>Vipin Nair</b> &nbsp;·&nbsp; MYeeCFO Series</div>
           </div>
         </main>
-      </div>
       {toast && <div className={'toast ' + (toast.type==='error'?'error':'success')}>{toast.msg}</div>}
       {showUpgrade && (
         <UpgradeModal data={data} setData={setData} showToast={showToast}
