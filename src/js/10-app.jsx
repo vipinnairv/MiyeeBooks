@@ -482,7 +482,7 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
           {page==='forex' && <Forex data={data} setData={setData} showToast={showToast} />}
           {page==='ceo' && <CEODashboard data={data} balances={ledgerBalances} setPage={setPage} />}
           {page==='mis' && <MISDashboard data={data} balances={ledgerBalances} setPage={setPage} />}
-          {page==='valumetrics' && <ValuMetrics />}
+          {page==='valumetrics' && <ValuMetrics data={data} showToast={showToast} />}
           {page==='valuation' && <FinancialModel data={data} balances={ledgerBalances} />}
           {page==='mis_ratios' && <FinancialRatios data={data} balances={ledgerBalances} />}
           {page==='mis_aging' && <AgingAnalysis data={data} balances={ledgerBalances} />}
