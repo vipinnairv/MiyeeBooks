@@ -1274,6 +1274,242 @@ function FinancialModel({data, balances}){
 }
 
 // ============================================================================
+// CEO DASHBOARD  Strategic one-screen view for the founder / MD
+// A high-altitude read of the business: headline KPIs, growth, cash runway,
+// a business-health score, compliance status and the alerts that need a
+// decision. Everything is a click away from the detail behind it.
+// ============================================================================
+function CEODashboard({data, balances, setPage}){
+  const getBal = (id) => balances[id] || 0;
+  const r0 = n => Math.round((n||0));
+
+  // ── Headline P&L ──────────────────────────────────────────────────────────
+  const income   = data.coa.filter(a=>a.type==='Income').reduce((s,a)=>s+(-getBal(a.id)),0);
+  const expense  = data.coa.filter(a=>a.type==='Expense').reduce((s,a)=>s+getBal(a.id),0);
+  const netProfit= income - expense;
+  const netMargin= income>0 ? netProfit/income*100 : 0;
+  const revOps   = data.coa.filter(a=>a.group==='Revenue from Operations').reduce((s,a)=>s+(-getBal(a.id)),0);
+  const costMat  = data.coa.filter(a=>a.group==='Cost of Materials'||a.group==='Purchase of Stock-in-Trade').reduce((s,a)=>s+getBal(a.id),0);
+  const grossMargin = revOps>0 ? (revOps-costMat)/revOps*100 : 0;
+
+  // ── Balance-sheet snapshot ────────────────────────────────────────────────
+  const cash      = getBal('2500')+getBal('2510')+getBal('2511')+getBal('2520');
+  const debtors   = getBal('2400');
+  const creditors = -getBal('1300');
+  const inventory = getBal('2300')+getBal('2310');
+  const workingCap= cash + debtors + inventory - creditors;
+
+  // ── Monthly revenue / profit series across the FY ─────────────────────────
+  const monN = ['','Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const months = useMemo(() => {
+    const y0 = parseInt(data.company.fyStart?.slice(0,4)||2025);
+    const keys = [];
+    for(let m=4;m<=12;m++) keys.push(y0+'-'+String(m).padStart(2,'0'));
+    for(let m=1;m<=3;m++)  keys.push((y0+1)+'-'+String(m).padStart(2,'0'));
+    const map = {}; keys.forEach(k=>map[k]={key:k, rev:0, exp:0, vou:0});
+    (data.vouchers||[]).filter(v=>affectsLedger(v)).forEach(v=>{
+      const k=(v.date||'').slice(0,7); if(!map[k]) return;
+      map[k].vou++;
+      if(v.type==='SAL') map[k].rev += v.total||v.amount||0;
+      if(v.type==='CRN') map[k].rev -= v.total||v.amount||0;
+      if(v.type==='PUR') map[k].exp += v.total||v.amount||0;
+      if(v.type==='DBN') map[k].exp -= v.total||v.amount||0;
+    });
+    return keys.map(k=>map[k]);
+  }, [data.vouchers, data.company.fyStart]);
+
+  const activeMonths = months.filter(m=>m.vou>0);
+  const lastTwo = activeMonths.slice(-2);
+  const momGrowth = (lastTwo.length===2 && lastTwo[0].rev>0) ? (lastTwo[1].rev-lastTwo[0].rev)/lastTwo[0].rev*100 : null;
+
+  // Year-on-year vs the closed prior-year snapshot (if a year has been closed)
+  const priorYear = (data.company.priorYears||[]).slice(-1)[0];
+  const yoyGrowth = (priorYear && priorYear.income>0) ? (income-priorYear.income)/priorYear.income*100 : null;
+
+  // ── Cash runway / burn ────────────────────────────────────────────────────
+  const nMonths      = Math.max(1, activeMonths.length);
+  const monthlyBurn  = (expense-income)/nMonths;         // >0 ⇒ burning
+  const runwayMonths = monthlyBurn>0 ? cash/monthlyBurn : Infinity;
+  const runwayLabel  = monthlyBurn<=0 ? 'Cash-positive' : (runwayMonths>=99?'99+ mo':runwayMonths.toFixed(1)+' mo');
+
+  // ── Compliance & approvals ────────────────────────────────────────────────
+  const dues = useMemo(()=>complianceDues(data), [data]);
+  const dueTotal   = dues.reduce((s,d)=>s+Math.max(0,d.amount),0);
+  const dueOverdue = dues.filter(d=>d.amount>1 && d.days<0);
+  const makerChecker = data.company.makerChecker===true;
+  const pendingCount = makerChecker ? (data.vouchers||[]).filter(v=>v.status==='Pending').length : 0;
+
+  // ── Business-health score (0-100) ─────────────────────────────────────────
+  const tbBal = useMemo(()=>{
+    const b={}; data.coa.forEach(a=>b[a.id]=a.opening||0);
+    (data.vouchers||[]).filter(v=>affectsLedger(v)).forEach(v=>(v.lines||[]).forEach(l=>{b[l.accountId]=(b[l.accountId]||0)+(l.debit||0)-(l.credit||0);}));
+    const dr=Object.values(b).reduce((s,x)=>s+(x>0?x:0),0), cr=Object.values(b).reduce((s,x)=>s+(x<0?-x:0),0);
+    return Math.abs(dr-cr);
+  }, [data]);
+  const health = useMemo(()=>{
+    let score=100; const notes=[];
+    if(tbBal>=1){ score-=25; notes.push('Trial balance not tallied'); }
+    if(netProfit<0){ score-=15; notes.push('Operating at a loss'); }
+    if(monthlyBurn>0 && runwayMonths<3){ score-=20; notes.push('Cash runway under 3 months'); }
+    if(cash<0){ score-=15; notes.push('Negative cash / bank balance'); }
+    if(dueOverdue.length){ score-=10; notes.push(dueOverdue.length+' statutory due(s) overdue'); }
+    if(income>0 && debtors>income*0.5){ score-=10; notes.push('Receivables above half of revenue'); }
+    return { score:Math.max(0,score), notes };
+  }, [tbBal, netProfit, monthlyBurn, runwayMonths, cash, dueOverdue, debtors, income]);
+  const healthColor = health.score>=80?'var(--green)':health.score>=55?'var(--warning)':'var(--danger)';
+  const healthLabel = health.score>=80?'Healthy':health.score>=55?'Watch':'At Risk';
+
+  // ── Top customers (by sales) ──────────────────────────────────────────────
+  const topCustomers = useMemo(()=>{
+    const map={};
+    (data.vouchers||[]).filter(v=>affectsLedger(v)&&v.partyId&&(v.type==='SAL'||v.type==='CRN')).forEach(v=>{
+      if(!map[v.partyId]) map[v.partyId]={name:v.partyName,sales:0};
+      map[v.partyId].sales += (v.type==='CRN'?-1:1)*(v.total||v.amount||0);
+    });
+    return Object.values(map).sort((a,b)=>b.sales-a.sales).slice(0,5);
+  }, [data.vouchers]);
+
+  // ── Alerts (what needs a decision) ────────────────────────────────────────
+  const alerts = [];
+  if(pendingCount>0) alerts.push({t:`${pendingCount} voucher${pendingCount>1?'s':''} awaiting approval`, page:'vouchers', tone:'warn'});
+  if(monthlyBurn>0 && runwayMonths<6) alerts.push({t:`Cash runway is ${runwayLabel} - review spend & collections`, page:'cash_forecast', tone:'danger'});
+  if(dueOverdue.length) alerts.push({t:`${dueOverdue.length} statutory payment${dueOverdue.length>1?'s':''} overdue (₹${fmt(dueOverdue.reduce((s,d)=>s+d.amount,0))})`, page:'compliance', tone:'danger'});
+  if(cash<0) alerts.push({t:`Cash / bank is negative (₹${fmt(cash)}) - check unrecorded receipts`, page:'bank_recon', tone:'danger'});
+  if(income>0 && debtors>income*0.5) alerts.push({t:`Receivables ₹${fmt(debtors)} are high vs revenue - chase collections`, page:'billwise', tone:'warn'});
+  if(netProfit<0) alerts.push({t:`Currently loss-making (₹${fmt(netProfit)}) YTD`, page:'pnl', tone:'warn'});
+
+  const fyLabel = (data.company.fyStart?.slice(0,4)||'')+'-'+(data.company.fyEnd?.slice(2,4)||'');
+  const maxBar = Math.max(1, ...months.map(m=>Math.max(m.rev,m.exp)));
+
+  const kpi = (label, value, sub, subColor, onClick) => (
+    <div className="stat" style={onClick?{cursor:'pointer'}:{}} onClick={onClick}>
+      <div className="stat-label">{label}</div>
+      <div className="stat-value rupee" style={{fontSize:22}}>{value}</div>
+      {sub && <div style={{fontSize:11,marginTop:2,color:subColor||'var(--ink-3)',fontWeight:600}}>{sub}</div>}
+    </div>
+  );
+  const growthChip = (g) => g==null ? <span style={{color:'var(--ink-3)'}}>-</span>
+    : <span style={{color:g>=0?'var(--green)':'var(--danger)'}}>{g>=0?'▲':'▼'} {Math.abs(g).toFixed(1)}%</span>;
+
+  return (<>
+    <div className="page-head">
+      <div>
+        <h1 className="page-title">CEO Dashboard</h1>
+        <div className="page-sub">Strategic view · {data.company.name} · FY {fyLabel} · as on {fmtDate(today())}</div>
+      </div>
+      <div className="page-actions">
+        <button className="btn btn-sm" onClick={()=>setPage('mis')}>◇ CFO Dashboard →</button>
+      </div>
+    </div>
+
+    {/* Business health + headline number */}
+    <div style={{display:'grid',gridTemplateColumns:'220px 1fr',gap:16,marginBottom:16}} className="ceo-hero">
+      <div className="card" style={{display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',padding:'18px 12px',textAlign:'center'}}>
+        <div style={{fontSize:11,color:'var(--ink-3)',textTransform:'uppercase',letterSpacing:'.7px',fontWeight:700}}>Business Health</div>
+        <div style={{position:'relative',width:120,height:120,margin:'10px 0'}}>
+          <svg viewBox="0 0 120 120" style={{width:120,height:120,transform:'rotate(-90deg)'}}>
+            <circle cx="60" cy="60" r="52" fill="none" stroke="var(--line-2)" strokeWidth="12"/>
+            <circle cx="60" cy="60" r="52" fill="none" stroke={healthColor} strokeWidth="12" strokeLinecap="round"
+              strokeDasharray={`${health.score/100*Math.PI*104} ${Math.PI*104}`}/>
+          </svg>
+          <div style={{position:'absolute',inset:0,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center'}}>
+            <div style={{fontSize:30,fontWeight:800,color:healthColor}}>{health.score}</div>
+            <div style={{fontSize:11,fontWeight:700,color:healthColor}}>{healthLabel}</div>
+          </div>
+        </div>
+        <div style={{fontSize:10.5,color:'var(--ink-3)',lineHeight:1.4}}>
+          {health.notes.length? health.notes.slice(0,3).join(' · ') : 'No red flags detected'}
+        </div>
+      </div>
+      <div className="stat-grid" style={{margin:0}}>
+        {kpi('Revenue (YTD)', '₹'+fmt(income), <>MoM {growthChip(momGrowth)}{yoyGrowth!=null && <> · YoY {growthChip(yoyGrowth)}</>}</>, null, ()=>setPage('pnl'))}
+        {kpi('Net Profit (YTD)', '₹'+fmt(netProfit), netMargin.toFixed(1)+'% net margin', netProfit>=0?'var(--green)':'var(--danger)', ()=>setPage('pnl'))}
+        {kpi('Cash & Bank', '₹'+fmt(cash), 'Runway '+runwayLabel, monthlyBurn>0&&runwayMonths<6?'var(--danger)':'var(--green)', ()=>setPage('cashflow'))}
+        {kpi('Working Capital', '₹'+fmt(workingCap), 'Recv ₹'+fmt(debtors)+' · Pay ₹'+fmt(creditors), null, ()=>setPage('mis_aging'))}
+      </div>
+    </div>
+
+    {/* Alerts */}
+    {alerts.length>0 && (
+      <div className="card" style={{marginBottom:16}}>
+        <div className="card-head"><h3 className="card-title">⚠ Needs your attention</h3><span className="badge badge-gold">{alerts.length}</span></div>
+        <div className="card-body" style={{padding:0}}>
+          {alerts.map((a,i)=>(
+            <div key={i} onClick={()=>setPage(a.page)} style={{display:'flex',alignItems:'center',gap:10,padding:'11px 18px',cursor:'pointer',
+              borderBottom:i<alerts.length-1?'1px solid var(--line-2)':'none'}} className="drill-row">
+              <span style={{fontSize:15}}>{a.tone==='danger'?'🔴':'🟠'}</span>
+              <span style={{flex:1,fontSize:13,color:'var(--ink-2)'}}>{a.t}</span>
+              <span style={{color:'var(--primary)',fontSize:12}}>Review →</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    )}
+
+    <div style={{display:'grid',gridTemplateColumns:'1.4fr 1fr',gap:16,marginBottom:16}} className="ceo-cols">
+      {/* Revenue vs expense trend */}
+      <div className="card">
+        <div className="card-head"><h3 className="card-title">Revenue vs Expense · FY {fyLabel}</h3>
+          <span style={{fontSize:11,color:'var(--ink-3)'}}>Gross margin {grossMargin.toFixed(0)}%</span></div>
+        <div className="card-body">
+          <div style={{display:'flex',alignItems:'flex-end',gap:6,height:150}}>
+            {months.map((m,i)=>(
+              <div key={i} style={{flex:1,display:'flex',flexDirection:'column',alignItems:'center',gap:3}}>
+                <div style={{width:'100%',display:'flex',gap:2,alignItems:'flex-end',height:120,justifyContent:'center'}}>
+                  <div title={'Revenue ₹'+fmt(m.rev)} style={{width:8,height:Math.max(2,m.rev/maxBar*120),background:'var(--primary)',borderRadius:'2px 2px 0 0'}}></div>
+                  <div title={'Expense ₹'+fmt(m.exp)} style={{width:8,height:Math.max(2,m.exp/maxBar*120),background:'var(--danger)',borderRadius:'2px 2px 0 0'}}></div>
+                </div>
+                <div style={{fontSize:9,color:'var(--ink-3)'}}>{monN[parseInt(m.key.slice(5))]}</div>
+              </div>
+            ))}
+          </div>
+          <div style={{display:'flex',gap:16,marginTop:8,fontSize:11,color:'var(--ink-3)'}}>
+            <span><span style={{display:'inline-block',width:9,height:9,background:'var(--primary)',borderRadius:2,marginRight:4}}></span>Revenue</span>
+            <span><span style={{display:'inline-block',width:9,height:9,background:'var(--danger)',borderRadius:2,marginRight:4}}></span>Expense</span>
+          </div>
+        </div>
+      </div>
+
+      {/* Top customers */}
+      <div className="card">
+        <div className="card-head"><h3 className="card-title">Top Customers</h3>
+          <button className="btn btn-sm btn-ghost" onClick={()=>setPage('profitability')}>All →</button></div>
+        <div className="card-body" style={{padding:0}}>
+          {topCustomers.length===0 ? <div className="empty" style={{padding:20}}>No sales yet</div> :
+            topCustomers.map((c,i)=>{
+              const max=topCustomers[0].sales||1;
+              return (<div key={i} style={{padding:'9px 18px',borderBottom:i<topCustomers.length-1?'1px solid var(--line-2)':'none'}}>
+                <div style={{display:'flex',justifyContent:'space-between',fontSize:12.5,marginBottom:4}}>
+                  <span style={{fontWeight:600}}>{c.name||'-'}</span><span className="rupee">₹{fmt(c.sales)}</span></div>
+                <div style={{height:5,background:'var(--surface-2)',borderRadius:3}}>
+                  <div style={{height:5,width:Math.max(3,c.sales/max*100)+'%',background:'var(--primary)',borderRadius:3}}></div></div>
+              </div>);
+            })}
+        </div>
+      </div>
+    </div>
+
+    {/* Compliance strip */}
+    <div className="card" style={{marginBottom:16}}>
+      <div className="card-head"><h3 className="card-title">Statutory position</h3>
+        <span style={{fontSize:12,color:dueTotal>0?'var(--warning)':'var(--green)',fontWeight:700}}>Total due ₹{fmt(dueTotal)}</span></div>
+      <div className="card-body">
+        <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(150px,1fr))',gap:10}}>
+          {dues.map(d=>(
+            <div key={d.key} onClick={()=>setPage('compliance')} style={{cursor:'pointer',border:'1px solid var(--line-2)',borderRadius:8,padding:'10px 12px'}} className="drill-row">
+              <div style={{fontSize:11,color:'var(--ink-3)',fontWeight:600}}>{d.label}</div>
+              <div className="rupee" style={{fontSize:16,fontWeight:700,color:d.amount>1?'var(--ink)':'var(--ink-3)'}}>₹{fmt(Math.max(0,d.amount))}</div>
+              <div style={{fontSize:10.5,color:d.amount>1&&d.days<0?'var(--danger)':'var(--ink-3)'}}>
+                {d.amount>1 ? (d.days<0?`Overdue by ${Math.abs(d.days)}d`:`Due in ${d.days}d (${fmtDate(d.due)})`) : 'Nil'}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  </>);
+}
+
+// ============================================================================
 // MIS DASHBOARD  CFO / Management View
 // ============================================================================
 function MISDashboard({data, balances, setPage}){
@@ -1445,6 +1681,22 @@ function MISDashboard({data, balances, setPage}){
   const barWidth = (v) => Math.max(2, (v/maxRevenue)*100) + '%';
   const monthNames = ['','Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 
+  // Executive strip: statutory dues, approval queue and headline liquidity so
+  // the CFO sees what needs action before the detailed analytics below.
+  const cfoDues     = useMemo(()=>complianceDues(data), [data]);
+  const cfoDueTotal = cfoDues.reduce((s,d)=>s+Math.max(0,d.amount),0);
+  const cfoOverdue  = cfoDues.filter(d=>d.amount>1 && d.days<0).length;
+  const cfoPending  = data.company.makerChecker===true ? (data.vouchers||[]).filter(v=>v.status==='Pending').length : 0;
+  const workingCap  = currentAssets - currentLiab;
+  const currentRatio= currentLiab>0 ? currentAssets/currentLiab : null;
+  const execTile = (label, value, sub, tone, page) => (
+    <div onClick={page?()=>setPage(page):undefined} style={{flex:1,minWidth:150,border:'1px solid var(--line-2)',borderLeft:'3px solid '+(tone||'var(--primary)'),borderRadius:8,padding:'10px 14px',cursor:page?'pointer':'default'}} className={page?'drill-row':''}>
+      <div style={{fontSize:11,color:'var(--ink-3)',fontWeight:600}}>{label}</div>
+      <div className="rupee" style={{fontSize:17,fontWeight:700}}>{value}</div>
+      {sub && <div style={{fontSize:10.5,color:tone||'var(--ink-3)'}}>{sub}</div>}
+    </div>
+  );
+
   return (
     <>
       <div className="page-head">
@@ -1453,12 +1705,22 @@ function MISDashboard({data, balances, setPage}){
           <div className="page-sub">MIS analytics · {data.company.name} · FY {data.company.fyStart?.slice(0,4)}–{data.company.fyEnd?.slice(2,4)}</div>
         </div>
         <div className="page-actions">
+          <button className="btn btn-sm" onClick={() => setPage('ceo')}>★ CEO Dashboard</button>
           <button className="btn" onClick={() => setPage('mis_ratios')}>▦ Financial Ratios</button>
           <button className="btn" onClick={() => setPage('mis_aging')}>◫ Aging</button>
           <button className="btn btn-primary" onClick={handleMISPack}>⬇ MIS Pack (Excel)</button>
           <button className="btn btn-primary" onClick={() => generateReportBundle(data, balances)}>⎙ PDF Bundle</button>
           <button className="btn" onClick={() => window.print()}>⎙ Print</button>
         </div>
+      </div>
+
+      {/* Executive strip - action items first */}
+      <div style={{display:'flex',gap:10,flexWrap:'wrap',marginBottom:18}}>
+        {execTile('Working Capital', '₹'+fmt(workingCap), currentRatio!=null?('Current ratio '+currentRatio.toFixed(2)):'CA - CL', workingCap>=0?'var(--green)':'var(--danger)', 'mis_aging')}
+        {execTile('Cash Runway', runwayLabel, monthlyBurn>0?('Burn ₹'+fmt(monthlyBurn)+'/mo'):'Cash-positive', monthlyBurn>0&&runwayMonths<6?'var(--danger)':'var(--green)', 'cash_forecast')}
+        {execTile('Statutory Dues', '₹'+fmt(cfoDueTotal), cfoOverdue?(cfoOverdue+' overdue'):'GST/TDS/PF/ESIC/PT', cfoOverdue?'var(--danger)':'var(--warning)', 'compliance')}
+        {execTile('Net GST Payable', '₹'+fmt(gstNet), gstNet>0?'Cash payable':'ITC in hand', gstNet>0?'var(--warning)':'var(--green)', 'gstr3b')}
+        {data.company.makerChecker===true && execTile('Pending Approvals', String(cfoPending), cfoPending?'Awaiting sign-off':'Queue clear', cfoPending?'var(--warning)':'var(--green)', 'vouchers')}
       </div>
 
       {/* P&L KPIs */}
