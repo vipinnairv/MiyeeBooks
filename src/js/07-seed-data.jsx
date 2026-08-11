@@ -127,6 +127,7 @@ const makeFreshData = (overrides={}) => ({
   gstr2bData: [],
   employees: [],
   payrollRuns: [],
+  reimbursements: [], projects: [],
   tdsSections: SEED_TDS_SECTIONS,
   stockItems: [], boms: [], productionOrders: [], quotations: [],
   costCentres: [], departments: [],
