@@ -177,6 +177,16 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
   const canWrite   = !isViewer;
   const safeSetData = canWrite ? setData : () => {};
 
+  // Employee portal: a signed-in user whose email matches an employee marked
+  // portalRole:"employee" is locked to the Reimbursement Portal only - none of
+  // the accounting UI is mounted. Owners are never locked out.
+  const portalEmployee = useMemo(() => {
+    const em = (user && user.email || '').toLowerCase();
+    if(!em || userRole === 'owner') return null;
+    return (data.employees||[]).find(e => e.portalRole === 'employee'
+      && (e.loginEmail||'').toLowerCase() === em) || null;
+  }, [user, userRole, data.employees]);
+
   // On login/company switch → load from Firestore (overwrites local state)
   // Uses ownerId (may differ from user.uid for shared companies)
   const effectiveOwner = ownerId || user?.uid;
@@ -373,6 +383,12 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
       {id:'help', label:'Help & Guide', ico:'?'},
     ]},
   ];
+
+  // Restricted employee: render only the portal, never the accounting shell.
+  if(portalEmployee){
+    return <EmployeePortal employee={portalEmployee} data={data} setData={setData}
+      showToast={showToast} user={user} darkMode={darkMode} setDarkMode={setDarkMode} onSignOut={onSignOut} />;
+  }
 
   return (
     <>
