@@ -263,7 +263,7 @@ function ReimbActionModal({action, bankLedgers, data, onApprove, onReject, onPay
 }
 
 // ── Claim form (create / edit draft) ────────────────────────────────────────
-function ReimbursementModal({claim, data, setData, showToast, onSave, onClose}){
+function ReimbursementModal({claim, data, setData, showToast, onSave, onClose, lockedEmployeeId}){
   const [f, setF] = useState(claim);
   const [newProject, setNewProject] = useState('');
   const emp = (data.employees||[]).find(e => e.id === f.employeeId) || {};
@@ -303,7 +303,7 @@ function ReimbursementModal({claim, data, setData, showToast, onSave, onClose}){
           <div className="section-divider"><div className="label">Employee</div><div className="line"></div></div>
           <div className="form-grid">
             <div className="field required"><label>Employee</label>
-              <select value={f.employeeId} onChange={e=>setF({...f, employeeId:e.target.value})}>
+              <select value={f.employeeId} disabled={!!lockedEmployeeId} onChange={e=>setF({...f, employeeId:e.target.value})}>
                 <option value="">Select…</option>
                 {(data.employees||[]).map(e=><option key={e.id} value={e.id}>{e.empCode?e.empCode+' · ':''}{e.name}</option>)}
               </select></div>
@@ -376,5 +376,133 @@ function ReimbursementModal({claim, data, setData, showToast, onSave, onClose}){
         </div>
       </div>
     </div>
+  );
+}
+
+// ============================================================================
+// EMPLOYEE PORTAL  the restricted, portal-only view for a staff login.
+// Rendered by App instead of the whole accounting shell when the signed-in
+// user maps to an employee with portalRole:"employee". They only ever see and
+// file their own claims; approval & payment happen in the full app.
+// ============================================================================
+function EmployeePortal({employee, data, setData, showToast, user, darkMode, setDarkMode, onSignOut}){
+  const [modal, setModal] = useState(null);
+  const mine = (data.reimbursements||[]).filter(c => c.employeeId === employee.id)
+    .slice().sort((a,b)=>(b.createdAt||'').localeCompare(a.createdAt||''));
+
+  const persist = (updater, msg) => { setData(updater); if(msg) showToast(msg); };
+  const saveDraft = (c) => persist(prev => {
+    const exists = (prev.reimbursements||[]).some(x=>x.id===c.id);
+    return {...prev, reimbursements: exists ? prev.reimbursements.map(x=>x.id===c.id?c:x) : [...(prev.reimbursements||[]), c]};
+  }, 'Draft saved: '+c.claimNo) || setModal(null);
+  const submit = (c) => {
+    if(!c.title || !c.travelPurpose){ showToast('Add a title and travel purpose','error'); return; }
+    if(!c.expenseLedgerId){ showToast('Pick the type of expense','error'); return; }
+    if(!(c.claimAmount>0)){ showToast('Enter a claim amount','error'); return; }
+    persist(prev => ({...prev,
+      reimbursements: prev.reimbursements.map(x => x.id===c.id ? {...x, status:'SUBMITTED', submittedAt:new Date().toISOString(),
+        approvals:[...(x.approvals||[]), reimbAppr('employee','SUBMIT', x.status, 'SUBMITTED')]} : x),
+      auditLog:[...(prev.auditLog||[]), auditEntry('REIMB', `${c.claimNo} submitted by ${employee.name} · ₹${fmt(c.claimAmount)}`)],
+    }), 'Submitted to your manager');
+  };
+  const reopen = (c) => persist(prev => ({...prev, reimbursements: prev.reimbursements.map(x => x.id===c.id
+    ? {...x, status:'DRAFT', approvals:[...(x.approvals||[]), reimbAppr('employee','REOPEN', x.status, 'DRAFT')]} : x)}), 'Reopened to draft');
+  const del = (c) => { if(!confirm('Delete draft '+c.claimNo+'?')) return;
+    persist(prev => ({...prev, reimbursements: prev.reimbursements.filter(x=>x.id!==c.id)}), 'Draft deleted'); };
+
+  const STEPS = ['Draft','With Manager','With Finance','Paid'];
+  const stepIndex = (s) => ({DRAFT:0, SUBMITTED:1, FIN_PENDING:2, PAID:3})[s];
+  const Tracker = ({c}) => {
+    const rejected = c.status==='MGR_REJECTED' || c.status==='FIN_REJECTED';
+    const cur = rejected ? (c.status==='MGR_REJECTED'?1:2) : stepIndex(c.status);
+    return (
+      <div style={{display:'flex',gap:6,marginTop:10,flexWrap:'wrap'}}>
+        {STEPS.map((s,i)=>{
+          const done = i<cur, at = i===cur;
+          const bad = rejected && at;
+          const col = bad?'var(--danger)':done?'var(--green)':at?'var(--primary)':'var(--ink-3)';
+          const bg  = bad?'var(--danger-soft)':done?'var(--green-soft)':at?'var(--primary-soft)':'var(--surface-2)';
+          return <span key={i} style={{fontSize:11,fontWeight:600,color:col,background:bg,border:'1px solid '+col+'33',
+            borderRadius:20,padding:'3px 10px'}}>{done?'✓ ':at?(bad?'✕ ':'● '):''}{bad?'Rejected':s}</span>;
+        })}
+      </div>
+    );
+  };
+
+  const newClaim = () => setModal({ id:uid(), claimNo:reimbNextNo(data), employeeId:employee.id, status:'DRAFT',
+    title:'', travelPurpose:'', description:'', expenseDate:today(), legs:[{id:uid(),fromPlace:'',toPlace:''}],
+    expenseLedgerId:'', projectId:'', costCentreId:'', claimAmount:0, sanctionedAmount:0,
+    attachments:[], approvals:[], createdAt:new Date().toISOString() });
+
+  return (
+    <>
+      <div className="topbar">
+        <div className="brand">
+          <span className="brand-mark">Miyee<span className="dot">·</span>Books</span>
+          <span className="brand-tag">My Reimbursements</span>
+        </div>
+        <div className="topbar-right">
+          <button onClick={()=>setDarkMode(d=>!d)} style={{background:'transparent',border:'1px solid rgba(255,255,255,.4)',borderRadius:20,padding:'3px 10px',fontSize:12,color:'#eef5ff'}}>{darkMode?'☀':'🌙'}</button>
+          <span style={{fontSize:12}}>{employee.name}</span>
+          {onSignOut && <button className="btn btn-sm btn-ghost" onClick={onSignOut} style={{fontSize:11,padding:'3px 9px'}}>Sign out</button>}
+        </div>
+      </div>
+
+      <main className="main" style={{maxWidth:840,margin:'0 auto',width:'100%'}}>
+        <div className="page-head">
+          <div>
+            <h1 className="page-title">Expense Claims</h1>
+            <div className="page-sub">Raise a claim, track its status, get reimbursed · {employee.name}</div>
+          </div>
+          <div className="page-actions"><button className="btn btn-primary" onClick={newClaim}>＋ New Claim</button></div>
+        </div>
+
+        {mine.length===0 ? (
+          <div className="card"><div className="card-body"><div className="empty" style={{padding:30}}>
+            <div className="empty-ico">🧾</div><div>No claims yet. Click <b>＋ New Claim</b> to raise your first reimbursement.</div>
+          </div></div></div>
+        ) : mine.map(c => {
+          const rejected = c.status==='MGR_REJECTED' || c.status==='FIN_REJECTED';
+          const note = (c.approvals||[]).slice().reverse().find(a=>a.note)?.note;
+          const jvNo = (data.vouchers||[]).find(v=>v.id===c.voucherId)?.number;
+          return (
+            <div className="card" key={c.id} style={{marginBottom:12}}>
+              <div className="card-body">
+                <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:12,flexWrap:'wrap'}}>
+                  <div>
+                    <div style={{fontFamily:'var(--mono)',fontSize:12,color:'var(--ink-3)'}}>{c.claimNo} · {fmtDate(c.expenseDate)}{(c.attachments||[]).length>0 && ' · 📎 '+c.attachments.length}</div>
+                    <div style={{fontWeight:700,fontSize:15,marginTop:2}}>{c.title||'(untitled)'}</div>
+                    {c.travelPurpose && <div style={{fontSize:12.5,color:'var(--ink-2)'}}>{c.travelPurpose}</div>}
+                  </div>
+                  <div style={{textAlign:'right'}}>
+                    {reimbChip(c.status)}
+                    <div className="rupee" style={{fontWeight:700,marginTop:4}}>₹{fmt(c.claimAmount||0)}</div>
+                    {c.sanctionedAmount>0 && c.sanctionedAmount!==c.claimAmount && <div style={{fontSize:11,color:'var(--ink-3)'}}>sanctioned ₹{fmt(c.sanctionedAmount)}</div>}
+                  </div>
+                </div>
+                <Tracker c={c} />
+                {rejected && note && <div style={{fontSize:12,color:'var(--danger)',marginTop:8}}>✕ {note}</div>}
+                {c.status==='PAID' && jvNo && <div style={{fontSize:12,color:'var(--green)',marginTop:8}}>✓ Paid · voucher {jvNo}</div>}
+                <div style={{display:'flex',gap:8,marginTop:12,flexWrap:'wrap'}}>
+                  {c.status==='DRAFT' && <>
+                    <button className="btn btn-sm" onClick={()=>setModal({...c})}>Edit</button>
+                    <button className="btn btn-sm btn-primary" onClick={()=>submit(c)}>Submit for approval</button>
+                    <button className="btn btn-sm btn-ghost" style={{color:'var(--danger)'}} onClick={()=>del(c)}>Delete</button>
+                  </>}
+                  {rejected && <button className="btn btn-sm" onClick={()=>reopen(c)}>Edit &amp; resubmit</button>}
+                </div>
+              </div>
+            </div>
+          );
+        })}
+
+        <div className="credit" style={{marginTop:20}}>
+          <div><b>Miyee<span style={{color:'var(--accent)'}}>·</span>Books</b> · Employee Reimbursement Portal</div>
+        </div>
+      </main>
+
+      {modal && <ReimbursementModal claim={modal} data={data} setData={setData} showToast={showToast}
+        lockedEmployeeId={employee.id} onSave={saveDraft} onClose={()=>setModal(null)} />}
+    </>
   );
 }

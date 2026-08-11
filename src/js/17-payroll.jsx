@@ -507,6 +507,7 @@ function EmployeeModal({employee, onSave, onClose, data}){
     allowances: [{id:uid(), name:'Conveyance Allowance', amount:0}, {id:uid(), name:'Medical Allowance', amount:0}],
     pfApplicable:true, pfBase:0, esicApplicable:false, ptAmount:200, tdsSalary:0,
     email:'', phone:'',
+    loginEmail:'', reportingManagerId:'', portalRole:'',
   });
 
   const addAllowance = () => setF({...f, allowances:[...(f.allowances||[]),{id:uid(),name:'',amount:0}]});
@@ -551,6 +552,19 @@ function EmployeeModal({employee, onSave, onClose, data}){
             <div className="field"><label>IFSC</label><input value={f.ifsc} onChange={e => setF({...f, ifsc:e.target.value.toUpperCase()})} /></div>
             <div className="field"><label>Email</label><input value={f.email} onChange={e => setF({...f, email:e.target.value})} /></div>
             <div className="field"><label>Phone</label><input value={f.phone} onChange={e => setF({...f, phone:e.target.value})} /></div>
+            <div className="field"><label>Portal Login Email <span style={{color:'var(--ink-3)',fontWeight:400}}>· for the Reimbursement Portal</span></label>
+              <input value={f.loginEmail||''} onChange={e => setF({...f, loginEmail:e.target.value})} placeholder="Sign-in email (matches their team invite)" /></div>
+            <div className="field"><label>Portal Role</label>
+              <select value={f.portalRole||''} onChange={e => setF({...f, portalRole:e.target.value})}>
+                <option value="">— Not a portal user —</option>
+                <option value="employee">Employee (portal-only)</option>
+                <option value="manager">Manager (approves too)</option>
+              </select></div>
+            <div className="field"><label>Reporting Manager</label>
+              <select value={f.reportingManagerId||''} onChange={e => setF({...f, reportingManagerId:e.target.value})}>
+                <option value="">— None —</option>
+                {(data.employees||[]).filter(e=>e.id!==f.id).map(e=><option key={e.id} value={e.id}>{e.name}</option>)}
+              </select></div>
           </div>
 
           <div className="section-divider"><div className="label">Earnings / Salary Structure</div><div className="line"></div></div>
