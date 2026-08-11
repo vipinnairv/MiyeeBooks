@@ -25,6 +25,8 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
       if(!saved.departments) saved.departments = [];
       if(!saved.bankRecon)   saved.bankRecon   = [];
       if(!saved.periodCloses) saved.periodCloses = [];
+      if(!saved.reimbursements) saved.reimbursements = [];
+      if(!saved.projects)    saved.projects    = [];
       if(!saved.allocations) saved.allocations = [];
       if(!saved.bankRules)   saved.bankRules   = [];
       if(!saved.auditLog)    saved.auditLog    = [];
@@ -69,6 +71,8 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
       gstr2bData: [],
       employees: [],
       payrollRuns: [],
+      reimbursements: [],
+      projects: [],
       tdsSections: SEED_TDS_SECTIONS,
       stockItems: [],
       boms: [],
@@ -292,6 +296,7 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
       ...(data.company.makerChecker===true ? [{id:'approvals', label:'Approvals', ico:'✅'}] : []),
       {id:'salesdocs', label:'Quotations & Challans', ico:'📄'},
       {id:'collections', label:'Collections / Reminders', ico:'📢'},
+      {id:'reimb', label:'Reimbursements', ico:'🧾'},
       {id:'daybook', label:'Day Book', ico:'☷'},
       {id:'bank_recon', label:'Bank Reconciliation', ico:'🏦'},
       {id:'billwise', label:'Bill-wise Outstanding', ico:'📋'},
@@ -456,6 +461,7 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
           {page==='cc_report'    && <CostCentreReport data={data} />}
           {page==='dept_report'  && <DepartmentReport data={data} />}
           {page==='vouchers' && <Vouchers data={data} setData={canWrite?setData:()=>{}} showToast={showToast} readOnly={isViewer} userRole={userRole} />}
+          {page==='reimb' && <Reimbursements data={data} setData={canWrite?setData:()=>{}} showToast={showToast} readOnly={isViewer} userRole={userRole} />}
           {page==='approvals' && <Vouchers data={data} setData={canWrite?setData:()=>{}} showToast={showToast} readOnly={isViewer} userRole={userRole} initialStatus="Pending" />}
           {page==='salesdocs' && <SalesDocs data={data} setData={canWrite?setData:()=>{}} showToast={showToast} readOnly={isViewer} />}
           {page==='collections' && <Collections data={data} showToast={showToast} />}
