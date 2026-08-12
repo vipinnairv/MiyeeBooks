@@ -137,9 +137,11 @@ const scanParseDate = (text) => {
 const scanParseGstin = (t) => (String(t||'').toUpperCase().match(/\b\d{2}[A-Z]{5}\d{4}[A-Z][0-9A-Z]Z[0-9A-Z]\b/) || [])[0] || '';
 
 const scanParseInvoiceNo = (t) => {
-  // Scan all "invoice/bill no <x>" candidates and take the first that looks like
-  // an id (contains a digit) - avoids grabbing an adjacent label like "GSTIN".
-  const re = /(?:tax\s*invoice|invoice|bill|receipt|inv|voucher)\s*(?:no\.?|number|#|id)?\s*[:#\-]?\s*([A-Za-z0-9][A-Za-z0-9\/\-]{1,20})/gi;
+  // "invoice / bill / receipt no <x>" where <x> is a digit-bearing id. The value
+  // itself must contain a digit, so a bare label word ("TAX INVOICE", "GSTIN")
+  // can't be mistaken for the number, and left-to-right scanning skips the
+  // heading and lands on the real "Invoice No: <id>" line.
+  const re = /(?:tax\s*invoice|invoice|bill|receipt|voucher|inv)\.?\s*(?:no|number|num|#|id)?\.?\s*[:#\-]?\s*([A-Za-z]{0,5}[\-\/]?\d[A-Za-z0-9\/\-]{1,20})/gi;
   let m;
   while((m = re.exec(String(t||'')))){
     const v = m[1].replace(/[.,;]+$/,'');
