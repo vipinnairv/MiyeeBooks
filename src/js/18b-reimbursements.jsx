@@ -24,6 +24,28 @@ const reimbAppr = (actor, action, from, to, extra={}) => ({
   at: new Date().toISOString(), by: (typeof window!=='undefined' && window.__miyeeUserEmail) || 'local',
   role: actor||'', action, fromStatus:from, toStatus:to, ...extra,
 });
+// Multi line-item helpers
+const reimbValidItems = (c) => (c.items||[]).filter(it => it.expenseLedgerId && (it.amount||0) > 0);
+const reimbTotal = (c) => { const its = reimbValidItems(c); return its.length ? its.reduce((s,it)=>s+(it.amount||0),0) : (c.claimAmount||0); };
+// Balanced Dr lines for the payout, prorated to the sanctioned amount so the sum
+// of debits always equals the sanctioned total (the last line absorbs rounding).
+const reimbPayLines = (c, sanctioned, narrationFallback) => {
+  const its = reimbValidItems(c);
+  const total = reimbTotal(c) || sanctioned;
+  const lines = [];
+  if(its.length){
+    const factor = total > 0 ? sanctioned/total : 1;
+    let allocated = 0;
+    its.forEach((it, i) => {
+      const d = i === its.length-1 ? Math.round((sanctioned-allocated)*100)/100 : Math.round(it.amount*factor*100)/100;
+      allocated = Math.round((allocated + d)*100)/100;
+      lines.push({id:uid(), accountId:it.expenseLedgerId, debit:d, credit:0, narration:(it.description||narrationFallback), costCentreId:c.costCentreId||''});
+    });
+  } else {
+    lines.push({id:uid(), accountId:c.expenseLedgerId, debit:sanctioned, credit:0, narration:narrationFallback, costCentreId:c.costCentreId||''});
+  }
+  return lines;
+};
 
 function Reimbursements({data, setData, showToast, readOnly=false, userRole='owner'}){
   const [modal, setModal]   = useState(null);   // claim being created/edited (draft form)
@@ -56,8 +78,7 @@ function Reimbursements({data, setData, showToast, readOnly=false, userRole='own
   const submitClaim = (c) => {
     if(!c.employeeId){ showToast('Pick an employee for the claim','error'); return; }
     if(!c.title || !c.travelPurpose){ showToast('Title and travel purpose are required','error'); return; }
-    if(!c.expenseLedgerId){ showToast('Choose the type of expense (ledger)','error'); return; }
-    if(!(c.claimAmount > 0)){ showToast('Enter a claim amount','error'); return; }
+    if(!reimbValidItems(c).length){ showToast('Add at least one expense line (ledger + amount)','error'); return; }
     patchClaim(c.id, {status:'SUBMITTED', submittedAt:new Date().toISOString()},
       reimbAppr('employee','SUBMIT', c.status, 'SUBMITTED'),
       `${c.claimNo} submitted · ${empById(c.employeeId).name||''} · ₹${fmt(c.claimAmount)}`);
@@ -90,7 +111,7 @@ function Reimbursements({data, setData, showToast, readOnly=false, userRole='own
     const emp = empById(c.employeeId);
     const amt = c.sanctionedAmount || c.claimAmount || 0;
     const lines = [
-      {id:uid(), accountId:c.expenseLedgerId, debit:amt, credit:0, narration:c.travelPurpose||c.title||'Reimbursement', costCentreId:c.costCentreId||''},
+      ...reimbPayLines(c, amt, c.travelPurpose||c.title||'Reimbursement'),
       {id:uid(), accountId:bankLedgerId, debit:0, credit:amt, narration:'Reimb '+c.claimNo+' · '+(emp.name||'')},
     ];
     const status = data.company.makerChecker === true ? 'Pending' : 'Posted';
@@ -122,7 +143,7 @@ function Reimbursements({data, setData, showToast, readOnly=false, userRole='own
         <button className="btn btn-primary" onClick={()=>setModal({
           id:uid(), claimNo:reimbNextNo(data), employeeId:employees[0]?.id||'', status:'DRAFT',
           title:'', travelPurpose:'', description:'', expenseDate:today(), legs:[{id:uid(),fromPlace:'',toPlace:''}],
-          expenseLedgerId:'', projectId:'', costCentreId:'', claimAmount:0, sanctionedAmount:0,
+          items:[{id:uid(), expenseLedgerId:'', description:'', amount:0}], expenseLedgerId:'', projectId:'', costCentreId:'', claimAmount:0, sanctionedAmount:0,
           attachments:[], approvals:[], createdAt:new Date().toISOString()})}
           disabled={employees.length===0}>＋ New Claim</button>
       </div>}
@@ -247,7 +268,7 @@ function ReimbActionModal({action, bankLedgers, data, onApprove, onReject, onPay
                 {bankLedgers.map(a=><option key={a.id} value={a.id}>{a.id} · {a.name}</option>)}
               </select></div>
             <div style={{fontSize:12.5,color:'var(--ink-2)',margin:'10px 0'}}>
-              Posts a payment voucher: <b>Dr</b> {(data.coa.find(a=>a.id===c.expenseLedgerId)||{}).name||'Expense'} ₹{fmt(c.sanctionedAmount||c.claimAmount||0)} · <b>Cr</b> Bank.
+              Posts a payment voucher: <b>Dr</b> {reimbValidItems(c).length>1 ? reimbValidItems(c).length+' expense ledgers' : ((data.coa.find(a=>a.id===((reimbValidItems(c)[0]||{}).expenseLedgerId||c.expenseLedgerId))||{}).name||'Expense')} ₹{fmt(c.sanctionedAmount||c.claimAmount||0)} · <b>Cr</b> Bank.
             </div>
             <button className="btn btn-primary" style={{width:'100%'}} onClick={()=>onPay(c, bank)}>💳 Post &amp; mark Paid</button>
           </>}
@@ -264,15 +285,23 @@ function ReimbActionModal({action, bankLedgers, data, onApprove, onReject, onPay
 
 // ── Claim form (create / edit draft) ────────────────────────────────────────
 function ReimbursementModal({claim, data, setData, showToast, onSave, onClose, lockedEmployeeId}){
-  const [f, setF] = useState(claim);
+  // Migrate a legacy single-ledger claim into one line item on edit.
+  const [f, setF] = useState(() => (claim.items && claim.items.length) ? claim
+    : {...claim, items:[{id:uid(), expenseLedgerId:claim.expenseLedgerId||'', description:'', amount:claim.claimAmount||0}]});
   const [newProject, setNewProject] = useState('');
   const emp = (data.employees||[]).find(e => e.id === f.employeeId) || {};
   const expenseLedgers = data.coa.filter(a => a.type === 'Expense');
   const projects = data.projects || [];
+  const itemsTotal = (f.items||[]).reduce((s,it)=>s+(it.amount||0),0);
 
   const setLeg = (id, patch) => setF({...f, legs: f.legs.map(l => l.id===id ? {...l, ...patch} : l)});
   const addLeg = () => setF({...f, legs: [...(f.legs||[]), {id:uid(), fromPlace:'', toPlace:''}]});
   const rmLeg  = (id) => setF({...f, legs: f.legs.filter(l => l.id!==id)});
+
+  const setItem = (id, patch) => setF({...f, items: f.items.map(it => it.id===id ? {...it, ...patch} : it)});
+  const addItem = () => setF({...f, items: [...(f.items||[]), {id:uid(), expenseLedgerId:'', description:'', amount:0}]});
+  const rmItem  = (id) => setF({...f, items: (f.items||[]).filter(it => it.id!==id)});
+  const saveClaim = () => onSave({...f, claimAmount: itemsTotal, expenseLedgerId: (f.items[0]||{}).expenseLedgerId || ''});
 
   const addProject = () => {
     const name = newProject.trim(); if(!name) return;
@@ -320,11 +349,6 @@ function ReimbursementModal({claim, data, setData, showToast, onSave, onClose, l
               <input value={f.travelPurpose} onChange={e=>{ const v=e.target.value; setF(prev=>({...prev, travelPurpose:v, description: prev.description && prev.description!==prev.travelPurpose ? prev.description : v})); }} placeholder="Becomes the accounting narration" /></div>
             <div className="field"><label>Date of Expense</label>
               <input type="date" value={f.expenseDate} onChange={e=>setF({...f, expenseDate:e.target.value})} /></div>
-            <div className="field required"><label>Type of Expense (ledger)</label>
-              <select value={f.expenseLedgerId} onChange={e=>setF({...f, expenseLedgerId:e.target.value})}>
-                <option value="">Select expense ledger…</option>
-                {expenseLedgers.map(a=><option key={a.id} value={a.id}>{a.id} · {a.name}</option>)}
-              </select></div>
             <div className="field"><label>Project</label>
               <div style={{display:'flex',gap:6}}>
                 <select value={f.projectId} onChange={e=>setF({...f, projectId:e.target.value})} style={{flex:1}}>
@@ -353,10 +377,39 @@ function ReimbursementModal({claim, data, setData, showToast, onSave, onClose, l
           ))}
           <button className="btn btn-sm btn-ghost" onClick={addLeg}>＋ Add stop</button>
 
-          <div className="section-divider"><div className="label">Amount &amp; Receipts</div><div className="line"></div></div>
+          <div className="section-divider"><div className="label">Expense Line Items</div><div className="line"></div></div>
+          <div style={{overflowX:'auto'}}>
+          <table style={{width:'100%',borderCollapse:'collapse',fontSize:12.5}}>
+            <thead><tr>
+              <th style={{textAlign:'left',padding:'4px 6px',color:'var(--ink-3)'}}>Type of Expense (ledger)</th>
+              <th style={{textAlign:'left',padding:'4px 6px',color:'var(--ink-3)'}}>Description</th>
+              <th style={{textAlign:'right',padding:'4px 6px',color:'var(--ink-3)',width:120}}>Amount (₹)</th>
+              <th style={{width:34}}></th>
+            </tr></thead>
+            <tbody>
+              {(f.items||[]).map(it => (
+                <tr key={it.id}>
+                  <td style={{padding:'3px 6px'}}>
+                    <select value={it.expenseLedgerId} onChange={e=>setItem(it.id,{expenseLedgerId:e.target.value})} style={{width:'100%'}}>
+                      <option value="">Select ledger…</option>
+                      {expenseLedgers.map(a=><option key={a.id} value={a.id}>{a.id} · {a.name}</option>)}
+                    </select></td>
+                  <td style={{padding:'3px 6px'}}><input value={it.description||''} onChange={e=>setItem(it.id,{description:e.target.value})} placeholder="What was this?" style={{width:'100%'}} /></td>
+                  <td style={{padding:'3px 6px'}}><input type="number" min="0" step="0.01" value={it.amount} onChange={e=>setItem(it.id,{amount:parseFloat(e.target.value)||0})} style={{width:'100%',textAlign:'right'}} /></td>
+                  <td style={{padding:'3px 6px',textAlign:'center'}}>{(f.items||[]).length>1 && <button className="btn btn-sm btn-danger" onClick={()=>rmItem(it.id)}>×</button>}</td>
+                </tr>
+              ))}
+              <tr><td colSpan="2" style={{textAlign:'right',padding:'6px',fontWeight:700}}>Total Claim</td>
+                <td className="num" style={{padding:'6px',fontWeight:700,textAlign:'right'}}>₹{fmt(itemsTotal)}</td><td></td></tr>
+            </tbody>
+          </table>
+          </div>
+          <button className="btn btn-sm btn-ghost" onClick={addItem}>＋ Add line</button>
+
+          <div className="section-divider"><div className="label">Sanction &amp; Receipts</div><div className="line"></div></div>
           <div className="form-grid">
-            <div className="field required"><label>Claim Amount (₹)</label>
-              <input type="number" min="0" step="0.01" value={f.claimAmount} onChange={e=>setF({...f, claimAmount:parseFloat(e.target.value)||0})} /></div>
+            <div className="field"><label>Claim Amount (₹) <span style={{color:'var(--ink-3)',fontWeight:400}}>· sum of lines</span></label>
+              <input type="number" value={itemsTotal} readOnly disabled /></div>
             <div className="field"><label>Sanctioned Amount (₹) <span style={{color:'var(--ink-3)',fontWeight:400}}>· set by manager</span></label>
               <input type="number" value={f.sanctionedAmount||''} readOnly disabled placeholder="Manager sets on approval" /></div>
             <div className="field" style={{gridColumn:'span 2'}}><label>Receipts / attachments <span style={{color:'var(--ink-3)',fontWeight:400}}>· images or PDF, ≤ 2 MB, up to 5</span></label>
@@ -372,7 +425,7 @@ function ReimbursementModal({claim, data, setData, showToast, onSave, onClose, l
         </div>
         <div className="modal-foot" style={{display:'flex',justifyContent:'flex-end',gap:8,padding:'12px 18px',borderTop:'1px solid var(--line)'}}>
           <button className="btn" onClick={onClose}>Cancel</button>
-          <button className="btn btn-primary" onClick={()=>onSave(f)} disabled={!f.employeeId||!f.title||!(f.claimAmount>0)}>Save Draft</button>
+          <button className="btn btn-primary" onClick={saveClaim} disabled={!f.employeeId||!f.title||!(itemsTotal>0)}>Save Draft</button>
         </div>
       </div>
     </div>
@@ -385,10 +438,34 @@ function ReimbursementModal({claim, data, setData, showToast, onSave, onClose, l
 // user maps to an employee with portalRole:"employee". They only ever see and
 // file their own claims; approval & payment happen in the full app.
 // ============================================================================
-function EmployeePortal({employee, data, setData, showToast, user, darkMode, setDarkMode, onSignOut}){
+function EmployeePortal({employee, portalRole='employee', data, setData, showToast, user, darkMode, setDarkMode, onSignOut}){
   const [modal, setModal] = useState(null);
+  const [mgrAction, setMgrAction] = useState(null);   // {type:'approve'|'reject', claim} for the manager inbox
+  const isManager = portalRole === 'manager';
   const mine = (data.reimbursements||[]).filter(c => c.employeeId === employee.id)
     .slice().sort((a,b)=>(b.createdAt||'').localeCompare(a.createdAt||''));
+
+  // Manager inbox: claims from direct reportees awaiting approval.
+  const reporteeIds = new Set((data.employees||[]).filter(e => e.reportingManagerId === employee.id).map(e => e.id));
+  const empName = (id) => (data.employees||[]).find(e=>e.id===id)?.name || '-';
+  const teamQueue = isManager ? (data.reimbursements||[]).filter(c => reporteeIds.has(c.employeeId) && c.status === 'SUBMITTED')
+    .slice().sort((a,b)=>(a.submittedAt||'').localeCompare(b.submittedAt||'')) : [];
+
+  const mgrApprove = (c, sanctioned, note) => {
+    const amt = Math.round((sanctioned||0)*100)/100;
+    if(!(amt>0)){ showToast('Sanctioned amount must be greater than zero','error'); return; }
+    if(amt > (c.claimAmount||0)+0.01){ showToast('Sanctioned cannot exceed the claim','error'); return; }
+    setData(prev => ({...prev, reimbursements: prev.reimbursements.map(x => x.id===c.id
+      ? {...x, status:'FIN_PENDING', sanctionedAmount:amt, approvals:[...(x.approvals||[]), reimbAppr('manager','APPROVE', x.status, 'FIN_PENDING', {sanctionedAmount:amt, note:note||''})]} : x),
+      auditLog:[...(prev.auditLog||[]), auditEntry('REIMB', `${c.claimNo} approved by ${employee.name} · sanctioned ₹${fmt(amt)}`)]}));
+    setMgrAction(null); showToast('Approved · sent to Finance');
+  };
+  const mgrReject = (c, reason) => {
+    setData(prev => ({...prev, reimbursements: prev.reimbursements.map(x => x.id===c.id
+      ? {...x, status:'MGR_REJECTED', approvals:[...(x.approvals||[]), reimbAppr('manager','REJECT', x.status, 'MGR_REJECTED', {note:reason||''})]} : x),
+      auditLog:[...(prev.auditLog||[]), auditEntry('REIMB', `${c.claimNo} rejected by ${employee.name} · ${reason||''}`)]}));
+    setMgrAction(null); showToast('Claim rejected');
+  };
 
   const persist = (updater, msg) => { setData(updater); if(msg) showToast(msg); };
   const saveDraft = (c) => persist(prev => {
@@ -397,8 +474,7 @@ function EmployeePortal({employee, data, setData, showToast, user, darkMode, set
   }, 'Draft saved: '+c.claimNo) || setModal(null);
   const submit = (c) => {
     if(!c.title || !c.travelPurpose){ showToast('Add a title and travel purpose','error'); return; }
-    if(!c.expenseLedgerId){ showToast('Pick the type of expense','error'); return; }
-    if(!(c.claimAmount>0)){ showToast('Enter a claim amount','error'); return; }
+    if(!reimbValidItems(c).length){ showToast('Add at least one expense line (ledger + amount)','error'); return; }
     persist(prev => ({...prev,
       reimbursements: prev.reimbursements.map(x => x.id===c.id ? {...x, status:'SUBMITTED', submittedAt:new Date().toISOString(),
         approvals:[...(x.approvals||[]), reimbAppr('employee','SUBMIT', x.status, 'SUBMITTED')]} : x),
@@ -431,7 +507,7 @@ function EmployeePortal({employee, data, setData, showToast, user, darkMode, set
 
   const newClaim = () => setModal({ id:uid(), claimNo:reimbNextNo(data), employeeId:employee.id, status:'DRAFT',
     title:'', travelPurpose:'', description:'', expenseDate:today(), legs:[{id:uid(),fromPlace:'',toPlace:''}],
-    expenseLedgerId:'', projectId:'', costCentreId:'', claimAmount:0, sanctionedAmount:0,
+    items:[{id:uid(), expenseLedgerId:'', description:'', amount:0}], expenseLedgerId:'', projectId:'', costCentreId:'', claimAmount:0, sanctionedAmount:0,
     attachments:[], approvals:[], createdAt:new Date().toISOString() });
 
   return (
@@ -456,6 +532,29 @@ function EmployeePortal({employee, data, setData, showToast, user, darkMode, set
           </div>
           <div className="page-actions"><button className="btn btn-primary" onClick={newClaim}>＋ New Claim</button></div>
         </div>
+
+        {isManager && (
+          <div className="card" style={{marginBottom:16,borderColor:'var(--primary)'}}>
+            <div className="card-head"><h3 className="card-title">👤 Team approvals</h3>
+              <span className={'badge '+(teamQueue.length?'badge-gold':'badge-success')}>{teamQueue.length} awaiting</span></div>
+            <div className="card-body" style={{padding:0}}>
+              {teamQueue.length===0 ? <div style={{padding:16,fontSize:12.5,color:'var(--ink-3)'}}>No claims from your team are waiting for approval.</div>
+              : teamQueue.map((c,i)=>(
+                <div key={c.id} style={{display:'flex',alignItems:'center',gap:12,padding:'11px 16px',flexWrap:'wrap',borderBottom:i<teamQueue.length-1?'1px solid var(--line-2)':'none'}}>
+                  <div style={{flex:1,minWidth:200}}>
+                    <div style={{fontWeight:600,fontSize:13}}>{empName(c.employeeId)} · <span style={{fontFamily:'var(--mono)',color:'var(--ink-3)'}}>{c.claimNo}</span></div>
+                    <div style={{fontSize:12,color:'var(--ink-2)'}}>{c.title} · {fmtDate(c.expenseDate)}{(c.items||[]).length>1?` · ${c.items.length} lines`:''}</div>
+                  </div>
+                  <div className="rupee" style={{fontWeight:700}}>₹{fmt(c.claimAmount||0)}</div>
+                  <button className="btn btn-sm" style={{background:'var(--green)',color:'#fff'}} onClick={()=>setMgrAction({type:'approve',claim:c})}>✓ Approve</button>
+                  <button className="btn btn-sm btn-ghost" style={{color:'var(--danger)'}} onClick={()=>setMgrAction({type:'reject',claim:c})}>Reject</button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {mine.length>0 && <div style={{fontSize:12,textTransform:'uppercase',letterSpacing:'.06em',color:'var(--ink-3)',fontWeight:700,margin:'4px 0 8px'}}>{isManager?'My own claims':'Your claims'}</div>}
 
         {mine.length===0 ? (
           <div className="card"><div className="card-body"><div className="empty" style={{padding:30}}>
@@ -503,6 +602,8 @@ function EmployeePortal({employee, data, setData, showToast, user, darkMode, set
 
       {modal && <ReimbursementModal claim={modal} data={data} setData={setData} showToast={showToast}
         lockedEmployeeId={employee.id} onSave={saveDraft} onClose={()=>setModal(null)} />}
+      {mgrAction && <ReimbActionModal action={mgrAction} bankLedgers={[]} data={data}
+        onApprove={mgrApprove} onReject={mgrReject} onPay={()=>{}} onClose={()=>setMgrAction(null)} />}
     </>
   );
 }

@@ -460,8 +460,8 @@ function CompanySelector({ user, onSelect, onSignOut, autoSelect=true }){
     borderRadius:8, fontSize:14, background:'#fff', color:'#0e2a23',
     outline:'none', fontFamily:FONT, marginTop:5, display:'block',
   });
-  const ROLE_CLR = { admin:'#1976d2', limited:'#f57c00', viewer:'#757575' };
-  const ROLE_LBL = { admin:'Admin', limited:'Limited', viewer:'Viewer' };
+  const ROLE_CLR = { admin:'#1976d2', limited:'#f57c00', viewer:'#757575', employee:'#0b6b4f', manager:'#6a1b9a' };
+  const ROLE_LBL = { admin:'Admin', limited:'Limited', viewer:'Viewer', employee:'Employee Portal', manager:'Manager Portal' };
 
   const load = () => {
     Promise.all([

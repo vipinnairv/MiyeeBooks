@@ -1307,6 +1307,7 @@ function CsvImportModal({ title, sampleHeaders, sampleRows, sampleFilename, onIm
 // ============================================================================
 function InviteModal({ ownerId, companyId, companyName, onClose }) {
   const [role, setRole] = useState('limited');
+  const [email, setEmail] = useState('');
   const [code, setCode] = useState('');
   const [loading, setLoading] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -1316,11 +1317,16 @@ function InviteModal({ ownerId, companyId, companyName, onClose }) {
     { value:'admin',   label:'Admin',          desc:'Full access  vouchers, COA, employees, settings (cannot delete company or manage members)' },
     { value:'limited', label:'Limited',         desc:'Can post vouchers and view reports; cannot change master data or settings' },
     { value:'viewer',  label:'Viewer / Auditor',desc:'Read-only  view all data but cannot make any changes' },
+    { value:'employee',label:'Employee (Reimbursement Portal)', desc:'Portal-only  files & tracks their own expense claims. No accounting access.', portal:true },
+    { value:'manager', label:'Manager (Portal + Approvals)',    desc:'Portal-only  files claims and approves/rejects their team’s claims.', portal:true },
   ];
+  const sel = ROLES.find(r=>r.value===role) || {};
+  const needEmail = !!sel.portal;
 
   const handleGenerate = async () => {
+    if(needEmail && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email.trim())){ alert('Enter the employee’s login email  the invite is locked to that address.'); return; }
     setLoading(true);
-    try { const c = await fbCreateInvite(ownerId, companyId, companyName, role); setCode(c); }
+    try { const c = await fbCreateInvite(ownerId, companyId, companyName, role, needEmail?email:''); setCode(c); }
     catch(e){ alert('Failed to create invite: ' + e.message); }
     finally { setLoading(false); }
   };
@@ -1350,6 +1356,14 @@ function InviteModal({ ownerId, companyId, companyName, onClose }) {
               </div>
             </label>
           ))}
+          {needEmail && (
+            <div style={{marginBottom:8}}>
+              <div style={{fontSize:12,fontWeight:600,color:'#3a4f49',margin:'2px 0 6px'}}>Employee login email <span style={{fontWeight:400,color:'#6b7f78'}}>· invite is locked to this address</span></div>
+              <input type="email" value={email} onChange={e=>setEmail(e.target.value)} placeholder="name@company.com"
+                style={{width:'100%',padding:'10px 12px',border:'1.5px solid #e3ebe7',borderRadius:8,fontSize:13,fontFamily:FONT,boxSizing:'border-box'}} />
+              <div style={{fontSize:11,color:'#6b7f78',marginTop:5}}>They must sign in with this exact email; on login they see only the Reimbursement Portal.</div>
+            </div>
+          )}
           <button onClick={handleGenerate} disabled={loading}
             style={{width:'100%',background:loading?'#8fb5a8':'#0b6b4f',color:'#fff',border:'none',borderRadius:9,padding:'12px',fontSize:13,fontWeight:600,cursor:loading?'not-allowed':'pointer',marginTop:6,fontFamily:FONT}}>
             {loading ? 'Generating…' : '✓ Generate Invite Code'}

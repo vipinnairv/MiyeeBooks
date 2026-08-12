@@ -177,15 +177,35 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
   const canWrite   = !isViewer;
   const safeSetData = canWrite ? setData : () => {};
 
-  // Employee portal: a signed-in user whose email matches an employee marked
-  // portalRole:"employee" is locked to the Reimbursement Portal only - none of
-  // the accounting UI is mounted. Owners are never locked out.
+  // Employee / Manager portal: a signed-in non-owner whose team role is
+  // employee/manager, OR whose email matches an employee flagged as a portal
+  // user, is locked to the Reimbursement Portal - the accounting UI never mounts.
+  const portalMode = (userRole === 'employee' || userRole === 'manager');
   const portalEmployee = useMemo(() => {
     const em = (user && user.email || '').toLowerCase();
     if(!em || userRole === 'owner') return null;
-    return (data.employees||[]).find(e => e.portalRole === 'employee'
-      && (e.loginEmail||'').toLowerCase() === em) || null;
+    return (data.employees||[]).find(e => (e.loginEmail||'').toLowerCase() === em)
+        || (data.employees||[]).find(e => (e.email||'').toLowerCase() === em) || null;
   }, [user, userRole, data.employees]);
+  const isPortalSession = userRole !== 'owner' && (portalMode
+    || (portalEmployee && (portalEmployee.portalRole === 'employee' || portalEmployee.portalRole === 'manager')));
+  const effectivePortalRole = portalMode ? userRole
+    : (portalEmployee ? (portalEmployee.portalRole || 'employee') : 'employee');
+
+  // Auto-provision a minimal employee record for a role-based portal login the
+  // admin hasn't pre-created, so the portal always has an employee context.
+  useEffect(() => {
+    if(!portalMode || !user || !user.email) return;
+    const em = user.email.toLowerCase();
+    const exists = (data.employees||[]).some(e => (e.loginEmail||'').toLowerCase()===em || (e.email||'').toLowerCase()===em);
+    if(!exists){
+      setData(prev => ({...prev, employees:[...(prev.employees||[]), {
+        id:uid(), empCode:'', name:(user.displayName || em.split('@')[0]), email:em, loginEmail:em,
+        portalRole:(userRole==='manager'?'manager':'employee'), reportingManagerId:'', status:'Active',
+        bankAcc:'', ifsc:'', phone:'', allowances:[],
+      }]}));
+    }
+  }, [portalMode, user, data.employees]);
 
   // On login/company switch → load from Firestore (overwrites local state)
   // Uses ownerId (may differ from user.uid for shared companies)
@@ -384,9 +404,10 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
     ]},
   ];
 
-  // Restricted employee: render only the portal, never the accounting shell.
-  if(portalEmployee){
-    return <EmployeePortal employee={portalEmployee} data={data} setData={setData}
+  // Restricted portal user: render only the portal, never the accounting shell.
+  if(isPortalSession){
+    if(!portalEmployee) return <div style={{padding:48,fontFamily:'sans-serif',textAlign:'center',color:'var(--ink-2)'}}>Setting up your portal…</div>;
+    return <EmployeePortal employee={portalEmployee} portalRole={effectivePortalRole} data={data} setData={setData}
       showToast={showToast} user={user} darkMode={darkMode} setDarkMode={setDarkMode} onSignOut={onSignOut} />;
   }
 
