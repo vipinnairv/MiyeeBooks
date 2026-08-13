@@ -21,6 +21,85 @@ const SCAN_CDN = {
   tesseract:   'https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js',
 };
 
+// ── AI vision extraction (optional, highest accuracy) ───────────────────────
+// When the user configures a Claude API key, the whole receipt (PDF or image)
+// is sent to Anthropic's Messages API, which reads its text AND layout and
+// returns structured fields - far more reliable than local OCR + regex on real
+// GST invoices. The key is stored only in this browser's localStorage and the
+// receipt goes only to api.anthropic.com. Falls back to the offline engines
+// (pypdf / tesseract) when no key is set. The browser call needs internet.
+const SCAN_AI_KEY = 'miyee_ai_scan_cfg';
+const SCAN_AI_MODELS = [
+  {id:'claude-opus-5',   label:'Claude Opus 5 (most accurate)'},
+  {id:'claude-sonnet-5', label:'Claude Sonnet 5 (balanced)'},
+  {id:'claude-haiku-4-5',label:'Claude Haiku 4.5 (fastest, cheapest)'},
+];
+const scanAiCfg = () => {
+  try { const c = JSON.parse(localStorage.getItem(SCAN_AI_KEY) || 'null'); return (c && c.apiKey) ? c : null; }
+  catch(_) { return null; }
+};
+const scanSetAiCfg = (cfg) => {
+  try { if(cfg && cfg.apiKey) localStorage.setItem(SCAN_AI_KEY, JSON.stringify(cfg)); else localStorage.removeItem(SCAN_AI_KEY); }
+  catch(_) {}
+};
+
+// Send one attachment to Claude and get back {vendor, amount, date, invoiceNo, gstin}.
+async function scanAiExtract(att, cfg, onProgress){
+  onProgress && onProgress('Reading with AI…');
+  const isPdf = /pdf/i.test(att.type||'') || /\.pdf$/i.test(att.name||'');
+  const dataUrl = String(att.dataUrl||'');
+  const b64 = dataUrl.split(',')[1] || '';
+  const mediaType = (dataUrl.match(/^data:([^;]+)/) || [])[1] || (isPdf ? 'application/pdf' : 'image/jpeg');
+  const source = { type:'base64', media_type: mediaType, data: b64 };
+  const fileBlock = isPdf ? { type:'document', source } : { type:'image', source };
+  const prompt =
+    'You are reading a single expense receipt or GST tax invoice. Reply with ONLY a JSON object, '
+    + 'no prose and no markdown fences, in exactly this shape:\n'
+    + '{"vendor": string, "amount": number, "date": "YYYY-MM-DD", "invoiceNo": string, "gstin": string}\n'
+    + 'Rules: amount = the final grand total payable as a plain number (no currency symbol, no commas). '
+    + 'date = the invoice/bill date in YYYY-MM-DD. gstin = the 15-character supplier GSTIN if printed, else "". '
+    + 'invoiceNo = the bill/invoice number, else "". vendor = the merchant/supplier name. '
+    + 'If a field is absent use "" (or 0 for amount). Do not guess values that are not on the document.';
+  const body = {
+    model: cfg.model || 'claude-opus-5',
+    max_tokens: 2048,
+    messages: [{ role:'user', content: [ fileBlock, { type:'text', text: prompt } ] }],
+  };
+  let res;
+  try {
+    res = await fetch('https://api.anthropic.com/v1/messages', {
+      method:'POST',
+      headers: {
+        'content-type':'application/json',
+        'x-api-key': cfg.apiKey,
+        'anthropic-version':'2023-06-01',
+        'anthropic-dangerous-direct-browser-access':'true',
+      },
+      body: JSON.stringify(body),
+    });
+  } catch(e){ throw new Error('Could not reach the AI service (check your internet connection).'); }
+  if(!res.ok){
+    let msg = 'AI request failed ('+res.status+')';
+    if(res.status === 401) msg = 'AI key rejected - check your API key in scan settings.';
+    else { try { const e = await res.json(); if(e && e.error && e.error.message) msg = e.error.message; } catch(_){} }
+    throw new Error(msg);
+  }
+  const data = await res.json();
+  if(data.stop_reason === 'refusal') throw new Error('The AI declined to read this file.');
+  const text = (data.content||[]).filter(b => b.type === 'text').map(b => b.text).join('').trim();
+  const m = text.match(/\{[\s\S]*\}/);
+  let parsed;
+  try { parsed = JSON.parse(m ? m[0] : text); } catch(e){ throw new Error('AI returned an unreadable response - try again.'); }
+  const d = String(parsed.date||'');
+  return {
+    vendor:    parsed.vendor || '',
+    amount:    (typeof parsed.amount === 'number' ? parsed.amount : parseFloat(String(parsed.amount).replace(/[,\s₹]/g,''))) || 0,
+    date:      /^\d{4}-\d{2}-\d{2}$/.test(d) ? d : scanParseDate(d),
+    invoiceNo: parsed.invoiceNo || '',
+    gstin:     String(parsed.gstin || '').toUpperCase(),
+  };
+}
+
 // ── lazy engine loaders (memoised: the heavy download happens at most once) ──
 let _pyodidePromise = null;
 const scanLoadPyodide = () => {
@@ -207,6 +286,8 @@ function ScanReceiptPanel({attachments, onApply, showToast, autoScan=true}){
   const [err, setErr]       = useState('');
   const [fx, setFx]         = useState(null);   // editable detected fields
   const [meta, setMeta]     = useState(null);   // {engine, scanned}
+  const [ai, setAi]         = useState(scanAiCfg());   // AI config or null
+  const [showCfg, setShowCfg] = useState(false);
   const scannedIds = useRef({});                // attachment id -> already auto-scanned
 
   const chosen = atts.find(a => a.id === pick) || atts[atts.length-1];
@@ -217,17 +298,25 @@ function ScanReceiptPanel({attachments, onApply, showToast, autoScan=true}){
     setPick(target.id);
     setBusy(true); setErr(''); setFx(null); setMeta(null); setStatus('Preparing…');
     try {
-      const ex = await scanExtractText(target, setStatus);
-      if(ex.scanned){
-        setErr('This PDF has no readable text layer - it looks like a scan/photo saved as PDF. Attach a photo (JPG/PNG) of the bill instead so OCR can read it.');
-        setStatus(''); setBusy(false); return;
+      let parsed, engine;
+      if(ai && ai.apiKey){
+        // AI vision path: send the whole receipt to Claude and get fields back.
+        parsed = await scanAiExtract(target, ai, setStatus);
+        engine = 'ai';
+      } else {
+        const ex = await scanExtractText(target, setStatus);
+        if(ex.scanned){
+          setErr('This PDF has no readable text layer - it looks like a scan/photo saved as PDF. Either turn on AI extraction (⚙) or attach a photo (JPG/PNG) of the bill so OCR can read it.');
+          setStatus(''); setBusy(false); return;
+        }
+        parsed = scanParseFields(ex.text);
+        engine = ex.engine;
       }
-      const parsed = scanParseFields(ex.text);
       if(!parsed.amount && !parsed.date && !parsed.vendor){
         setErr('Could not read useful details from this file - please fill the fields manually.');
         setStatus(''); setBusy(false); return;
       }
-      setFx(parsed); setMeta({engine:ex.engine, scanned:ex.scanned});
+      setFx(parsed); setMeta({engine});
       // Auto-apply straight away so the form fills on attach (only fills blanks);
       // the review box stays open so the values can be corrected.
       onApply(parsed);
@@ -255,28 +344,37 @@ function ScanReceiptPanel({attachments, onApply, showToast, autoScan=true}){
     showToast && showToast('Re-applied to the form');
   };
 
+  const isPdf = /pdf/i.test(chosen.type||'') || /\.pdf$/i.test(chosen.name||'');
+  const engLabel = (e) => e==='ai' ? 'AI vision' : e==='pypdf' ? 'Python / pypdf' : 'OCR';
+
   const box = {background:'var(--surface-2)',border:'1px dashed var(--accent)',borderRadius:8,padding:'10px 12px',marginTop:8};
   return (
     <div style={box}>
       <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
         <span style={{fontSize:12.5,fontWeight:600}}>🔎 Read receipt &amp; auto-fill</span>
+        <span style={{fontSize:10.5,fontWeight:700,padding:'1px 7px',borderRadius:20,
+          background: ai ? 'var(--green-soft)' : 'var(--surface)', color: ai ? 'var(--green)' : 'var(--ink-3)',
+          border:'1px solid '+(ai?'var(--green)':'var(--line)')}}>{ai ? 'AI' : 'Offline'}</span>
         {atts.length > 1 && (
           <select value={chosen.id} onChange={e=>setPick(e.target.value)} style={{fontSize:12,maxWidth:220}}>
             {atts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
           </select>
         )}
         <button className="btn btn-sm btn-primary" onClick={()=>doScan(chosen)} disabled={busy}>
-          {busy ? 'Reading…' : 'Re-scan '+((/pdf/i.test(chosen.type||'')||/\.pdf$/i.test(chosen.name||'')) ? 'PDF (Python)' : 'image (OCR)')}
+          {busy ? 'Reading…' : 'Re-scan '+(ai ? '(AI)' : isPdf ? 'PDF (Python)' : 'image (OCR)')}
         </button>
+        <button className="btn btn-sm btn-ghost" title="AI extraction settings" onClick={()=>setShowCfg(v=>!v)} disabled={busy}>⚙</button>
         {busy && <span style={{fontSize:11.5,color:'var(--ink-3)'}}>{status}</span>}
       </div>
+
+      {showCfg && <ScanAiSettings ai={ai} onSave={(c)=>{ scanSetAiCfg(c); setAi(c); setShowCfg(false); showToast && showToast(c?'AI extraction enabled':'AI extraction turned off'); }} onClose={()=>setShowCfg(false)} />}
 
       {err && <div style={{fontSize:11.5,color:'var(--warning)',marginTop:8}}>⚠ {err}</div>}
 
       {fx && (
         <div style={{marginTop:10}}>
           <div style={{fontSize:11,color:'var(--ink-3)',marginBottom:6}}>
-            Detected via <b>{meta && meta.engine==='pypdf' ? 'Python / pypdf' : 'OCR'}</b> and applied - correct anything below and re-apply:
+            Detected via <b>{engLabel(meta && meta.engine)}</b> and applied - correct anything below and re-apply:
           </div>
           <div className="form-grid">
             <div className="field"><label>Vendor</label>
@@ -297,6 +395,33 @@ function ScanReceiptPanel({attachments, onApply, showToast, autoScan=true}){
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+// ── AI extraction settings (API key + model, stored in this browser only) ────
+function ScanAiSettings({ai, onSave, onClose}){
+  const [key, setKey]     = useState(ai ? ai.apiKey : '');
+  const [model, setModel] = useState((ai && ai.model) || 'claude-opus-5');
+  return (
+    <div style={{marginTop:8,padding:'10px 12px',background:'var(--surface)',border:'1px solid var(--line)',borderRadius:8}}>
+      <div style={{fontSize:12,fontWeight:600,marginBottom:6}}>AI extraction (Claude)</div>
+      <div style={{fontSize:11,color:'var(--ink-3)',marginBottom:8}}>
+        Highest accuracy on real invoices - the receipt is sent to Anthropic and read by Claude. Your key is stored only in this browser (localStorage) and never synced. Needs internet. Get a key at console.anthropic.com.
+      </div>
+      <div className="form-grid">
+        <div className="field" style={{gridColumn:'span 2'}}><label>Claude API key</label>
+          <input type="password" value={key} onChange={e=>setKey(e.target.value)} placeholder="sk-ant-..." autoComplete="off" /></div>
+        <div className="field" style={{gridColumn:'span 2'}}><label>Model</label>
+          <select value={model} onChange={e=>setModel(e.target.value)}>
+            {SCAN_AI_MODELS.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}
+          </select></div>
+      </div>
+      <div style={{display:'flex',gap:8,marginTop:8,flexWrap:'wrap'}}>
+        <button className="btn btn-sm btn-primary" disabled={!key.trim()} onClick={()=>onSave({apiKey:key.trim(), model})}>Save &amp; enable</button>
+        {ai && <button className="btn btn-sm btn-ghost" style={{color:'var(--danger)'}} onClick={()=>onSave(null)}>Turn off AI</button>}
+        <button className="btn btn-sm btn-ghost" onClick={onClose}>Close</button>
+      </div>
     </div>
   );
 }
