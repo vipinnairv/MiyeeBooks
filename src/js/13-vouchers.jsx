@@ -475,6 +475,26 @@ function VoucherModal({vtype, voucher, prefill, data, onSave, onClose, showToast
   const isGstVoucher = ['SAL','PUR','CRN','DBN'].includes(vtype);
   const isCashType = ['PAY','REC','CON'].includes(vtype);
 
+  // Fill voucher header fields from a scanned bill/receipt (ScanReceiptPanel).
+  // Only header fields are touched (date, bill reference, narration, supplier) -
+  // amounts feed GST/double-entry so they are shown for you to key into the line.
+  const applyScan = (fx) => setF(prev => {
+    const vend = (fx.vendor||'').toLowerCase();
+    const party = (data.parties||[]).find(p =>
+      (fx.gstin && p.gstin && p.gstin.toUpperCase() === fx.gstin.toUpperCase()) ||
+      (vend && (p.name||'').toLowerCase() === vend));
+    const narr = [fx.vendor, fx.invoiceNo && ('Bill '+fx.invoiceNo), fx.gstin && ('GSTIN '+fx.gstin)].filter(Boolean).join(' · ');
+    return {
+      ...prev,
+      date:      fx.date || prev.date,
+      reference: prev.reference || fx.invoiceNo || '',
+      narration: prev.narration || narr,
+      partyId:   prev.partyId || (party ? party.id : prev.partyId),
+      partyName: prev.partyName || (party ? party.name : (fx.vendor || prev.partyName)),
+      scanAmount: fx.amount || 0,   // shown as a hint next to the panel
+    };
+  });
+
   // Auto-calc GST for sales/purchase
   useEffect(() => {
     if(!isGstVoucher) return;
@@ -1542,6 +1562,14 @@ function VoucherModal({vtype, voucher, prefill, data, onSave, onClose, showToast
                     <button onClick={()=>setF(prev=>({...prev, attachments:(prev.attachments||[]).filter(x=>x.id!==a.id)}))} style={{color:'var(--danger)',fontSize:12,padding:0}}>✕</button>
                   </span>
                 ))}
+              </div>
+            )}
+            {(f.attachments||[]).length > 0 && (
+              <ScanReceiptPanel attachments={f.attachments} onApply={applyScan} showToast={showToast} />
+            )}
+            {f.scanAmount > 0 && (
+              <div style={{fontSize:11.5,color:'var(--ink-2)',marginTop:6}}>
+                💡 Detected bill amount <b className="rupee">₹{fmt(f.scanAmount)}</b> - enter it in the line/item below (it drives GST &amp; double-entry).
               </div>
             )}
           </div>

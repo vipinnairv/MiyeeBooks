@@ -310,6 +310,28 @@ function ReimbursementModal({claim, data, setData, showToast, onSave, onClose, l
     setF({...f, projectId:p.id}); setNewProject('');
     showToast('Project added: '+name);
   };
+  // Apply fields read off a scanned receipt (ScanReceiptPanel) into the form.
+  // Fills the first empty expense line (or appends one), and only fills blanks
+  // elsewhere so it never overwrites what the employee already typed.
+  const applyScan = (fxIn) => setF(prev => {
+    const fx = fxIn || {};
+    const items = [...(prev.items||[])];
+    const lineDesc = [fx.vendor, fx.invoiceNo && ('Inv '+fx.invoiceNo)].filter(Boolean).join(' · ');
+    let idx = items.findIndex(it => !it.expenseLedgerId && !(it.amount>0));
+    if(idx < 0){ items.push({id:uid(), expenseLedgerId:'', description:lineDesc, amount:fx.amount||0}); }
+    else { items[idx] = {...items[idx], description: items[idx].description || lineDesc, amount: fx.amount || items[idx].amount || 0}; }
+    const narration = [fx.vendor, fx.invoiceNo && ('Invoice '+fx.invoiceNo), fx.gstin && ('GSTIN '+fx.gstin)].filter(Boolean).join(' · ');
+    return {
+      ...prev, items,
+      title:       prev.title       || (fx.vendor||'').slice(0,80),
+      expenseDate: fx.date          || prev.expenseDate,
+      description: prev.description  || narration,
+      vendor:      fx.vendor         || prev.vendor || '',
+      invoiceNo:   fx.invoiceNo      || prev.invoiceNo || '',
+      gstin:       fx.gstin          || prev.gstin || '',
+    };
+  });
+
   const onFiles = (e) => {
     const files = Array.from(e.target.files||[]);
     files.forEach(file => {
@@ -420,6 +442,7 @@ function ReimbursementModal({claim, data, setData, showToast, onSave, onClose, l
                 </div>
               ))}
               {(f.attachments||[]).length < 5 && <input type="file" accept="image/*,application/pdf" multiple onChange={onFiles} style={{fontSize:12}} />}
+              <ScanReceiptPanel attachments={f.attachments} onApply={applyScan} showToast={showToast} />
             </div>
           </div>
         </div>
