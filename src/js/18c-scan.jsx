@@ -75,12 +75,13 @@ async function scanExtractText(att, onProgress){
     onProgress && onProgress('Loading Python PDF engine…');
     const py = await scanLoadPyodide();
     onProgress && onProgress('Reading the PDF text…');
-    py.globals.set('pdf_bytes', scanDataUrlToBytes(att.dataUrl));
+    // Write the raw bytes to Pyodide's virtual filesystem and let pypdf open the
+    // path - avoids any JS->Python buffer-conversion quirks with the bytes.
+    py.FS.writeFile('/scan_input.pdf', scanDataUrlToBytes(att.dataUrl));
     const text = py.runPython([
-      'import io',
       'from pypdf import PdfReader',
       'try:',
-      '    _r = PdfReader(io.BytesIO(bytes(pdf_bytes)))',
+      '    _r = PdfReader("/scan_input.pdf")',
       '    _out = "\\n".join((p.extract_text() or "") for p in _r.pages)',
       'except Exception as _e:',
       '    _out = ""',
@@ -198,7 +199,7 @@ const scanParseFields = (raw) => {
 // ── the in-modal scan panel ─────────────────────────────────────────────────
 // Given the claim's attachments, lets the employee pick one, scan it, review
 // the detected fields (editable) and apply them to the claim form.
-function ScanReceiptPanel({attachments, onApply, showToast}){
+function ScanReceiptPanel({attachments, onApply, showToast, autoScan=true}){
   const atts = attachments || [];
   const [pick, setPick]     = useState('');
   const [busy, setBusy]     = useState(false);
@@ -206,47 +207,66 @@ function ScanReceiptPanel({attachments, onApply, showToast}){
   const [err, setErr]       = useState('');
   const [fx, setFx]         = useState(null);   // editable detected fields
   const [meta, setMeta]     = useState(null);   // {engine, scanned}
+  const scannedIds = useRef({});                // attachment id -> already auto-scanned
 
-  if(atts.length === 0) return null;
   const chosen = atts.find(a => a.id === pick) || atts[atts.length-1];
 
-  const doScan = async () => {
+  const doScan = async (att) => {
+    const target = att || chosen;
+    if(!target){ return; }
+    setPick(target.id);
     setBusy(true); setErr(''); setFx(null); setMeta(null); setStatus('Preparing…');
     try {
-      const ex = await scanExtractText(chosen, setStatus);
+      const ex = await scanExtractText(target, setStatus);
       if(ex.scanned){
         setErr('This PDF has no readable text layer - it looks like a scan/photo saved as PDF. Attach a photo (JPG/PNG) of the bill instead so OCR can read it.');
         setStatus(''); setBusy(false); return;
       }
       const parsed = scanParseFields(ex.text);
       if(!parsed.amount && !parsed.date && !parsed.vendor){
-        setErr('Could not read useful details from this file. You can still fill the claim manually.');
+        setErr('Could not read useful details from this file - please fill the fields manually.');
+        setStatus(''); setBusy(false); return;
       }
       setFx(parsed); setMeta({engine:ex.engine, scanned:ex.scanned});
+      // Auto-apply straight away so the form fills on attach (only fills blanks);
+      // the review box stays open so the values can be corrected.
+      onApply(parsed);
+      showToast && showToast('Filled from receipt - please review the values');
     } catch(e){
       setErr(e.message || 'Scan failed.');
     }
     setStatus(''); setBusy(false);
   };
 
+  // Auto-scan the newest attachment as soon as it is added.
+  useEffect(() => {
+    if(!autoScan) return;
+    const newest = atts[atts.length-1];
+    if(newest && !scannedIds.current[newest.id] && !busy){
+      scannedIds.current[newest.id] = true;
+      doScan(newest);
+    }
+  }, [atts.length]);
+
+  if(atts.length === 0) return null;
+
   const apply = () => {
     onApply(fx);
-    showToast && showToast('Claim details filled from receipt - please review');
-    setFx(null); setMeta(null);
+    showToast && showToast('Re-applied to the form');
   };
 
   const box = {background:'var(--surface-2)',border:'1px dashed var(--accent)',borderRadius:8,padding:'10px 12px',marginTop:8};
   return (
     <div style={box}>
       <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
-        <span style={{fontSize:12.5,fontWeight:600}}>🔎 Scan a receipt to auto-fill</span>
+        <span style={{fontSize:12.5,fontWeight:600}}>🔎 Read receipt &amp; auto-fill</span>
         {atts.length > 1 && (
           <select value={chosen.id} onChange={e=>setPick(e.target.value)} style={{fontSize:12,maxWidth:220}}>
             {atts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
           </select>
         )}
-        <button className="btn btn-sm btn-primary" onClick={doScan} disabled={busy}>
-          {busy ? 'Scanning…' : 'Scan '+((/pdf/i.test(chosen.type||'')||/\.pdf$/i.test(chosen.name||'')) ? 'PDF (Python)' : 'image (OCR)')}
+        <button className="btn btn-sm btn-primary" onClick={()=>doScan(chosen)} disabled={busy}>
+          {busy ? 'Reading…' : 'Re-scan '+((/pdf/i.test(chosen.type||'')||/\.pdf$/i.test(chosen.name||'')) ? 'PDF (Python)' : 'image (OCR)')}
         </button>
         {busy && <span style={{fontSize:11.5,color:'var(--ink-3)'}}>{status}</span>}
       </div>
@@ -256,7 +276,7 @@ function ScanReceiptPanel({attachments, onApply, showToast}){
       {fx && (
         <div style={{marginTop:10}}>
           <div style={{fontSize:11,color:'var(--ink-3)',marginBottom:6}}>
-            Detected via <b>{meta && meta.engine==='pypdf' ? 'Python / pypdf' : 'OCR'}</b> - review &amp; edit, then apply:
+            Detected via <b>{meta && meta.engine==='pypdf' ? 'Python / pypdf' : 'OCR'}</b> and applied - correct anything below and re-apply:
           </div>
           <div className="form-grid">
             <div className="field"><label>Vendor</label>
@@ -270,10 +290,10 @@ function ScanReceiptPanel({attachments, onApply, showToast}){
             <div className="field" style={{gridColumn:'span 2'}}><label>GSTIN</label>
               <input value={fx.gstin||''} onChange={e=>setFx({...fx, gstin:e.target.value.toUpperCase()})} placeholder="Supplier GSTIN (if printed)" /></div>
           </div>
-          <div style={{display:'flex',gap:8,marginTop:8}}>
-            <button className="btn btn-sm btn-primary" onClick={apply}>Apply to claim</button>
-            <button className="btn btn-sm btn-ghost" onClick={()=>{ setFx(null); setMeta(null); }}>Discard</button>
-            <span style={{fontSize:11,color:'var(--ink-3)',alignSelf:'center'}}>You still choose the expense ledger for the line.</span>
+          <div style={{display:'flex',gap:8,marginTop:8,flexWrap:'wrap'}}>
+            <button className="btn btn-sm btn-primary" onClick={apply}>Re-apply edited values</button>
+            <button className="btn btn-sm btn-ghost" onClick={()=>{ setFx(null); setMeta(null); }}>Dismiss</button>
+            <span style={{fontSize:11,color:'var(--ink-3)',alignSelf:'center'}}>Amount &amp; date are filled; pick the expense ledger yourself.</span>
           </div>
         </div>
       )}
