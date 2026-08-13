@@ -1647,5 +1647,7 @@ function InventoryMovements({data}){
 // guarantees the app renders even if IndexedDB is blocked - loadData() then
 // falls back to the original localStorage path.
 idbPreload().finally(() => {
-  ReactDOM.createRoot(document.getElementById('root')).render(<AuthGate />);
+  ReactDOM.createRoot(document.getElementById('root')).render(
+    <AppErrorBoundary><AuthGate /></AppErrorBoundary>
+  );
 });
