@@ -1533,33 +1533,31 @@ function VoucherModal({vtype, voucher, prefill, data, onSave, onClose, showToast
           <div style={{marginTop:12}}>
             <div style={{display:'flex',alignItems:'center',gap:10,flexWrap:'wrap'}}>
               <span style={{fontSize:12,fontWeight:600,color:'var(--ink-2)'}}>📎 Attachments</span>
-              {(f.attachments||[]).length < 3 && (
+              {(f.attachments||[]).length < 8 && (
                 <label className="btn btn-sm" style={{fontSize:11,cursor:'pointer'}}>
                   + Attach bill / receipt
                   <input type="file" accept="image/*,application/pdf" style={{display:'none'}}
-                    onChange={e => {
+                    onChange={async e => {
                       const file = e.target.files && e.target.files[0];
                       e.target.value = '';
                       if(!file) return;
-                      if(file.size > 400*1024){ showToast('Max 400 KB per attachment - compress the image/PDF first','error'); return; }
-                      const rd = new FileReader();
-                      rd.onload = () => setF(prev => ({...prev, attachments:[...(prev.attachments||[]), {id:uid(), name:file.name, type:file.type, size:file.size, dataUrl:rd.result}]}));
-                      rd.readAsDataURL(file);
+                      try {
+                        const ref = await attSave(file);   // payload stored outside the voucher
+                        setF(prev => ({...prev, attachments:[...(prev.attachments||[]), ref]}));
+                      } catch(err){ showToast(err.message || 'Could not attach that file','error'); }
                     }} />
                 </label>
               )}
-              <span style={{fontSize:10,color:'var(--ink-3)'}}>max 3 files · 400 KB each · stored inside the voucher</span>
+              <span style={{fontSize:10,color:'var(--ink-3)'}}>up to 8 files · 10 MB each · stored outside the ledger, synced when signed in</span>
             </div>
             {(f.attachments||[]).length > 0 && (
               <div style={{display:'flex',gap:8,marginTop:8,flexWrap:'wrap'}}>
                 {f.attachments.map(a => (
                   <span key={a.id} style={{display:'inline-flex',alignItems:'center',gap:6,background:'var(--surface-2)',border:'1px solid var(--line)',borderRadius:6,padding:'4px 10px',fontSize:11}}>
-                    <a href="#" onClick={e=>{ e.preventDefault();
-                      const w = window.open('','_blank');
-                      if(w){ w.document.write('<html><head><title>'+a.name+'</title></head><body style="margin:0;background:#333;text-align:center">'+(a.type==='application/pdf'?'<iframe src="'+a.dataUrl+'" style="width:100%;height:100vh;border:none"></iframe>':'<img src="'+a.dataUrl+'" style="max-width:100%;margin-top:20px"/>')+'</body></html>'); w.document.close(); }
-                    }} style={{color:'var(--info)',textDecoration:'none'}}>{a.type==='application/pdf'?'📄':'🖼'} {a.name}</a>
+                    <a href="#" onClick={e=>{ e.preventDefault(); attOpen(a); }}
+                      style={{color:'var(--info)',textDecoration:'none'}}>{a.type==='application/pdf'?'📄':'🖼'} {a.name}</a>
                     <span style={{color:'var(--ink-3)'}}>({Math.round(a.size/1024)} KB)</span>
-                    <button onClick={()=>setF(prev=>({...prev, attachments:(prev.attachments||[]).filter(x=>x.id!==a.id)}))} style={{color:'var(--danger)',fontSize:12,padding:0}}>✕</button>
+                    <button onClick={()=>{ attDrop(a); setF(prev=>({...prev, attachments:(prev.attachments||[]).filter(x=>x.id!==a.id)})); }} style={{color:'var(--danger)',fontSize:12,padding:0}}>✕</button>
                   </span>
                 ))}
               </div>

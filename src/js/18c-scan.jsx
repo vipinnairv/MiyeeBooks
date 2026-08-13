@@ -47,7 +47,8 @@ const scanSetAiCfg = (cfg) => {
 async function scanAiExtract(att, cfg, onProgress){
   onProgress && onProgress('Reading with AI…');
   const isPdf = /pdf/i.test(att.type||'') || /\.pdf$/i.test(att.name||'');
-  const dataUrl = String(att.dataUrl||'');
+  const dataUrl = String((await attData(att)) || '');
+  if(!dataUrl) throw new Error('That file is not available on this device yet.');
   const b64 = dataUrl.split(',')[1] || '';
   const mediaType = (dataUrl.match(/^data:([^;]+)/) || [])[1] || (isPdf ? 'application/pdf' : 'image/jpeg');
   const source = { type:'base64', media_type: mediaType, data: b64 };
@@ -150,13 +151,15 @@ const scanDataUrlToBytes = (dataUrl) => {
 // Pull raw text out of one attachment. Returns {text, engine, scanned}.
 async function scanExtractText(att, onProgress){
   const isPdf = /pdf/i.test(att.type||'') || /\.pdf$/i.test(att.name||'');
+  const attDataUrl = await attData(att);
+  if(!attDataUrl) throw new Error('That file is not available on this device yet.');
   if(isPdf){
     onProgress && onProgress('Loading Python PDF engine…');
     const py = await scanLoadPyodide();
     onProgress && onProgress('Reading the PDF text…');
     // Write the raw bytes to Pyodide's virtual filesystem and let pypdf open the
     // path - avoids any JS->Python buffer-conversion quirks with the bytes.
-    py.FS.writeFile('/scan_input.pdf', scanDataUrlToBytes(att.dataUrl));
+    py.FS.writeFile('/scan_input.pdf', scanDataUrlToBytes(attDataUrl));
     const text = py.runPython([
       'from pypdf import PdfReader',
       'try:',
@@ -173,7 +176,7 @@ async function scanExtractText(att, onProgress){
   onProgress && onProgress('Loading OCR engine…');
   const T = await scanLoadTesseract();
   onProgress && onProgress('Reading the receipt (OCR)…');
-  const res = await T.recognize(att.dataUrl, 'eng', {
+  const res = await T.recognize(attDataUrl, 'eng', {
     logger: m => { if(onProgress && m && m.status==='recognizing text') onProgress('OCR '+Math.round((m.progress||0)*100)+'%'); },
   });
   return { text: ((res.data && res.data.text) || '').trim(), engine:'tesseract', scanned:false };

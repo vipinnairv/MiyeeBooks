@@ -138,6 +138,23 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
   // Expose user identity for audit-trail entries written deep in components
   useEffect(() => { window.__miyeeUserEmail = user?.email || 'local'; }, [user]);
 
+  // Publish the cloud coordinates the attachment store uploads/downloads under,
+  // so 02b stays decoupled from App state.
+  useEffect(() => {
+    window.__miyeeAttCtx = { ownerId: effectiveOwner || null, companyId: companyId || null };
+  }, [effectiveOwner, companyId]);
+
+  // One-time: move any legacy inline attachment payloads out of the dataset
+  // document and into the blob store. Existing books shrink with no user action.
+  const attMigrated = useRef(false);
+  useEffect(() => {
+    if(attMigrated.current) return;
+    attMigrated.current = true;
+    attMigrateInline(data).then(({data:next, moved}) => {
+      if(moved) setData(next);
+    }).catch(e => console.warn('attachment migration skipped:', e));
+  }, []);
+
   // ── Weekly auto-backup: download a JSON snapshot if the last one is >7 days old
   useEffect(() => {
     try {
