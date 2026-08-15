@@ -155,6 +155,20 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
     }).catch(e => console.warn('attachment migration skipped:', e));
   }, []);
 
+  // Raise any due recurring entries as drafts (never auto-posts to the ledger).
+  const recurRan = useRef(false);
+  useEffect(() => {
+    if(recurRan.current || isViewer) return;
+    recurRan.current = true;
+    try {
+      const { data: next, created } = generateRecurring(data, today());
+      if(created > 0){
+        setData(next);
+        showToast(`${created} recurring ${created===1?'entry':'entries'} raised — review in Vouchers`);
+      }
+    } catch(e){ console.warn('recurring generation skipped:', e); }
+  }, []);
+
   // ── Weekly auto-backup: download a JSON snapshot if the last one is >7 days old
   useEffect(() => {
     try {
