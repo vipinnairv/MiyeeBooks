@@ -247,6 +247,7 @@ function SalesDocModal({doc, data, docTypes, onSave, onClose}){
 // ============================================================================
 function Collections({data, showToast}){
   const asOf = today();
+  const [upiFor, setUpiFor] = useState(null);   // the overdue bill being collected via UPI
   const partyById = useMemo(() => { const m={}; (data.parties||[]).forEach(p=>m[p.id]=p); return m; }, [data.parties]);
 
   const allocMap = useMemo(() => {
@@ -286,8 +287,15 @@ function Collections({data, showToast}){
     return `Dear ${b.party},\n\nFINAL REMINDER: Invoice ${b.number} dated ${fmtDate(b.date)} for ₹${fmt(b.out)} remains unpaid ${b.overdueDays} days past the due date.\n\nKindly settle the amount immediately to avoid interruption of supplies and further recovery steps under the MSMED Act (interest on delayed payments).\n\n${co}`;
   };
 
-  const waLink = (b) => 'https://wa.me/' + String(b.phone).replace(/\D/g,'') + '?text=' + encodeURIComponent(buildMsg(b));
-  const mailLink = (b) => 'mailto:' + b.email + '?subject=' + encodeURIComponent(`Payment reminder - Invoice ${b.number} - ₹${fmt(b.out)}`) + '&body=' + encodeURIComponent(buildMsg(b));
+  // Append a one-tap UPI pay link to the reminder when a UPI ID is configured,
+  // so the customer can settle straight from the WhatsApp / email message.
+  const msgWithPay = (b) => {
+    const base = buildMsg(b);
+    const link = upiLink(data.company, b.out, 'Invoice ' + b.number);
+    return link ? base + '\n\nPay instantly via UPI:\n' + link : base;
+  };
+  const waLink = (b) => 'https://wa.me/' + String(b.phone).replace(/\D/g,'') + '?text=' + encodeURIComponent(msgWithPay(b));
+  const mailLink = (b) => 'mailto:' + b.email + '?subject=' + encodeURIComponent(`Payment reminder - Invoice ${b.number} - ₹${fmt(b.out)}`) + '&body=' + encodeURIComponent(msgWithPay(b));
 
   const totalOverdue = bills.reduce((s,b)=>s+b.out,0);
 
@@ -359,6 +367,8 @@ function Collections({data, showToast}){
                   {b.email
                     ? <button className="btn btn-sm" style={{background:'#1565c0',color:'#fff',border:'none'}} onClick={()=>{window.location.href=mailLink(b);}}>📧 Email</button>
                     : <span style={{fontSize:10,color:'var(--ink-3)'}}>no email</span>}
+                  {' '}
+                  <button className="btn btn-sm" style={{background:'var(--primary)',color:'#fff',border:'none'}} title="Show a UPI QR the customer can scan to pay" onClick={()=>setUpiFor(b)}>💳 UPI</button>
                 </td>
               </tr>
             );
@@ -366,6 +376,21 @@ function Collections({data, showToast}){
         </tbody>
       </table>
     </div>
+
+    {upiFor && (
+      <div className="modal-overlay" onClick={()=>setUpiFor(null)}>
+        <div className="modal" style={{maxWidth:520}} onClick={e=>e.stopPropagation()}>
+          <div className="modal-head">
+            <h2 className="modal-title">Collect ₹{fmt(upiFor.out)} · {upiFor.party}</h2>
+            <button className="btn btn-ghost btn-sm" onClick={()=>setUpiFor(null)}>✕</button>
+          </div>
+          <div className="modal-body">
+            <div style={{fontSize:12.5,color:'var(--ink-2)',marginBottom:14}}>Invoice {upiFor.number} · overdue {upiFor.overdueDays} days. Show this QR to the customer, or send the pay link with the reminder.</div>
+            <UpiPayPanel company={data.company} amount={upiFor.out} note={'Invoice ' + upiFor.number} showToast={showToast} />
+          </div>
+        </div>
+      </div>
+    )}
   </>);
 }
 
