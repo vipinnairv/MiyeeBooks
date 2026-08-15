@@ -61,7 +61,7 @@ const STUBS = `
 const EXPORTS = [
   'fmt', 'affectsLedger', 'computePeriodBals', 'estimateTax', 'companyTaxRate',
   'nextVoucherNumber', 'auditEntry', 'isDateLocked', 'uid',
-  'SEED_COA', 'makeFreshData', 'attStripInline', 'upiLink', 'generateRecurring',
+  'SEED_COA', 'makeFreshData', 'attStripInline', 'upiLink', 'generateRecurring', 'poTotal',
 ];
 
 let _api = null;

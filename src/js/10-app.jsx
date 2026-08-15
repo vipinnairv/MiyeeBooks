@@ -27,6 +27,7 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
       if(!saved.periodCloses) saved.periodCloses = [];
       if(!saved.reimbursements) saved.reimbursements = [];
       if(!saved.projects)    saved.projects    = [];
+      if(!saved.purchaseOrders) saved.purchaseOrders = [];
       if(!saved.allocations) saved.allocations = [];
       if(!saved.bankRules)   saved.bankRules   = [];
       if(!saved.auditLog)    saved.auditLog    = [];
@@ -312,6 +313,7 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
         if(!cloudData.fixedAssets)       cloudData.fixedAssets = [];
         if(!cloudData.budgets)           cloudData.budgets     = {};
         if(!cloudData.amortizations)     cloudData.amortizations = [];
+        if(!cloudData.purchaseOrders)    cloudData.purchaseOrders = [];
         if(!cloudData.company.numberingSeries) cloudData.company.numberingSeries = {};
         if(cloudData.company.isPremium === undefined) cloudData.company.isPremium = false;
         if(!cloudData.company.premiumSince) cloudData.company.premiumSince = '';
@@ -411,6 +413,7 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
       {id:'vouchers', label:'Vouchers / Entry', ico:'✎'},
       ...(data.company.makerChecker===true ? [{id:'approvals', label:'Approvals', ico:'✅'}] : []),
       {id:'salesdocs', label:'Quotations & Challans', ico:'📄'},
+      {id:'purchase_orders', label:'Purchase Orders', ico:'🛒'},
       {id:'collections', label:'Collections / Reminders', ico:'📢'},
       {id:'reimb', label:'Reimbursements', ico:'🧾'},
       {id:'daybook', label:'Day Book', ico:'☷'},
@@ -607,6 +610,7 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
           {page==='reimb' && <Reimbursements data={data} setData={canWrite?setData:()=>{}} showToast={showToast} readOnly={isViewer} userRole={userRole} />}
           {page==='approvals' && <Vouchers data={data} setData={canWrite?setData:()=>{}} showToast={showToast} readOnly={isViewer} userRole={userRole} initialStatus="Pending" />}
           {page==='salesdocs' && <SalesDocs data={data} setData={canWrite?setData:()=>{}} showToast={showToast} readOnly={isViewer} />}
+          {page==='purchase_orders' && <PurchaseOrders data={data} setData={canWrite?setData:()=>{}} showToast={showToast} readOnly={isViewer} />}
           {page==='collections' && <Collections data={data} showToast={showToast} />}
           {page==='daybook' && <DayBook data={data} />}
           {page==='trial' && <TrialBalance data={data} balances={ledgerBalances} />}
