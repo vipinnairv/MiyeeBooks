@@ -37,6 +37,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Test (accounting invariants + data-safety guards)
+        run: npm test
+
       - name: Build (pre-compile JSX -> dist/)
         run: npm run build
 

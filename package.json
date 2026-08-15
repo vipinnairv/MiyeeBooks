@@ -7,6 +7,7 @@
   "scripts": {
     "build": "node build.mjs",
     "watch": "node build.mjs --watch",
+    "test": "node tests/run.mjs",
     "split": "node scripts/split-source.mjs"
   },
   "devDependencies": {
