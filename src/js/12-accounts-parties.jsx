@@ -450,6 +450,9 @@ function PartyModal({party, existingParties=[], onSave, onClose}){
             <div className="field"><label>Bank Name</label><input value={f.bankName||''} onChange={e => setF({...f, bankName:e.target.value})} placeholder="HDFC Bank, Kotak..." /></div>
             <div className="field"><label>Account No.</label><input value={f.bankAcc||''} onChange={e => setF({...f, bankAcc:e.target.value})} style={{fontFamily:'var(--mono)'}} /></div>
             <div className="field"><label>IFSC Code</label><input value={f.ifsc||''} onChange={e => setF({...f, ifsc:e.target.value.toUpperCase()})} placeholder="KKBK0001234" style={{fontFamily:'var(--mono)'}} /></div>
+            <div className="field"><label>UPI ID <span style={{color:'var(--ink-3)',fontWeight:400}}>· for pay-by-QR on invoices</span></label>
+              <input value={f.upiId||''} onChange={e => setF({...f, upiId:e.target.value.trim()})} placeholder="yourbusiness@okhdfcbank" style={{fontFamily:'var(--mono)'}} />
+              <div className="help">Customers scan a QR and pay you directly — no gateway, no fee.</div></div>
           </div>
 
           {/* Credit Terms */}
