@@ -332,16 +332,16 @@ function ReimbursementModal({claim, data, setData, showToast, onSave, onClose, l
     };
   });
 
-  const onFiles = (e) => {
+  const onFiles = async (e) => {
     const files = Array.from(e.target.files||[]);
-    files.forEach(file => {
-      if((f.attachments||[]).length >= 5){ showToast('Up to 5 receipts','error'); return; }
-      if(file.size > 2*1024*1024){ showToast(file.name+' is over 2 MB','error'); return; }
-      const rd = new FileReader();
-      rd.onload = () => setF(prev => ({...prev, attachments:[...(prev.attachments||[]), {id:uid(), name:file.name, type:file.type, size:file.size, dataUrl:rd.result}]}));
-      rd.readAsDataURL(file);
-    });
     e.target.value = '';
+    for(const file of files){
+      if((f.attachments||[]).length >= 5){ showToast('Up to 5 receipts','error'); break; }
+      try {
+        const ref = await attSave(file);   // payload stored outside the claim
+        setF(prev => ({...prev, attachments:[...(prev.attachments||[]), ref]}));
+      } catch(err){ showToast(err.message || 'Could not attach that file','error'); }
+    }
   };
 
   return (
@@ -437,8 +437,8 @@ function ReimbursementModal({claim, data, setData, showToast, onSave, onClose, l
             <div className="field" style={{gridColumn:'span 2'}}><label>Receipts / attachments <span style={{color:'var(--ink-3)',fontWeight:400}}>· images or PDF, ≤ 2 MB, up to 5</span></label>
               {(f.attachments||[]).map(a=>(
                 <div key={a.id} style={{display:'flex',justifyContent:'space-between',alignItems:'center',fontSize:12,padding:'4px 8px',background:'var(--surface-2)',borderRadius:6,marginBottom:4}}>
-                  <span>📎 {a.name} <span style={{color:'var(--ink-3)'}}>({Math.round(a.size/1024)} KB)</span></span>
-                  <button className="btn btn-sm btn-ghost" style={{color:'var(--danger)'}} onClick={()=>setF({...f, attachments:f.attachments.filter(x=>x.id!==a.id)})}>×</button>
+                  <a href="#" onClick={e=>{ e.preventDefault(); attOpen(a); }} style={{color:'var(--info)',textDecoration:'none'}}>📎 {a.name} <span style={{color:'var(--ink-3)'}}>({Math.round(a.size/1024)} KB)</span></a>
+                  <button className="btn btn-sm btn-ghost" style={{color:'var(--danger)'}} onClick={()=>{ attDrop(a); setF({...f, attachments:f.attachments.filter(x=>x.id!==a.id)}); }}>×</button>
                 </div>
               ))}
               {(f.attachments||[]).length < 5 && <input type="file" accept="image/*,application/pdf" multiple onChange={onFiles} style={{fontSize:12}} />}

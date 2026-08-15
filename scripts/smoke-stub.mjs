@@ -33,7 +33,11 @@ ${probeNames.map(n => `try{ window.__probe[${JSON.stringify(n)}] = typeof ${n}; 
 const stub = `<script>
 (function(){
   var hook = function(){ return [undefined, function(){}]; };
+  function StubComponent(props){ this.props = props; this.state = {}; }
+  StubComponent.prototype.setState = function(){};
+  StubComponent.prototype.render = function(){ return null; };
   window.React = {
+    Component: StubComponent,
     createElement: function(){ return {__stub:true, args:[].slice.call(arguments)}; },
     Fragment: 'Fragment',
     useState: function(v){ return [typeof v==='function'?v():v, function(){}]; },

@@ -138,6 +138,23 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
   // Expose user identity for audit-trail entries written deep in components
   useEffect(() => { window.__miyeeUserEmail = user?.email || 'local'; }, [user]);
 
+  // Publish the cloud coordinates the attachment store uploads/downloads under,
+  // so 02b stays decoupled from App state.
+  useEffect(() => {
+    window.__miyeeAttCtx = { ownerId: effectiveOwner || null, companyId: companyId || null };
+  }, [effectiveOwner, companyId]);
+
+  // One-time: move any legacy inline attachment payloads out of the dataset
+  // document and into the blob store. Existing books shrink with no user action.
+  const attMigrated = useRef(false);
+  useEffect(() => {
+    if(attMigrated.current) return;
+    attMigrated.current = true;
+    attMigrateInline(data).then(({data:next, moved}) => {
+      if(moved) setData(next);
+    }).catch(e => console.warn('attachment migration skipped:', e));
+  }, []);
+
   // ── Weekly auto-backup: download a JSON snapshot if the last one is >7 days old
   useEffect(() => {
     try {
@@ -168,7 +185,8 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
   }, []);
 
   // ── Cloud sync ─────────────────────────────────────────────────────────────
-  const [syncStatus, setSyncStatus] = useState('local'); // local|syncing|saved|error
+  const [syncStatus, setSyncStatus] = useState('local'); // local|syncing|saved|error|conflict
+  const [conflict, setConflict]     = useState(null);    // {by?, serverRev?} when a save was refused
   const saveTimerRef = useRef(null);
   const justLoaded   = useRef(false);   // flag: skip auto-save right after Firestore load
 
@@ -215,7 +233,53 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
     setSyncStatus('syncing');
     fbLoadCompany(effectiveOwner, companyId).then(cloudData => {
       if(cloudData){
-        // Apply same migrations as local load
+        normalizeLoaded(cloudData);
+        justLoaded.current = true;
+        setData(cloudData);
+        saveData(cloudData);    // warm-up localStorage cache
+      }
+      setSyncStatus('saved');
+    }).catch(() => setSyncStatus('error'));
+  }, [user?.uid, companyId, effectiveOwner]);
+
+  // Pull the server's copy and adopt it (used by live sync and by the conflict
+  // banner's "Load their version").
+  const reloadFromCloud = React.useCallback(async () => {
+    if(!user || !companyId) return;
+    setSyncStatus('syncing');
+    try {
+      const cloudData = await fbLoadCompany(effectiveOwner, companyId);
+      if(cloudData){
+        normalizeLoaded(cloudData);
+        justLoaded.current = true;
+        setData(cloudData);
+        saveData(cloudData);
+      }
+      setConflict(null);
+      setSyncStatus('saved');
+    } catch(e){ setSyncStatus('error'); }
+  }, [user, companyId, effectiveOwner]);
+
+  // Live sync: adopt a newer server revision as soon as it appears, so a second
+  // user's entries show up instead of being clobbered by our next save.
+  useEffect(() => {
+    if(!user || !companyId) return;
+    const stop = fbWatchCompany(effectiveOwner, companyId, ({by}) => {
+      if(saveTimerRef.current){
+        // We have unsaved local edits - do not discard them; surface the clash.
+        setSyncStatus('conflict');
+        setConflict({ by });
+        return;
+      }
+      reloadFromCloud();
+    });
+    return stop;
+  }, [user?.uid, companyId, effectiveOwner, reloadFromCloud]);
+
+  // Bring a freshly loaded cloud dataset up to the current shape. Shared by the
+  // initial load, live sync, and conflict recovery so they cannot drift apart.
+  function normalizeLoaded(cloudData){
+      {
         if(!cloudData.stockItems)        cloudData.stockItems = [];
         if(!cloudData.boms)              cloudData.boms = [];
         if(!cloudData.productionOrders)  cloudData.productionOrders = [];
@@ -245,13 +309,9 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
         } else {
           cloudData.company.modules = { ...DEFAULT_COMPANY.modules, ...cloudData.company.modules };
         }
-        justLoaded.current = true;
-        setData(cloudData);
-        saveData(cloudData);    // warm-up localStorage cache
       }
-      setSyncStatus('saved');
-    }).catch(() => setSyncStatus('error'));
-  }, [user?.uid, companyId, effectiveOwner]);
+      return cloudData;
+  }
 
   // On any data change → save to localStorage immediately, then debounce Firestore save
   // Viewers cannot save (read-only)
@@ -265,8 +325,14 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
       try {
         await fbSaveCompany(effectiveOwner, companyId, data);
         setSyncStatus('saved');
+        setConflict(null);
       } catch(e){
-        setSyncStatus('error');
+        if(e && e.name === 'FbConflictError'){
+          // Somebody else saved since we loaded. Never overwrite silently -
+          // stop syncing and let the user choose (see the conflict banner).
+          setSyncStatus('conflict');
+          setConflict({ serverRev: e.serverRev });
+        } else setSyncStatus('error');
       }
     }, 2000);
     return () => { if(saveTimerRef.current) clearTimeout(saveTimerRef.current); };
@@ -413,6 +479,25 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
 
   return (
     <>
+      {conflict && (
+        <div style={{background:'var(--warning-soft, #FBF0DF)',borderBottom:'2px solid var(--warning, #8A5200)',
+          padding:'10px 18px',display:'flex',alignItems:'center',gap:14,flexWrap:'wrap',fontSize:13}}>
+          <b style={{color:'var(--warning, #8A5200)'}}>⚠ Changed elsewhere</b>
+          <span style={{color:'var(--ink-2)'}}>
+            {conflict.by ? conflict.by + ' saved this company' : 'This company was saved on another device'} while you were editing.
+            Your latest changes have <b>not</b> been uploaded, so nothing was overwritten.
+          </span>
+          <span style={{marginLeft:'auto',display:'flex',gap:8}}>
+            <button className="btn btn-sm" onClick={reloadFromCloud}>Load their version</button>
+            <button className="btn btn-sm btn-primary" onClick={async ()=>{
+              if(!confirm('Upload your version and replace what the other person saved?\n\nTheir changes since you loaded will be lost.')) return;
+              setSyncStatus('syncing');
+              try { await fbSaveCompany(effectiveOwner, companyId, data, {force:true}); setConflict(null); setSyncStatus('saved'); }
+              catch(e){ setSyncStatus('error'); }
+            }}>Keep mine</button>
+          </span>
+        </div>
+      )}
       <div className="topbar">
         <div className="brand">
           <span className="brand-mark">Miyee<span className="dot">·</span>Books</span>

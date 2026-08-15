@@ -100,14 +100,54 @@ const fbLoadCompany = async (uid, companyId) => {
     } else {
       data.company.isPremium    = false;
     }
+    // Stamp the revision we loaded so the next save can prove it is not stale.
+    fbSetRev(companyId, typeof doc.rev === 'number' ? doc.rev : 0);
     return data;
   } catch(e){ console.warn('fbLoadCompany:', e); return null; }
 };
 
-const fbSaveCompany = async (uid, companyId, data) => {
+// ── Concurrency control ─────────────────────────────────────────────────────
+// The company document is written as a whole, so without a guard the second of
+// two concurrent savers silently erases the first one's work. Every document
+// carries a monotonic `rev`; a save asserts the rev it last saw and is rejected
+// if the server has moved on. The app then reloads or force-overwrites, but it
+// never loses an entry without telling anyone.
+const __fbRev = {};                                   // companyId -> last seen rev
+const fbGetRev = (companyId) => __fbRev[companyId] || 0;
+const fbSetRev = (companyId, rev) => { __fbRev[companyId] = rev || 0; };
+class FbConflictError extends Error {
+  constructor(serverRev){ super('This company was changed elsewhere'); this.name = 'FbConflictError'; this.serverRev = serverRev; }
+}
+
+// Live updates: fires when the server revision moves past what we hold, so a
+// second user's entries appear instead of being clobbered on the next save.
+const fbWatchCompany = (uid, companyId, onRemoteChange) => {
+  if(!fbDb || !uid || !companyId) return () => {};
+  try {
+    return fbCompanyRef(uid, companyId).onSnapshot(snap => {
+      if(!snap.exists) return;
+      const d = snap.data() || {};
+      const rev = typeof d.rev === 'number' ? d.rev : 0;
+      if(rev > fbGetRev(companyId)) onRemoteChange({ rev, by: d.updatedBy || '' });
+    }, err => console.warn('fbWatchCompany:', err && err.message));
+  } catch(e){ console.warn('fbWatchCompany:', e); return () => {}; }
+};
+
+const fbSaveCompany = async (uid, companyId, data, opts={}) => {
   if(!fbDb) return;
   const ref = fbCompanyRef(uid, companyId);
   const payload = JSON.stringify(capAudit(data));
+  // Revision guard: refuse to overwrite a document that moved since we loaded
+  // it. `force` is the user's explicit "mine wins" after being shown the clash.
+  const seenRev = fbGetRev(companyId);
+  if(!opts.force){
+    try {
+      const cur = await ref.get();
+      const srvRev = cur.exists && typeof cur.data().rev === 'number' ? cur.data().rev : 0;
+      if(cur.exists && srvRev !== seenRev) throw new FbConflictError(srvRev);
+    } catch(e){ if(e instanceof FbConflictError) throw e; /* read failed: fall through and save */ }
+  }
+  const nextRev = (opts.force ? Date.now() : seenRev + 1);
   const meta = {
     name:      data.company?.name  || 'My Company',
     gstin:     data.company?.gstin || '',
@@ -117,6 +157,8 @@ const fbSaveCompany = async (uid, companyId, data) => {
     isHolding:       !!data.company?.isHolding,
     parentCompanyId: data.company?.parentCompanyId || '',
     updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+    rev: nextRev,
+    updatedBy: (typeof window !== 'undefined' && window.__miyeeUserEmail) || '',
     // top-level premium flag (developer-set) - only ever written true, never downgraded here
     ...(data.company?.isPremium ? { isPremium: true, premiumSince: data.company.premiumSince || '' } : {}),
   };
@@ -132,6 +174,8 @@ const fbSaveCompany = async (uid, companyId, data) => {
     await fbClearChunks(ref, chunks.length);  // delete stale chunks beyond the new count
     await ref.set({ ...meta, payload: '', chunked: true, chunkCount: chunks.length }, { merge: true });
   }
+  fbSetRev(companyId, nextRev);   // our write is now the baseline for the next one
+  return nextRev;
 };
 
 const fbCreateCompany = async (uid, initialData) => {

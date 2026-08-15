@@ -255,7 +255,9 @@ function computeEliminations(entities){
 
 // ── Audit trail helper ───────────────────────────────────────────────────────
 // Records who did what, when. User email is set globally by App on login.
-const auditEntry = (action, detail) => ({
+// Every entry is also appended to the durable append-only trail (02c), which
+// lives outside the company document so a save cannot rewrite or trim history.
+const auditEntry = (action, detail) => auditAppend({
   ts: new Date().toISOString(),
   user: window.__miyeeUserEmail || 'local',
   action, detail,

@@ -1238,11 +1238,19 @@ function HealthCheck({data, setPage}){
 // ============================================================================
 function AuditLog({data}){
   const [search, setSearch] = useState('');
-  const log = useMemo(() => [...(data.auditLog||[])].reverse()
+  // The durable append-only trail (02c) is the record of authority: it is never
+  // trimmed and lives outside the company document. The in-dataset copy is only
+  // a cache, so prefer the durable one whenever it holds more history.
+  const [durable, setDurable] = useState(null);
+  useEffect(() => { auditReadAll().then(setDurable).catch(()=>setDurable([])); }, []);
+  const cached = data.auditLog || [];
+  const source = (durable && durable.length >= cached.length) ? durable : [...cached].reverse();
+
+  const log = useMemo(() => source
     .filter(e => !search || (e.detail||'').toLowerCase().includes(search.toLowerCase()) ||
       (e.user||'').toLowerCase().includes(search.toLowerCase()) ||
       (e.action||'').toLowerCase().includes(search.toLowerCase())),
-    [data.auditLog, search]);
+    [source, search]);
 
   const ACT_CLR = {CREATE:'badge-success', EDIT:'badge-info', CANCEL:'badge-danger',
     IMPORT:'badge-info', RECURRING:'badge-success', YEAR_END:'badge-danger', BANK_ENTRY:'badge-info', GSTR2B:'badge-info'};
@@ -1259,9 +1267,13 @@ function AuditLog({data}){
     <div className="page-head">
       <div>
         <h1 className="page-title">Audit Trail</h1>
-        <div className="page-sub">Edit log of all voucher activity · {log.length} entries · MCA-compliant record</div>
+        <div className="page-sub">Edit log of all voucher activity · {log.length} entries ·{' '}
+          {durable && durable.length >= cached.length
+            ? <span style={{color:'var(--green)'}}>append-only record, never trimmed</span>
+            : 'recent activity cache'} · MCA-compliant</div>
       </div>
       <div className="page-actions">
+        <button className="btn btn-sm" onClick={()=>auditExportCsv(log)}>⬇ CSV</button>
         <button className="btn btn-sm" onClick={handleExcel}>⬇ Excel</button>
       </div>
     </div>
