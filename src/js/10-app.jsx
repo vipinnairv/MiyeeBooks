@@ -201,6 +201,12 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
   // ── Cloud sync ─────────────────────────────────────────────────────────────
   const [syncStatus, setSyncStatus] = useState('local'); // local|syncing|saved|error|conflict
   const [conflict, setConflict]     = useState(null);    // {by?, serverRev?} when a save was refused
+  const [showWizard, setShowWizard] = useState(false);   // first-run setup
+
+  // Offer the setup wizard once, for a company still on the sample identity.
+  useEffect(() => {
+    if(!isViewer && wizardShouldShow(data.company)) setShowWizard(true);
+  }, [data.company.name, data.company.onboarded]);
   const saveTimerRef = useRef(null);
   const justLoaded   = useRef(false);   // flag: skip auto-save right after Firestore load
 
@@ -493,6 +499,7 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
 
   return (
     <>
+      {showWizard && <SetupWizard data={data} setData={setData} onClose={()=>setShowWizard(false)} />}
       {conflict && (
         <div style={{background:'var(--warning-soft, #FBF0DF)',borderBottom:'2px solid var(--warning, #8A5200)',
           padding:'10px 18px',display:'flex',alignItems:'center',gap:14,flexWrap:'wrap',fontSize:13}}>
@@ -590,7 +597,7 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
           {page==='dashboard' && <Dashboard data={data} balances={ledgerBalances} setPage={setPage} setData={canWrite?setData:()=>{}} showToast={showToast} />}
           {page==='coa' && <ChartOfAccounts data={data} setData={canWrite?setData:()=>{}} balances={ledgerBalances} showToast={showToast} readOnly={isViewer} />}
           {page==='parties' && <Parties data={data} setData={canWrite?setData:()=>{}} showToast={showToast} readOnly={isViewer} />}
-          {page==='company' && <CompanySettings data={data} setData={canWrite?setData:()=>{}} showToast={showToast} readOnly={isViewer} />}
+          {page==='company' && <CompanySettings data={data} setData={canWrite?setData:()=>{}} showToast={showToast} readOnly={isViewer} onLaunchWizard={()=>setShowWizard(true)} />}
           {page==='team'         && <TeamMembers data={data} user={user} companyId={companyId} userRole={userRole} />}
           {page==='cost_centres' && <CostCentreMaster data={data} setData={canWrite?setData:()=>{}} showToast={showToast} readOnly={isViewer} />}
           {page==='departments'  && <DepartmentMaster data={data} setData={canWrite?setData:()=>{}} showToast={showToast} readOnly={isViewer} />}
