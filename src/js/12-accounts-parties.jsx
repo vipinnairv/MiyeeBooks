@@ -485,7 +485,7 @@ function PartyModal({party, existingParties=[], onSave, onClose}){
 // ============================================================================
 // COMPANY SETTINGS
 // ============================================================================
-function CompanySettings({data, setData, showToast, readOnly=false}){
+function CompanySettings({data, setData, showToast, readOnly=false, onLaunchWizard}){
   const [f, setF] = useState(data.company);
   const logoRef = useRef(null);
 
@@ -542,6 +542,9 @@ function CompanySettings({data, setData, showToast, readOnly=false}){
           <h1 className="page-title">Company Settings</h1>
           <div className="page-sub">Entity profile · Financial year · Tax registrations · Logo</div>
         </div>
+        {!readOnly && onLaunchWizard && <div className="page-actions">
+          <button className="btn btn-sm" onClick={onLaunchWizard}>✦ Setup wizard</button>
+        </div>}
       </div>
 
       {/* Logo upload card */}
