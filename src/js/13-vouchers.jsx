@@ -1135,6 +1135,7 @@ function VoucherModal({vtype, voucher, prefill, data, onSave, onClose, showToast
                 const hasStock = mod.trader || mod.factory;
                 const stockItems = data.stockItems || [];
                 return (
+                <div className="table-scroll">
                 <table className="lines-table">
                   <thead>
                     <tr>
@@ -1189,6 +1190,7 @@ function VoucherModal({vtype, voucher, prefill, data, onSave, onClose, showToast
                     })}
                   </tbody>
                 </table>
+                </div>
                 );
               })()}
               {(f.items||[]).length === 0 && <div className="empty" style={{padding:20}}>Click "+ Add Item" to add line items</div>}
@@ -1263,6 +1265,7 @@ function VoucherModal({vtype, voucher, prefill, data, onSave, onClose, showToast
                 <div className="line"></div>
                 <button className="btn btn-sm btn-ghost" onClick={addLine}>+ Add Line</button>
               </div>
+              <div className="table-scroll">
               <table className="lines-table">
                 <thead>
                   <tr>
@@ -1396,6 +1399,7 @@ function VoucherModal({vtype, voucher, prefill, data, onSave, onClose, showToast
                   </tr>
                 </tbody>
               </table>
+              </div>
             </>
           )}
 
