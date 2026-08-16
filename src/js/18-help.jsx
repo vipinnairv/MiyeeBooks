@@ -3,9 +3,10 @@
 // HELP & GUIDE (in-app)
 // ============================================================================
 function HelpGuide({setPage}){
-  const [section, setSection] = useState('overview');
+  const [section, setSection] = useState('setup_guide');
 
   const sections = [
+    {id:'setup_guide', title:'Setup Guide (Start → Close FY)'},
     {id:'overview',  title:'Getting Started'},
     {id:'modules',   title:'Module Setup'},
     {id:'coa',       title:'Chart of Accounts'},
@@ -30,6 +31,71 @@ function HelpGuide({setPage}){
   ];
 
   const content = {
+    setup_guide: {
+      title:'Setup Guide — Create Your Company → Close the Financial Year',
+      body: [
+        {type:'text', text:'This is the full lifecycle, in order: create the company, load opening balances, add your masters, run the year, then close it. If you\'re migrating from Tally, Zoho Books, QuickBooks, or a spreadsheet, jump straight to <b>"Migrating from Another System"</b> near the bottom  it lists exactly what data to have ready before you start.'},
+
+        {type:'heading', text:'1. Create the Company'},
+        {type:'steps', items:[
+          'A brand-new login opens the <b>Setup Wizard</b> automatically. It has 4 steps: <b>Company</b> (name, GSTIN, PAN, state, email, phone, address  State and PAN auto-fill from a valid GSTIN), <b>Financial Year</b> (start/end dates  India defaults to 1 Apr–31 Mar), <b>Modules</b> (GST / TDS / Payroll / Trader / Factory / Service Sector  toggle only what this business needs), and <b>Get Paid</b> (your UPI ID, so invoices carry a scan-to-pay QR from day one).',
+          'Skipped the wizard, or need to change something later? Everything it sets lives in <b>Company Settings</b>, including a <b>Launch Setup Wizard</b> button to re-run it.',
+          'Upload a <b>company logo</b> and <b>bank details</b> here too  both print on GST invoices.',
+        ]},
+
+        {type:'heading', text:'2. Load Opening Balances'},
+        {type:'text', text:'Every account in <b>Chart of Accounts</b> has an <code>opening</code> value. For a brand-new company with no prior books, leave these at zero and skip to Add Your Masters  there\'s nothing to carry forward.'},
+        {type:'steps', items:[
+          'For a business that already has books elsewhere (see the migration section below for the full data checklist), set each account\'s opening balance either by editing accounts one at a time, or in bulk via <b>Chart of Accounts → Import CSV</b>  the template\'s <code>opening</code> column is exactly this.',
+          'Open <b>Trial Balance</b> as soon as opening balances are in and confirm it shows <b>zero difference</b> (Dr = Cr) before you post a single real voucher. An out-of-balance opening position only gets harder to trace the more transactions pile on top of it.',
+        ]},
+        {type:'tip', text:'Opening balances are entered once, right after company creation, before day-to-day vouchers begin. Fix any Trial Balance mismatch here  it is the cheapest point in the whole lifecycle to catch it.'},
+
+        {type:'heading', text:'3. Add Your Masters'},
+        {type:'steps', items:[
+          '<b>Customers & Vendors</b>  add each party with GSTIN, state, and currency (needed for correct IGST vs CGST/SGST and for foreign-currency invoices).',
+          '<b>Stock Items</b> (Trader/Factory only)  add each item with its opening quantity and opening value if you\'re carrying forward existing stock.',
+          '<b>Employees</b> (Payroll only)  add via <b>HR & Payroll → Import CSV</b> for a bulk load, or one at a time.',
+          '<b>Cost Centres & Departments</b>, if you track spend by project or team.',
+        ]},
+
+        {type:'heading', text:'4. Run the Year'},
+        {type:'steps', items:[
+          'Post day-to-day <b>Vouchers</b>  Sales, Purchase, Payment, Receipt, Journal, Credit/Debit Notes.',
+          'File <b>GSTR-1</b> and <b>GSTR-3B</b> each period (if GST module is on); reconcile <b>GSTR-2B</b> against your purchase register.',
+          'Run <b>Period Close</b> (Compliance) at each month/quarter end  it is a checklist: depreciation posted, prepaid/accrual amortisation run, bank reconciled, GST set off and filed, TDS deposited, statutory dues paid, closing provisions passed.',
+        ]},
+
+        {type:'heading', text:'5. Close the Financial Year'},
+        {type:'steps', items:[
+          'Open <b>Year-End Close</b> (Reports). It runs pre-close validation before letting you proceed: <b>hard checks</b> that block the close outright  Trial Balance tallies, every voucher is balanced, no voucher references a deleted account  and <b>soft checks</b> that warn but don\'t block, like entries dated after year-end or recurring templates not yet posted for the year.',
+          'Fix every hard check first  the Close button stays disabled until they\'re clear.',
+          'Closing the year <b>automatically downloads a full backup</b>, then locks books up to the FY-end date (no entry before that date can be added, edited, or cancelled afterwards), rolls the company\'s financial year forward, carries closing balances into the new year as continuous opening balances, and snapshots this year\'s P&L for use as a prior-year comparative.',
+        ]},
+        {type:'tip', text:'Books lock permanently up to the closed FY-end date once you confirm  there is no in-app "reopen" action. Run through the hard/soft checklist carefully and keep the auto-downloaded backup before confirming.'},
+
+        {type:'heading', text:'Migrating from Another System (Tally, Zoho Books, QuickBooks, Excel)'},
+        {type:'text', text:'Gather this <b>before</b> you start entering anything in MiyeeBooks. Pick a go-live date (typically the first day of a month or the FY), and pull every figure below <b>as of the day before</b> that date  those are your opening balances.'},
+        {type:'steps', items:[
+          '<b>Closing Trial Balance</b> from the old system, account by account  this is the single most important export. It becomes the <code>opening</code> column on your Chart of Accounts import.',
+          '<b>Customer & Vendor list</b> with GSTIN, state, and currency, plus their outstanding balances  either one total per party (Debtors/Creditors), or invoice-wise if you want ageing to carry over exactly.',
+          '<b>Stock-in-hand</b>: item, quantity, and value as of go-live (Trader/Factory businesses only).',
+          '<b>Fixed asset register</b>: cost, accumulated depreciation, and written-down value per asset, if you\'ll use the Fixed Asset Register here.',
+          '<b>Bank balances</b> matching your last reconciled statement, not just the passbook figure.',
+          '<b>Outstanding statutory balances</b>: GST ITC carried forward, TDS deducted but not yet deposited, any PF/ESIC/PT dues pending.',
+          '<b>Employee YTD payroll figures</b> if you\'re migrating mid-financial-year  needed to keep PF/ESIC/PT and Form 16 correct for the full year, not just the months since go-live.',
+        ]},
+        {type:'heading', text:'Loading Migration Data Into MiyeeBooks'},
+        {type:'steps', items:[
+          '<b>Chart of Accounts</b>: <b>Import CSV</b> with columns <code>code, name, type, group, schedule, opening, hsn, gstRate</code>. The <code>opening</code> column IS your opening trial balance  once every account is loaded with the correct signed balance, Dr equals Cr with no extra adjustment entry needed.',
+          '<b>Customers & Vendors</b>: added one at a time  bulk CSV import isn\'t available for parties yet. If invoice-wise ageing doesn\'t matter to you, fold the total into the Debtors/Creditors account\'s opening balance above. If it does, raise a historical Sales or Purchase voucher dated at go-live for each open invoice instead  more setup work, but ageing stays accurate from day one.',
+          'Anything else that isn\'t a simple account balance  historical adjustments, a multi-line opening journal, whatever your old system can export as a transaction list  goes through <b>Vouchers → Bulk Import Vouchers (CSV)</b>. Rows sharing the same date, type and reference group into one multi-line voucher, so an opening journal with 30 ledger lines is one CSV of 30 rows, all reference <code>OPEN-2025</code>, all type <code>JV</code>.',
+          '<b>Stock Items</b>: added one at a time with opening quantity and opening value  no bulk CSV import yet for this master.',
+          '<b>Employees</b>: <b>HR & Payroll → Import CSV</b> for a bulk load.',
+        ]},
+        {type:'tip', text:'Do the entire opening-balance load in one sitting, before posting a single real voucher for the new period, then check Trial Balance immediately. It must read zero difference before the year begins  that\'s the checkpoint that confirms the migration data went in correctly.'},
+      ]
+    },
     overview: {
       title:'Getting Started with MiyeeBooks',
       body: [
