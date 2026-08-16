@@ -535,9 +535,9 @@ function App({ user=null, companyId=null, ownerId=null, userRole='owner', onSign
             style={{background:'transparent',border:'1px solid #2a4039',borderRadius:20,padding:'3px 10px',fontSize:12,color:'#b5c5be'}}>
             {darkMode?'☀':'🌙'}
           </button>
-          <span className="pill">FY {data.company.fyStart?.slice(0,4)}–{data.company.fyEnd?.slice(2,4)}</span>
-          <span>{data.company.name}</span>
-          {data.company.gstin && <><span style={{color:'#5a7068'}}>•</span><span>GSTIN: {data.company.gstin}</span></>}
+          <span className="pill tb-hide-sm">FY {data.company.fyStart?.slice(0,4)}–{data.company.fyEnd?.slice(2,4)}</span>
+          <span className="tb-company-name" style={{maxWidth:160,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{data.company.name}</span>
+          {data.company.gstin && <span className="tb-hide-sm" style={{display:'flex',alignItems:'center',gap:14}}><span style={{color:'#5a7068'}}>•</span><span>GSTIN: {data.company.gstin}</span></span>}
           {user && (<>
             <span style={{color:'#5a7068'}}>•</span>
             {syncStatus==='syncing' && <span className="sync-pill syncing" title="Saving to cloud…">☁ Saving…</span>}
